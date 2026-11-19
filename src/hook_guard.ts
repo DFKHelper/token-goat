@@ -81,6 +81,7 @@ const SH_CLEAR = ': >"$1"; [ -z "$2" ] || : >"$2"'
 const CASE_SH =
   `case $? in 0) ${SH_REPLAY}; exit 0;; 2) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ${SH_CLEAR};; ` +
   `*) ${SH_CLEAR};; esac`
+// limit: sh holds the async marker until the route ends (a pipe loses $?); revisit-when: an early read keeps it
 const SH_STDERR =
   'set -- "$(mktemp 2>/dev/null)" "$(mktemp 2>/dev/null)"; [ -n "$1" ] || set -- /dev/null "$2"; ' +
   'exec 3>&2 4>&1 2>>"$1"; [ -z "$2" ] || exec >>"$2"'
@@ -94,6 +95,7 @@ const PS_ERR_REDIRECT_WORD = '2>&1'
 // A route's stdout lines and stderr records are held in one variable (no $NAME word) and written only once
 // its exit is accepted. A stderr line is an ErrorRecord, whose message is the raw line (a `2>file` redirect
 // would wrap it in a decorated record on Windows PowerShell 5.1, even a blank one).
+// limit: PowerShell holds the async marker until the route ends (a per-line stage needs a `$_` Grok rewrites)
 const PS_OUT_SINK = ['|', 'Tee-Object', '-Variable', 'tgo', '|', 'Out-Null']
 const PS_HELD = 'Get-Variable tgo -ValueOnly -ErrorAction Ignore | Write-Output | Where-Object PSTypeNames'
 // Only the tail of the type name is matched: a line naming Management.Automation beside a file write is denied.

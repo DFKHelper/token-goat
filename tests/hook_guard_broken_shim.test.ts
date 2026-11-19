@@ -1,5 +1,5 @@
 /** A broken shim never breaks the hook: only exit 0 or a deliberate exit 2 is a Node-route answer. */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { buildGuardedCommand, type GuardShell } from '../src/hook_guard.js'
 import { powerShellCommandArgs, resolvePowerShell, resolveWindowsBash } from '../src/shell.js'
+import { killIfCommandLine, tiedToHandles } from './helpers/kill_if_command_line.js'
 
 // Provenance: HAND-DERIVED. Node's own failure exits are 1 (uncaught error, syntax error), 9, 13 and signals.
 const WIN = process.platform === 'win32'
@@ -297,4 +298,83 @@ describe('a broken Node shim falls through to the safe answer', () => {
   it('runs on at least the sh form', () => {
     expect(SHELLS).toContain('sh')
   })
+})
+
+// Provenance: HAND-DERIVED. The marker bytes are what src/bridges/claudecode.ts prints (`{"async":true}` + LF).
+const MARKER_LINE = '{"async":true}\n'
+// The fake route gives up waiting for its release after this long; only a holding guard makes it wait it out.
+const ROUTE_GIVES_UP_MS = 400
+
+// Ends the guard's shell and its descendants while the handle holds it and its command line names `program`.
+function endTree(child: ChildProcess, program: string): void {
+  if (child.pid === undefined) return
+  const named = (line: string): boolean => line.toLowerCase().includes(path.basename(program).toLowerCase())
+  killIfCommandLine(child.pid, named, { tree: true, tied: tiedToHandles([child]) })
+}
+
+interface MarkerRun {
+  status: number | null
+  stdout: string
+  released: string
+}
+
+// Runs the guard round a route that prints the marker, then waits (bounded) for a release given on reading it.
+async function runMarkerRoute(shell: GuardShell, event: string): Promise<MarkerRun> {
+  const dir = path.join(root, `m${String(n++)}`)
+  fs.mkdirSync(dir)
+  const shim = path.join(dir, 'shim.cjs')
+  const release = path.join(dir, 'release')
+  const state = path.join(dir, 'state')
+  fs.writeFileSync(
+    shim,
+    `const fs = require('fs'); fs.writeSync(1, ${JSON.stringify(MARKER_LINE)})\n` +
+      `const end = Date.now() + ${String(ROUTE_GIVES_UP_MS)}; let yes = false\n` +
+      `while (Date.now() < end) { if (fs.existsSync(${JSON.stringify(release)})) { yes = true; break }\n` +
+      '  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20) }\n' +
+      `fs.writeFileSync(${JSON.stringify(state)}, yes ? 'released=yes' : 'released=no')\n` +
+      "fs.writeSync(1, '{}')\n",
+  )
+  const command = buildGuardedCommand({
+    shell,
+    native: [process.execPath, shim, event],
+    safe: SAFE,
+    marker: path.join(dir, 'hook-broken.json'),
+  })
+  const p = prog(shell)!
+  const child = spawn(p.program, p.args(command), {
+    cwd: dir,
+    windowsHide: true,
+    windowsVerbatimArguments: p.verbatim === true,
+    detached: !WIN,
+    stdio: ['pipe', 'pipe', 'ignore'],
+  })
+  try {
+    let stdout = ''
+    child.stdout.on('data', (c: Buffer) => {
+      stdout += c.toString('utf8')
+      if (stdout.includes(MARKER_LINE)) fs.writeFileSync(release, '')
+    })
+    // A shell that ends before reading its payload closes the pipe early; that is not a failure of the row.
+    child.stdin.on('error', () => undefined)
+    child.stdin.end('{}')
+    const status = await new Promise<number | null>((resolve) => child.on('close', resolve))
+    const released = fs.existsSync(state) ? fs.readFileSync(state, 'utf8') : 'route never ran'
+    return { status, stdout, released }
+  } finally {
+    endTree(child, p.program)
+  }
+}
+
+describe('the async marker through the guard', () => {
+  for (const shell of SHELLS) {
+    // The passing run waits out the route's own bound: nothing releases a route the guard is holding.
+    it(`limit: ${shell} holds the async marker until the route ends, then replays it whole`, async () => {
+      const o = await runMarkerRoute(shell, 'subagent_stop')
+      expect({ released: o.released, status: o.status, stdout: o.stdout }).toEqual({
+        released: 'released=no',
+        status: 0,
+        stdout: `${MARKER_LINE}{}`,
+      })
+    })
+  }
 })
