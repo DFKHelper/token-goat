@@ -300,12 +300,22 @@ export function kimiHookCommandFor(scriptPath: string, eventArg: string, opts: {
   return native ?? hookCommandFor(scriptPath, eventArg)
 }
 
+/** The command registered for `event`, or undefined when none can be built (a path cmd.exe would rewrite). */
+function kimiExpectedCommand(scriptPath: string, event: (typeof KIMI_HOOK_EVENTS)[number]): string | undefined {
+  try {
+    return kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? '', { sync: false })
+  } catch (err) {
+    if (err instanceof HookCommandRewriteError) return undefined
+    throw err
+  }
+}
+
 /** Every token-goat hook entry in Kimi's config.toml, split the way the shell Kimi runs it in would (cmd.exe on Windows, sh elsewhere), and whether it is a command this build writes. Empty when nothing is wired or the file does not parse. */
 export function wiredKimiHookWords(): WiredHookEntry[] {
   const hooks = readKimiConfig(kimiConfigPath()).hooks
   if (!Array.isArray(hooks)) return []
   const scriptPath = kimiHookScriptPath()
-  const expected = new Set(KIMI_HOOK_EVENTS.map((e) => kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[e] ?? '', { sync: false })))
+  const expected = new Set(KIMI_HOOK_EVENTS.map((e) => kimiExpectedCommand(scriptPath, e)))
   return hooks
     .filter((h) => isKimiTokenGoatCommand(h?.command))
     .map((h) => ({
@@ -321,7 +331,7 @@ export function isKimiInstalled(): boolean {
   if (!Array.isArray(config.hooks)) return false
   const scriptPath = kimiHookScriptPath()
   for (const event of KIMI_HOOK_EVENTS) {
-    const expected = kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? '', { sync: false })
+    const expected = kimiExpectedCommand(scriptPath, event)
     if (!config.hooks.some((h) => h?.event === event && h?.command === expected)) return false
   }
   return true

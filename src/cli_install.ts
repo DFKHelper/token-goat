@@ -36,6 +36,7 @@ import { formatBytes, purgeDataDirectories } from './purge.js'
 import { recordStat } from './stats.js'
 import { CLAUDE_HOOKS_UNINSTALLED_KIND } from './hook_latency.js'
 import { err, formatCommandError, out } from './cli.js'
+import { HookCommandRewriteError } from './hook_guard.js'
 import { formatInstallIndexResult, queueInstallIndex } from './install_index.js'
 import { fencedCommand } from './hint_suggestion_guard.js'
 
@@ -306,13 +307,21 @@ export async function cmdInstall(opts: {
 
   // --kimi is additive, exactly like --qwen above.
   if (opts.kimi === true) {
-    const kimiResult = installKimi()
-    if (kimiResult.alreadyInstalled) {
+    let kimiResult: ReturnType<typeof installKimi> | undefined
+    try {
+      kimiResult = installKimi()
+    } catch (e) {
+      if (!(e instanceof HookCommandRewriteError)) throw e
+      // A path cmd.exe would rewrite refuses this host alone: one line, exit 1, the other hosts still install.
+      err(formatCommandError(`Kimi Code was not installed: ${e.message}`))
+      process.exitCode = 1
+    }
+    if (kimiResult?.alreadyInstalled === true) {
       out(`Kimi Code integration already installed → ${displaySafePath(kimiResult.configPath)}`)
-    } else {
+    } else if (kimiResult !== undefined) {
       out(`Installed token-goat Kimi Code integration → ${displaySafePath(kimiResult.configPath)}, ${displaySafePath(kimiResult.hookScriptPath)}, ${displaySafePath(kimiResult.agentsPath)}, ${displaySafePath(kimiResult.skillPath)}`)
     }
-    printBridgeVerificationNotice('kimi')
+    if (kimiResult !== undefined) printBridgeVerificationNotice('kimi')
   }
 
   // --pi is additive on both install and uninstall, exactly like --codex. --local and -p/--project both select the project-local scope for --pi and --copilot; passed without either of those flags they are ignored.
