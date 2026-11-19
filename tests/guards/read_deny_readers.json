@@ -262,7 +262,7 @@
   "cli_memory.ts": {
     "reads": 1,
     "accessors": 0,
-    "reason": "guarded at memory_prune.ts:auditClaudeMd: --fix rereads only the files whose report passed the check"
+    "reason": "guarded at memory_prune.ts:auditClaudeMd: --fix rereads only files that passed the check"
   },
   "cli_payloads.ts": {
     "reads": 1,
@@ -272,7 +272,7 @@
   "cli_skills.ts": {
     "reads": 7,
     "accessors": 0,
-    "reason": "guarded at cli_skills.ts:cmdSkillBody: every skill file read asserts first; skill-diff checks in cmdSkillDiff"
+    "reason": "guarded at cli_skills.ts:cmdSkillBody: skill reads assert first; skill-diff in cmdSkillDiff"
   },
   "cli_stats.ts": {
     "reads": 1,
@@ -567,7 +567,7 @@
   "memory_prune.ts": {
     "reads": 3,
     "accessors": 0,
-    "reason": "guarded at memory_prune.ts:auditClaudeMd: readDenial runs before the CLAUDE.md read; the rest is the host memory directory"
+    "reason": "guarded at memory_prune.ts:auditClaudeMd: readDenial runs before the CLAUDE.md read"
   },
   "model_download_gate.ts": {
     "reads": 1,
@@ -762,12 +762,12 @@
   "session_audit.ts": {
     "reads": 2,
     "accessors": 0,
-    "reason": "guarded at session_audit.ts:auditSessionCorpus: dropDeniedRows filters the transcript list before any read"
+    "reason": "guarded at session_audit.ts:auditSessionCorpus: dropDeniedRows filters the list before reads"
   },
   "session_read.ts": {
     "reads": 1,
     "accessors": 0,
-    "reason": "guarded at session_read.ts:resolveReadableSessionTranscript: the three printing commands resolve through it"
+    "reason": "guarded at session_read.ts:resolveReadableSessionTranscript: the printing commands use it"
   },
   "session_start_owed.ts": {
     "reads": 2,
@@ -802,7 +802,7 @@
   "sqlite_query.ts": {
     "reads": 2,
     "accessors": 0,
-    "reason": "guarded at sqlite_query.ts:openReadonlySqlite: every schema, table and query path opens through it"
+    "reason": "guarded at sqlite_query.ts:openReadonlySqlite: every schema, table and query opens through it"
   },
   "stats.ts": {
     "reads": 4,
@@ -867,7 +867,7 @@
   "waste.ts": {
     "reads": 2,
     "accessors": 0,
-    "reason": "guarded at cli_waste.ts:runWasteCommand: the transcript path asserts there before waste.ts reads it"
+    "reason": "guarded at cli_waste.ts:runWasteCommand: the transcript path asserts before waste.ts reads it"
   },
   "worker.ts": {
     "reads": 3,

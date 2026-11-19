@@ -100,7 +100,10 @@ export async function cmdSessionAudit(opts: { dir?: string; json?: boolean; wind
 
 export async function cmdListingSize(sessionIdOrPath: string | undefined, opts: { project?: string; json?: boolean; top?: string } = {}): Promise<void> {
   const top = opts.top !== undefined ? requireNonNegativeInt('--top', opts.top) : 10
-  const transcriptPath = resolveReadableSessionTranscript(sessionIdOrPath, opts.project !== undefined ? { project: opts.project } : {})
+  const transcriptPath = resolveReadableSessionTranscript(
+    sessionIdOrPath,
+    opts.project !== undefined ? { project: opts.project } : {},
+  )
   if (transcriptPath === null) {
     throw new CliError(
       sessionIdOrPath !== undefined
@@ -114,7 +117,10 @@ export async function cmdListingSize(sessionIdOrPath: string | undefined, opts: 
 }
 
 export async function cmdSessionOutline(sessionIdOrPath: string | undefined, opts: { project?: string; json?: boolean } = {}): Promise<void> {
-  const transcriptPath = resolveReadableSessionTranscript(sessionIdOrPath, opts.project !== undefined ? { project: opts.project } : {})
+  const transcriptPath = resolveReadableSessionTranscript(
+    sessionIdOrPath,
+    opts.project !== undefined ? { project: opts.project } : {},
+  )
   if (transcriptPath === null) {
     throw new CliError(
       sessionIdOrPath !== undefined
@@ -143,7 +149,10 @@ export async function cmdSessionSlice(
   sessionIdOrPath: string | undefined,
   opts: { project?: string; range: string; json?: boolean },
 ): Promise<void> {
-  const transcriptPath = resolveReadableSessionTranscript(sessionIdOrPath, opts.project !== undefined ? { project: opts.project } : {})
+  const transcriptPath = resolveReadableSessionTranscript(
+    sessionIdOrPath,
+    opts.project !== undefined ? { project: opts.project } : {},
+  )
   if (transcriptPath === null) {
     throw new CliError(
       sessionIdOrPath !== undefined

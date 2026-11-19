@@ -28,7 +28,7 @@ export function resolveSessionTranscript(arg?: string, opts: { project?: string 
   return findLatestTranscript(projectRoot)
 }
 
-/** {@link resolveSessionTranscript} for a command that prints transcript text: a host-denied transcript, named by path or resolved from a session id, throws ReadDeniedError before any read. */
+/** {@link resolveSessionTranscript}, but a host-denied transcript throws before any read. */
 export function resolveReadableSessionTranscript(arg?: string, opts: { project?: string } = {}): string | null {
   const resolved = resolveSessionTranscript(arg, opts)
   if (resolved !== null) assertReadAllowed(resolved)

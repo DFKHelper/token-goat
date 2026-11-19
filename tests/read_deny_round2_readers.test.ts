@@ -36,7 +36,8 @@ beforeEach(() => {
   setSkillOutputsDirForTesting(outputsDir)
   proj = realpathSync.native(mkdtempSync(join(tmpdir(), 'tg-rd2-')))
   mkdirSync(join(proj, '.claude'))
-  writeFileSync(join(proj, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Read(locked/**)'] } }))
+  const settings = { permissions: { deny: ['Read(locked/**)'] } }
+  writeFileSync(join(proj, '.claude', 'settings.json'), JSON.stringify(settings))
   for (const dir of ['locked', 'open']) mkdirSync(join(proj, dir))
   process.chdir(proj)
   process.env['CLAUDE_PROJECT_DIR'] = proj
@@ -53,7 +54,12 @@ afterEach(() => {
   outSpy.mockRestore()
   errSpy.mockRestore()
   process.chdir(prevCwd)
-  for (const [key, prev] of [['CLAUDE_PROJECT_DIR', prevProjectDir], ['CLAUDE_CONFIG_DIR', prevConfigDir], ['TOKEN_GOAT_HARNESS_OVERRIDE', prevHarness]] as const) {
+  const saved = [
+    ['CLAUDE_PROJECT_DIR', prevProjectDir],
+    ['CLAUDE_CONFIG_DIR', prevConfigDir],
+    ['TOKEN_GOAT_HARNESS_OVERRIDE', prevHarness],
+  ] as const
+  for (const [key, prev] of saved) {
     if (prev === undefined) delete process.env[key]
     else process.env[key] = prev
   }
@@ -80,7 +86,10 @@ async function runCli(args: string[]): Promise<{ out: string; err: string; code:
 const transcript = (marker: string): string =>
   [
     { type: 'user', message: { role: 'user', content: `please look at ${marker}` } },
-    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `done with ${marker}` }] } },
+    {
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: `done with ${marker}` }] },
+    },
   ].map((row) => JSON.stringify(row)).join('\n') + '\n'
 
 function expectRefused(r: { out: string; err: string; code: number }, marker: string): void {
@@ -251,9 +260,11 @@ describe('N12: skill-diff checks the stored source path at print time', () => {
 describe('the pre-read image hook passes through a denied image', () => {
   it('returns no image bytes for a denied image and shrinks an open one', async () => {
     // A solid-colour image over the 1568px edge qualifies for a shrink on size of its dimensions alone.
-    const png = await sharp({ create: { width: 2200, height: 1700, channels: 3, background: { r: 40, g: 90, b: 160 } } }).png().toBuffer()
+    const background = { r: 40, g: 90, b: 160 }
+    const png = await sharp({ create: { width: 2200, height: 1700, channels: 3, background } }).png().toBuffer()
     for (const dir of ['locked', 'open']) writeFileSync(join(proj, dir, 'big.png'), png)
-    const event = (file: string) => makeHookEvent({ toolName: 'Read', toolInput: { file_path: file }, raw: { cwd: proj } })
+    const event = (file: string) =>
+      makeHookEvent({ toolName: 'Read', toolInput: { file_path: file }, raw: { cwd: proj } })
     const denied = await preReadImageHandler(event(join(proj, 'locked', 'big.png')))
     expect(denied.hookType).toBe('pass')
     expect(JSON.stringify(denied)).not.toContain('data:image')

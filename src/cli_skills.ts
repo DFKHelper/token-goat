@@ -270,7 +270,7 @@ export async function cmdSkillDiff(name: string): Promise<void> {
 
   const newer = versions[0]!
   const older = versions[1]!
-  // The stored bodies outlive the rule that now denies their source, so the source paths are judged at print time.
+  // A stored body outlives a rule that now denies its source, so the source paths are judged at print time.
   const sources = [newer.sourcePath, older.sourcePath, await getSkillFilePath(name)]
   for (const source of new Set(sources.filter((s): s is string => typeof s === 'string' && s !== ''))) {
     const denial = readDenial(source)
