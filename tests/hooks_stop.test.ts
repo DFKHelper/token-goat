@@ -792,10 +792,16 @@ describe('a check named only inside a heredoc body is text, not a run', () => {
     expect(failedBlocks(command)).toBe(true)
   })
 
-  // Moved from the list above: a statement follows the check, so the failing status is not the check's and nothing is recorded.
+  // Moved from above: a statement after the check, so its failing status is not the check's; nothing recorded.
   it.each([
-    ['a here-string is not a heredoc, but the line after the check decides the status', `cat <<< word\n${failingCheck}\necho word\nword`],
-    ['a check after a terminator that never matches, where the stray line decides the status', `cat > f.md <<'EOF'\nnotes\n${failingCheck}\nEOFX`],
+    [
+      'a here-string is not a heredoc, but the line after the check decides the status',
+      `cat <<< word\n${failingCheck}\necho word\nword`,
+    ],
+    [
+      'a check after a terminator that never matches, where the stray line decides the status',
+      `cat > f.md <<'EOF'\nnotes\n${failingCheck}\nEOFX`,
+    ],
   ])('%s: records no failed check', (_name, command) => {
     expect(failedBlocks(command)).toBe(false)
   })

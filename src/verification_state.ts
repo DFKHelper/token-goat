@@ -255,7 +255,7 @@ const HEREDOC_OPENER = /(?<!<)<<(?!<)-?\s*(['"]?)(\w+)\1/g
 const TRAILING_CLOSERS = /(?:\n[ \t]*[)"']+)+$/
 const EXIT_CODE_IN_ERROR =/^Exit code (\d+)/
 
-/** The command with each heredoc's terminator line removed, and the body too when the opener's own segment is a check (that body is the check's stdin, not statements): what is left is what the shell's exit status is read from. A body fed to a shell stays, its last line being the last statement run. A terminator that never appears removes nothing. */
+/** Command minus each heredoc's terminator, and its body if the opener is a check (a shell's body stays). */
 function withoutHeredocFraming(command: string): string {
   const lines = command.split('\n')
   const dropped = new Set<number>()
@@ -264,7 +264,9 @@ function withoutHeredocFraming(command: string): string {
     if (dropped.has(i)) continue
     const line = lines[i] as string
     for (const opener of line.matchAll(HEREDOC_OPENER)) {
-      const own = (line.slice(0, opener.index).split(COMMAND_SEPARATOR).pop() ?? '').trim().replace(ENV_ASSIGNMENT_PREFIX, '')
+      const own = (line.slice(0, opener.index).split(COMMAND_SEPARATOR).pop() ?? '')
+        .trim()
+        .replace(ENV_ASSIGNMENT_PREFIX, '')
       const end = lines.findIndex((text, j) => j > Math.max(i, cursor - 1) && text.trim() === opener[2])
       if (end < 0) continue
       dropped.add(end)
@@ -272,7 +274,7 @@ function withoutHeredocFraming(command: string): string {
       if (isVerificationSegment(own)) for (let j = i + 1; j < end; j++) dropped.add(j)
     }
   }
-  // Closing lines of a substitution or quote opened above (`)`, `)"`, `"`) add no statement after a check that ends the script.
+  // Closing lines of a substitution or quote (`)`, `)"`, `"`) add no statement after a check ending the script.
   return lines.filter((_text, j) => !dropped.has(j)).join('\n').trimEnd().replace(TRAILING_CLOSERS, '')
 }
 
@@ -285,7 +287,9 @@ export function noteFailedVerificationRun(
 ): void {
   const command = checkableText(typed)
   // Same rule as the pass path; when the status cannot be told to belong to a check, nothing is recorded.
-  const isVerdict = hasDirectCheck(command) && exitStatusIsCheckVerdict(withoutHeredocFraming(command), isDirectVerificationSegment)
+  const isVerdict =
+    hasDirectCheck(command) &&
+    exitStatusIsCheckVerdict(withoutHeredocFraming(command), isDirectVerificationSegment)
   if (isInterrupt || !(isVerdict || isDocumentOnlyFailure(command))) return
   const status = EXIT_CODE_IN_ERROR.exec(errorText)
   const exitCode = status !== null && Number(status[1]) !== 0 ? Number(status[1]) : 1

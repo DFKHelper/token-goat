@@ -99,21 +99,33 @@ describe('S5: the check judges the file that will really be opened', () => {
     return { status: run.status, stdout: run.stdout, stderr: run.stderr }
   }
 
-  // CAPTURE: on Windows Win32 path normalisation folds `link\..` lexically, so the junction is never followed and the file opened is work/secret.txt; POSIX follows the link first, so the file opened is vault/secret.txt.
+  // CAPTURE: Windows folds `link\..` lexically, so the junction is not followed; POSIX follows the link first.
   const PARENT_OF_LINK_IS_VAULT = process.platform !== 'win32'
 
-  it(`link/../secret on ${process.platform}: ${PARENT_OF_LINK_IS_VAULT ? 'refused, the OS opens the vault file' : 'read, the OS opens the work file'}`, () => {
+  it(
+    `link/../secret on ${process.platform}: ${
+      PARENT_OF_LINK_IS_VAULT ? 'refused, the OS opens the vault file' : 'read, the OS opens the work file'
+    }`,
+    () => {
     const { work, proj } = layout()
     const spelling = `link${path.sep}..${path.sep}secret.txt`
     const text = readDenial(spelling, { cwd: work, projectDir: proj, home: configDir })
-    expect(text !== null, `the refusal did not match the file the OS opens on ${process.platform}`).toBe(PARENT_OF_LINK_IS_VAULT)
-    expect(fs.readFileSync(`${work}${path.sep}${spelling}`, 'utf8')).toBe(PARENT_OF_LINK_IS_VAULT ? 'VAULTBODY' : 'WORKBODY')
+    expect(
+      text !== null,
+      `the refusal did not match the file the OS opens on ${process.platform}`,
+    ).toBe(PARENT_OF_LINK_IS_VAULT)
+    expect(fs.readFileSync(`${work}${path.sep}${spelling}`, 'utf8')).toBe(
+      PARENT_OF_LINK_IS_VAULT ? 'VAULTBODY' : 'WORKBODY',
+    )
   })
 
   it('a junction followed by sub/.. is refused on every platform: both readings open the vault file', () => {
     const { work, proj } = layout()
     const spelling = `vlink${path.sep}sub${path.sep}..${path.sep}secret.txt`
-    expect(readDenial(spelling, { cwd: work, projectDir: proj, home: configDir }), 'the vault file was not refused').toContain('is denied by')
+    expect(
+      readDenial(spelling, { cwd: work, projectDir: proj, home: configDir }),
+      'the vault file was not refused',
+    ).toContain('is denied by')
   })
 
   it('a denied file reached through a link refuses; an undenied one reached through a link reads', () => {

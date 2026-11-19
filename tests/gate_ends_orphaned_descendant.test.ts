@@ -32,12 +32,14 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 const GATE_TIMEOUT_SECONDS = 600
 
-// The holder reports its pid and its parent's over a loopback socket and lives until its directory is deleted; the operating system closing that socket is the test's event for its death.
+// The holder reports its pid and its parent's over a loopback socket; the socket closing is its death event.
 const HOLDER_SCRIPT = `
 const fs = require('node:fs')
 const net = require('node:net')
 const dir = process.argv[2]
-const socket = net.connect(Number(process.argv[3]), '127.0.0.1', () => socket.write(process.pid + ' ' + process.ppid))
+const socket = net.connect(Number(process.argv[3]), '127.0.0.1', () =>
+  socket.write(process.pid + ' ' + process.ppid),
+)
 socket.on('error', () => process.exit(0))
 setInterval(() => { if (!fs.existsSync(dir)) process.exit(0) }, 200)
 `
@@ -89,7 +91,7 @@ describe('gate ends a descendant that outlives its shell', () => {
     }) as typeof process.kill)
 
     // The shell backgrounds the holder and exits at once; the holder keeps the pipes the gate reads open.
-    // The holder's first write is its pid and the socket closing is its death, so neither is waited on by clock or count.
+    // The holder's first write is its pid; its socket closing is its death. Neither waits on clock or count.
     const reported = new Promise<[number, number]>((resolve) => {
       server = net.createServer((socket) => {
         sockets.push(socket)
@@ -117,7 +119,11 @@ describe('gate ends a descendant that outlives its shell', () => {
     vi.advanceTimersByTime(GATE_TIMEOUT_SECONDS * 1000)
     // The sweep is synchronous inside the timer callback, so a missing descendant kill fails by assertion here.
     const swept = process.platform === 'win32'
-      ? syncCalls.filter((call) => /taskkill/i.test(call) && [holderPid, holderParent].some((pid) => call.endsWith(`/PID ${pid}`)))
+      ? syncCalls.filter(
+          (call) =>
+            /taskkill/i.test(call) &&
+            [holderPid, holderParent].some((pid) => call.endsWith(`/PID ${pid}`)),
+        )
       : killSignals.filter((signalled) => signalled === String(holderPid))
     const seen = `spawnSync saw ${JSON.stringify(syncCalls)}, SIGKILL to ${JSON.stringify(killSignals)}`
     expect(swept.length, `the timeout did not end the holder, pid ${holderPid} (${seen})`).toBeGreaterThan(0)

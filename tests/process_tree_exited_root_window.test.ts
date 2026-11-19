@@ -28,7 +28,9 @@ afterEach(() => {
 })
 
 // The Windows branch ends children through taskkill, so the rows run only where that is the real call.
-describe.skipIf(process.platform !== 'win32')('killChildrenOfExitedRoot only ends children created in its own window', () => {
+describe.skipIf(process.platform !== 'win32')(
+  'killChildrenOfExitedRoot only ends children created in its own window',
+  () => {
   it('a child created just before the spawn is left alone', () => {
     stub.listing = `601 ${ROOT} ${SPAWNED - 1}\n602 ${ROOT} ${SPAWNED - 1500}\n`
     killChildrenOfExitedRoot(ROOT, SPAWNED, EXITED)

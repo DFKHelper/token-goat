@@ -1,10 +1,14 @@
-// A launcher-carried check clears an earlier failure when it passes and never records one. Provenance: HAND-DERIVED commands; "Exit code N" is FORMAT-DERIVED from the PostToolUseFailure error field of https://code.claude.com/docs/en/hooks.
+// A launcher-carried check clears a failure. HAND-DERIVED; FORMAT: https://code.claude.com/docs/en/hooks
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
-import { evaluateVerification, noteFailedVerificationRun, noteVerificationRun } from '../src/verification_state.js'
+import {
+  evaluateVerification,
+  noteFailedVerificationRun,
+  noteVerificationRun,
+} from '../src/verification_state.js'
 
 const T0 = Date.UTC(2026, 9, 1, 12, 0, 0)
 const key = (): string => `s-launcher-${process.pid}-${Math.random().toString(36).slice(2)}`
@@ -36,11 +40,17 @@ const LAUNCHED = 'python tool.py npx vitest run a.test.ts'
 
 describe('a launcher-carried check', () => {
   it('a script that takes a command as plain arguments passing does not clear a failure', () => {
-    expect(failureStandsAfter(() => noteVerificationRun('python notes.py add npm test', 0, false)), 'cleared by notes.py').toBe(true)
+    expect(
+      failureStandsAfter(() => noteVerificationRun('python notes.py add npm test', 0, false)),
+      'cleared by notes.py',
+    ).toBe(true)
   })
 
   it('a launcher line passing clears the failure it carries', () => {
-    expect(failureStandsAfter(() => noteVerificationRun(LAUNCHED, 0, false)), 'a launched pass cleared nothing').toBe(false)
+    expect(
+      failureStandsAfter(() => noteVerificationRun(LAUNCHED, 0, false)),
+      'a launched pass cleared nothing',
+    ).toBe(false)
   })
 
   it('the same line failing records nothing, from the failure event', () => {

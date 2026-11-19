@@ -1,4 +1,4 @@
-// A failed call with a heredoc or process substitution is a failed check only when its exit status belongs to a check segment. Provenance: HAND-DERIVED from bash heredoc semantics (the status of a line is the status of its last command); "Exit code N" is FORMAT-DERIVED from the PostToolUseFailure error field of https://code.claude.com/docs/en/hooks.
+// A heredoc or <() call is a failed check only if its status is a check's. HAND-DERIVED from bash.
 
 import { describe, expect, it } from 'vitest'
 
@@ -33,7 +33,10 @@ describe('a failed heredoc or substitution call after a passing check', () => {
   })
 
   it('the same shape joined with || records nothing, the commit may replace the check status', () => {
-    expect(failedCallRecords("npm test || git commit -F - <<'EOF'\nmessage\nEOF"), 'status is the commit').toBe(false)
+    expect(
+      failedCallRecords("npm test || git commit -F - <<'EOF'\nmessage\nEOF"),
+      'status is the commit',
+    ).toBe(false)
   })
 
   it('a process substitution after a check segment records nothing', () => {
@@ -45,14 +48,23 @@ describe('a failed heredoc or substitution call after a passing check', () => {
   })
 
   it('a check as the last segment of a line with an earlier heredoc records', () => {
-    expect(failedCallRecords("cat <<'EOF' | wc -l\nbody\nEOF\nnpm test"), 'the last segment is the check').toBe(true)
+    expect(
+      failedCallRecords("cat <<'EOF' | wc -l\nbody\nEOF\nnpm test"),
+      'the last segment is the check',
+    ).toBe(true)
   })
 
   it('a check that is the last segment after a process substitution records', () => {
-    expect(failedCallRecords('diff <(echo a) <(echo b) && npm test'), 'the last segment is the check').toBe(true)
+    expect(
+      failedCallRecords('diff <(echo a) <(echo b) && npm test'),
+      'the last segment is the check',
+    ).toBe(true)
   })
 
   it('a check run by a shell the heredoc feeds records', () => {
-    expect(failedCallRecords("bash <<'EOF'\nnpx vitest run tests/a.test.ts\nEOF"), 'the check ends the script').toBe(true)
+    expect(
+      failedCallRecords("bash <<'EOF'\nnpx vitest run tests/a.test.ts\nEOF"),
+      'the check ends the script',
+    ).toBe(true)
   })
 })
