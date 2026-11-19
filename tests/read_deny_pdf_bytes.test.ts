@@ -1,4 +1,4 @@
-// The PDF readers in read_commands refuse a denied file themselves, not only through the CLI wrapper above them.
+// The PDF readers in read_commands refuse a denied file themselves, not only via the CLI wrapper above them.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -18,7 +18,8 @@ function pdfWith(word: string): Buffer {
   const objects = [
     '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
     '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 200 200] /Contents 5 0 R >>\nendobj\n',
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> ' +
+      '/MediaBox [0 0 200 200] /Contents 5 0 R >>\nendobj\n',
     '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
     `5 0 obj\n<< /Length ${stream.length} >>\nstream\n${stream}\nendstream\nendobj\n`,
   ]
@@ -29,7 +30,8 @@ beforeEach(() => {
   saved = process.env['CLAUDE_PROJECT_DIR']
   dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-rdpdf-')))
   fs.mkdirSync(path.join(dir, '.claude'))
-  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Read(secrets/**)'] } }))
+  const settings = JSON.stringify({ permissions: { deny: ['Read(secrets/**)'] } })
+  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), settings)
   for (const sub of ['secrets', 'open']) {
     fs.mkdirSync(path.join(dir, sub))
     fs.writeFileSync(path.join(dir, sub, 'doc.pdf'), pdfWith(SECRET))

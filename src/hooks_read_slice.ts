@@ -378,12 +378,12 @@ export type SnapshotDiffResult =
   | { readonly kind: 'diff'; readonly diff: string; readonly savedBytes: number; readonly currentContent: string }
   | { readonly kind: 'none' }
 
-/** Whether a hook must leave `target` alone because the host denies its Read; a check that fails counts as denied and never throws. */
+/** Whether a hook must leave `target` alone: the host denies its Read; a failed check counts as denied. */
 export function hookReadDenied(target: string, cwd: string | undefined): boolean {
   return readDenial(target, cwd === undefined ? {} : { cwd }) !== null
 }
 
-/** Compare prior snapshot to the file's current on-disk content; a host-denied file has none, and its stored text is not read. */
+/** Compare prior snapshot to the file's current content; a host-denied file has none, nothing stored is read */
 export function loadSnapshotDiff(sessionId: string, normalized: string, basename: string): SnapshotDiffResult {
   if (hookReadDenied(hostPathOfIndexKey(normalized), undefined)) return { kind: 'none' }
   const oldSnap = snapshotLoad(sessionId, normalized)

@@ -666,7 +666,10 @@ export function loadPermissionSnapshot(cwd: string, projectDir: string | undefin
 export function loadPermissionSnapshotOrThrow(
   cwd: string,
   projectDir: string | undefined = process.env['CLAUDE_PROJECT_DIR'],
-  options: { readonly outsideProject?: 'throw' | 'project-only'; readonly sources?: 'every' | 'host-loaded' } = {},
+  options: {
+    readonly outsideProject?: 'throw' | 'project-only'
+    readonly sources?: 'every' | 'host-loaded'
+  } = {},
 ): PermissionSnapshot {
   const here = path.resolve(cwd)
   const project = projectDir !== undefined && path.isAbsolute(projectDir) ? path.resolve(projectDir) : undefined
@@ -692,14 +695,17 @@ export function loadPermissionSnapshotOrThrow(
   }
   const userLocalFile = path.join(claudeConfigDir(), 'settings.local.json')
   const userLocal = readSettingsFile(userLocalFile)
-  // Without a known project dir the session may have started in any ancestor, so each one's settings still count.
+  // With no known project dir the session may have started in any ancestor, so each one's settings count.
   const hostLoaded = options.sources === 'host-loaded' && project !== undefined
-  if (userLocal !== undefined && !hostLoaded) docs.push({ role: 'ancestor', json: userLocal, file: userLocalFile })
+  if (userLocal !== undefined && !hostLoaded) {
+    docs.push({ role: 'ancestor', json: userLocal, file: userLocalFile })
+  }
   // Deny and ask rules count from the cwd, the project and the main checkout, and each of their ancestors.
   const seen = new Set<string>()
   const roots = [...(outside ? [] : [here]), start, ...(mainRoot === undefined ? [] : [mainRoot])]
-  // host-loaded: only the project root and main checkout, as Claude Code loads no settings from other ancestors.
-  const dirs = hostLoaded ? [start, ...(mainRoot === undefined ? [] : [mainRoot])] : roots.flatMap(selfAndAncestors)
+  // host-loaded: only the project root and main checkout; Claude Code loads no settings from other ancestors.
+  const hostDirs = [start, ...(mainRoot === undefined ? [] : [mainRoot])]
+  const dirs = hostLoaded ? hostDirs : roots.flatMap(selfAndAncestors)
   for (const dir of dirs) {
     const key = process.platform === 'win32' ? dir.toLowerCase() : dir
     if (seen.has(key)) continue

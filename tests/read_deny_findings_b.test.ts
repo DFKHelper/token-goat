@@ -30,7 +30,12 @@ function put(file: string, body: string): void {
 const rules = (...deny: string[]): string => JSON.stringify({ permissions: { deny } })
 
 /** The refusal message, or null when the read is allowed; any other error fails the row. */
-function verdict(cwd: string, projectDir: string, target: string, extra: Partial<ReadDenyContext> = {}): string | null {
+function verdict(
+  cwd: string,
+  projectDir: string,
+  target: string,
+  extra: Partial<ReadDenyContext> = {},
+): string | null {
   resetReadDenyCache()
   try {
     assertReadAllowed(target, { cwd, projectDir, home: path.join(projectDir, 'home'), enabled: true, ...extra })
@@ -50,7 +55,8 @@ describe('Ruling 75: a relative rule is anchored to the project root and to cwd'
     const proj = tmp()
     put(path.join(proj, '.claude', 'settings.json'), rules('Read(.env)'))
     fs.mkdirSync(path.join(proj, 'sub'))
-    expect(verdict(path.join(proj, 'sub'), proj, '../.env')).toMatch(/denied by .*settings\.json: Read\(\.env\)/)
+    const text = verdict(path.join(proj, 'sub'), proj, '../.env')
+    expect(text).toMatch(/denied by .*settings\.json: Read\(\.env\)/)
   })
 
   it('a relative path rule from the project root refuses the file from a subdirectory', () => {
@@ -88,7 +94,15 @@ describe('Ruling 75: a relative rule is anchored to the project root and to cwd'
 describe('Ruling 77: path case folds only on win32 and darwin', () => {
   const snapshot = (): PermissionSnapshot => ({
     allow: [],
-    deny: [{ raw: 'Read(Secret.txt)', tool: 'Read', content: 'Secret.txt', trustedAllow: false, source: '/p/.claude/settings.json' }],
+    deny: [
+      {
+        raw: 'Read(Secret.txt)',
+        tool: 'Read',
+        content: 'Secret.txt',
+        trustedAllow: false,
+        source: '/p/.claude/settings.json',
+      },
+    ],
     ask: [],
     blockReadsOutside: false,
     permissionHooks: false,

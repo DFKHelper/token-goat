@@ -15,7 +15,7 @@ import { clearModuleCaches } from '../src/reset.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { indexableDir } from './helpers/temp-config.js'
 
-// The scope read runs under steadyScopeDeps for the same reason inline_symbol_answer_scope.test.ts does: a real shared git deadline is a timing input.
+// The scope read runs under steadyScopeDeps as in inline_symbol_answer_scope.test.ts: a git deadline is timing.
 vi.mock('../src/inline_grep_scan.js', async (importOriginal) => {
   const { withSteadyScopeDeps } = await import('./helpers/steady_scope_git.js')
   return withSteadyScopeDeps((await importOriginal()) as typeof ScanModule)
@@ -35,14 +35,21 @@ vi.mock('../src/read_commands.js', async (importOriginal) => {
 })
 
 // HAND-DERIVED: one declaration of a unique name, so the hook can answer it when the Read check passes.
-const MODULE = ['def unique_loader(path):', '    """Load one thing."""', '    return open(path).read()', ''].join('\n')
+const MODULE = [
+  'def unique_loader(path):',
+  '    """Load one thing."""',
+  '    return open(path).read()',
+  '',
+].join('\n')
 const LOADER = String.raw`def unique_loader\b`
 
 let templateRoot = ''
 function gitDirTemplate(): string {
   if (templateRoot === '') {
     templateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-chkfail-gitdir-'))
-    execFileSync('git', ['-c', 'init.defaultBranch=main', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', 'init', '-q'], {
+    const gitInit = ['-c', 'init.defaultBranch=main', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0']
+    gitInit.push('init', '-q')
+    execFileSync('git', gitInit, {
       cwd: templateRoot,
       stdio: 'ignore',
     })

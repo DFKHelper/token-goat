@@ -50,7 +50,7 @@ function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
     return []
   }
   if (denial !== null) {
-    // Ruling 74: a denied file is said once, and only when it had a marker; no marker text leaves this function.
+    // Ruling 74: a denied file is said once, and only when it had a marker; no marker text leaves here.
     if (scanTextForTodos(filePath, text, kindSet).length > 0) noteOmitted(denial)
     return []
   }

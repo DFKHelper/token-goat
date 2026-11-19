@@ -220,7 +220,7 @@ export async function inlineSymbolAnswer(args: InlineAnswerArgs): Promise<Inline
     readBody: async (candidate) => {
       const row = rows.find((r) => r.name === candidate.name && r.filePath === candidate.file)
       if (row === undefined) return null
-      // A file the host denies, or whose Read rules could not be checked (a config that will not load), is no inline answer: no text and no throw.
+      // A host-denied file, or one whose Read rules cannot be checked, gets no inline answer and no throw.
       return await readIndexedBody(row, args.cwd).catch(() => null)
     },
   })

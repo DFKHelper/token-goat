@@ -31,7 +31,7 @@ afterEach(() => {
   resetReadDenyCache()
 })
 
-/** A project whose settings deny `secrets/**`, or hold `settingsBody` verbatim, with a doc under secrets/ and open/. */
+/** A project whose settings deny `secrets/**` or hold `settingsBody`, with docs in secrets/ and open/. */
 function project(settingsBody?: string): string {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-rdhook-')))
   dirs.push(dir)
@@ -109,7 +109,11 @@ describe('pre-read', () => {
     snapshotStore(keyOf(), normalizePath(file), Buffer.from('# Doc\n\nolder text\n'))
     recordFileRead(normalizePath(file))
     const out = preReadHandler(
-      makeHookEvent({ toolInput: { file_path: file }, sessionId: `rdhook-${process.pid}-${sid}`, raw: { cwd: dir } }),
+      makeHookEvent({
+        toolInput: { file_path: file },
+        sessionId: `rdhook-${process.pid}-${sid}`,
+        raw: { cwd: dir },
+      }),
     )
     expect(out.hookType).toBe('pass')
     expect(JSON.stringify(out)).not.toContain('HIDDENBODYX')
@@ -120,7 +124,11 @@ describe('pre-read', () => {
     const file = path.join(dir, 'open', 'doc.md')
     expect(() =>
       preReadHandler(
-        makeHookEvent({ toolInput: { file_path: file }, sessionId: `rdhook-${process.pid}-${sid}`, raw: { cwd: dir } }),
+        makeHookEvent({
+          toolInput: { file_path: file },
+          sessionId: `rdhook-${process.pid}-${sid}`,
+          raw: { cwd: dir },
+        }),
       ),
     ).not.toThrow()
   })

@@ -5,7 +5,7 @@ import { spawnSync } from 'child_process'
 import * as fs from 'fs'
 // Type-only imports: erased at compile time, so referencing them here does not eagerly load mcp_server.js (and transitively the whole MCP protocol layer and zod) at CLI startup. The runtime values are lazy-imported only inside cmdMcpServe.
 import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
-import { assertReadAllowed } from './read_deny.js'
+import { assertReadAllowed, readDenial } from './read_deny.js'
 import type { StdioServerTransport as StdioServerTransportClass } from './mcp_stdio.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
@@ -376,6 +376,12 @@ export async function cmdIndex(
     if (detectLanguageOfFile(key) === 'unknown' && !isEmbeddableDocument(key)) continue
     // indexing.skip_dirs / large_file_skip_kb: filter here, before the sha/entry work below. Without this pre-filter, indexFileSync's internal purge would run and then the unconditional indexFileEmbeddings call below would immediately re-embed a file meant to be fully excluded (origin's indexFileEmbeddings has no skip_dirs/size-cap branch).
     if (isParseSkipEligible(key, ixCfg, walkRootKey)) {
+      removeFileFromIndex(getDb(dbPath), key)
+      continue
+    }
+    // Ruling 78: a host-denied file is never indexed (a failed check counts as denied); its rows are purged.
+    const deniedRoot = embedPolicy(key).configRoot
+    if (readDenial(key, { cwd: deniedRoot, projectDir: deniedRoot }) !== null) {
       removeFileFromIndex(getDb(dbPath), key)
       continue
     }

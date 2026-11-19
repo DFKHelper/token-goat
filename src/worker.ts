@@ -23,6 +23,7 @@ import { configProjectRootFor, loadConfig, withConfigProjectRoot } from './confi
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex, pruneDeletedFiles, sweepKnownRoots } from './index_prune.js'
+import { readDenial } from './read_deny.js'
 import { recordKnownRootThrottled, sweepExpiredKnownRootMarkers } from './known_roots.js'
 import { reclaimIndex, walCheckpointBusyNoWait } from './index_reclaim.js'
 import { applyIndexingPriority } from './process_priority.js'
@@ -451,9 +452,17 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string, stam
       recordKnownRootThrottled(absPath, dir, dbPath)
       // Skip-eligibility must be checked UNCONDITIONALLY, before the parseUnchanged sha-gate: a file that becomes skip-eligible purely from a config change (same sha) would otherwise never reach indexFileSync's purge at all, leaving symbols/refs/files rows stale forever. Guard on ixCfg !== undefined for tests that mock loadConfig with a partial { worker: {...} } shape.
       // One config read per file serves the skip check and the embed gates below: each loadConfig() opens and fingerprints config.toml and .token-goat.toml, and three of them per file were most of the file opens a drain of unchanged files made.
-      const ixCfg = loadConfig().indexing
+      const loadedCfg = loadConfig()
+      const ixCfg = loadedCfg.indexing
       if (ixCfg !== undefined && isParseSkipEligible(absPath, ixCfg)) {
         // Purging stale rows is real work: unlike the `false` sha-gate skip below, this must count as "indexed" in processDirtyBatch's tally.
+        removeFileFromIndex(getDb(dbPath), absPath)
+        return true
+      }
+      // Ruling 78: a host-denied file is never indexed (a failed check counts as denied).
+      const deniedRoot = embedPolicy(absPath).configRoot
+      const honor = loadedCfg.reads?.honor_host_deny !== false
+      if (readDenial(absPath, { cwd: deniedRoot, projectDir: deniedRoot, enabled: honor }) !== null) {
         removeFileFromIndex(getDb(dbPath), absPath)
         return true
       }

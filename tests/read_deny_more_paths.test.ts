@@ -54,7 +54,6 @@ beforeAll(() => {
     TOKEN_GOAT_INLINE_SYMBOL_BODY: '1',
   }
   git(project, ['init', '-q'])
-  put(project, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Read(secrets/**)'] } }))
   put(project, 'secrets/hidden.py', py('hidden_fn', 1))
   put(project, 'open/visible.py', py('visible_fn', 1))
   put(project, 'secrets/a.md', `${WORD} one\n${WORD} two\n${WORD} three\n`)
@@ -70,6 +69,8 @@ beforeAll(() => {
   put(project, 'open/visible.py', py('visible_fn', 3))
   const indexed = tg(['index', '.', '--walk'])
   if (indexed.status !== 0) throw new Error(`index failed: ${indexed.stderr.slice(0, 300)}`)
+  // Ruling 78: the rule arrives after the index holds the rows, so rows below prove the print-time filter.
+  put(project, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Read(secrets/**)'] } }))
 })
 
 afterAll(() => {
@@ -193,8 +194,10 @@ describe('file readers that print or summarize the text they read', () => {
       timeout: 60000,
     })
     expect(text(run)).not.toContain('SECRETBULLETX')
-    const suggestions = (JSON.parse(run.stdout) as { memSuggestions: { path: string; count: number }[] }).memSuggestions
-    expect(suggestions.map((s) => normalizePath(s.path))).toEqual([normalizePath(path.join(project, 'CLAUDE.md'))])
+    const parsed = JSON.parse(run.stdout) as { memSuggestions: { path: string; count: number }[] }
+    const suggestions = parsed.memSuggestions
+    const expected = [normalizePath(path.join(project, 'CLAUDE.md'))]
+    expect(suggestions.map((s) => normalizePath(s.path))).toEqual(expected)
     expect(omittedLines(run.stderr).some((l) => l.includes('secrets'))).toBe(true)
   })
 

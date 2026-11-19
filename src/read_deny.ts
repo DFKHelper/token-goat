@@ -144,7 +144,7 @@ function sourceRoots(source: string | undefined, cwd: string): string[] {
   return path.basename(dir).toLowerCase() === '.claude' ? [dir, path.dirname(dir)] : [dir, cwd]
 }
 
-/** The directory a relative rule is anchored to besides cwd: its project settings root, never the home directory. */
+/** The directory a relative rule is anchored to besides cwd: its project settings root, never the home dir. */
 function projectRootOf(source: string | undefined, home: string, platform: NodeJS.Platform): string | null {
   if (source === undefined || source.startsWith('registry:')) return null
   const dir = path.dirname(source)

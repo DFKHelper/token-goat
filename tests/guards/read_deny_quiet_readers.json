@@ -96,6 +96,5 @@
  "transcript_extract.ts",
  "util.ts",
  "util_config.ts",
- "worker.ts",
  "write_target.ts"
 ]

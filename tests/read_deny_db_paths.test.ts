@@ -39,7 +39,6 @@ const code = (name: string): string =>
 
 beforeAll(() => {
   proj = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-readdeny-db-')))
-  put('.claude/settings.json', JSON.stringify({ permissions: { deny: ['Read(secrets/**)'] } }))
   put('secrets/hidden.ts', code('hiddenFn'))
   put('open/visible.ts', code('visibleFn'))
   put('secrets/notes.md', `# Hidden Notes\n\n${SECRET} vault\n`)
@@ -48,6 +47,8 @@ beforeAll(() => {
   put('open/log.txt', `${SECRET} captured\n`)
   const indexed = cli(['index', '--walk', proj])
   if (indexed.status !== 0) throw new Error(`index failed: ${indexed.stderr.slice(0, 300)}`)
+  // Ruling 78: the rule arrives after the index holds the rows, so each row proves the print-time filter.
+  put('.claude/settings.json', JSON.stringify({ permissions: { deny: ['Read(secrets/**)'] } }))
 })
 
 afterAll(() => {
