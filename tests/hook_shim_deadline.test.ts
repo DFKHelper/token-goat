@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../src/bridges/codex.js'
+import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { GROK_HOOK_SCRIPT } from '../src/bridges/grok.js'
 import { KIMI_HOOK_SCRIPT } from '../src/bridges/kimi.js'
 import { hookDeadlineAt, readDenial } from '../src/read_deny.js'
@@ -64,15 +65,55 @@ describe('the shim answers inside its budget when the resident server never repl
     expect(run).toEqual({ status: 0, stdout: '{"decision":"allow"}', stderr: '' })
   })
 
+  // Kimi reads empty stdout as "allow"; the other two answer an empty object.
   it.each([
-    ['claudecode', CLAUDECODE_HOOK_SCRIPT],
-    ['codex', CODEX_HOOK_SCRIPT],
-    ['kimi', KIMI_HOOK_SCRIPT],
-  ])('%s: a stalled server falls through to the safe answer', (_name, script) => {
+    ['claudecode', CLAUDECODE_HOOK_SCRIPT, '{}'],
+    ['codex', CODEX_HOOK_SCRIPT, '{}'],
+    ['kimi', KIMI_HOOK_SCRIPT, ''],
+  ])('%s: a stalled server falls through to the safe answer', (_name, script, safe) => {
     const run = runShim(withBudget(script, 400), 'post_tool_use', stalledDist())
-    expect(run.status).toBe(0)
-    expect(run.stderr).toBe('')
-    expect(run.stdout === '' || run.stdout === '{}').toBe(true)
+    expect(run).toEqual({ status: 0, stdout: safe, stderr: '' })
+  })
+})
+
+describe('the Copilot shim answers inside its budget when the resident server never replies', () => {
+  it('a preToolUse call falls through to the empty answer, exit 0, nothing on stderr', () => {
+    const run = runShim(withBudget(COPILOT_CLI_HOOK_SCRIPT, 400), 'preToolUse', stalledDist())
+    expect(run).toEqual({ status: 0, stdout: '{}', stderr: '' })
+  })
+})
+
+/** Starts a shim whose stdin is never written or closed, and resolves with its result once it ends. */
+function runShimWithOpenStdin(script: string, event: string): Promise<Run> {
+  const shim = path.join(dir, 'shim.cjs')
+  fs.writeFileSync(shim, script)
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [shim, event, stalledDist()], { stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', (status) => resolve({ status, stdout, stderr }))
+    openChildren.push(child)
+  })
+}
+
+const openChildren: ChildProcess[] = []
+
+afterEach(() => {
+  for (const child of openChildren.splice(0)) child.kill('SIGKILL')
+})
+
+describe('the shim answers inside its budget when the host never closes stdin', () => {
+  it.each([
+    ['claudecode', CLAUDECODE_HOOK_SCRIPT, '{}'],
+    ['codex', CODEX_HOOK_SCRIPT, '{}'],
+    ['grok', GROK_HOOK_SCRIPT, '{"decision":"allow"}'],
+    ['kimi', KIMI_HOOK_SCRIPT, ''],
+  ])('%s: the safe answer, exit 0, nothing on stderr', async (_name, script, safe) => {
+    const run = await runShimWithOpenStdin(withBudget(script, 400), 'pre_tool_use')
+    expect(run).toEqual({ status: 0, stdout: safe, stderr: '' })
   })
 })
 

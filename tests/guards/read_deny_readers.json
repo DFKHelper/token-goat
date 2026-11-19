@@ -39,16 +39,6 @@
     "accessors": 0,
     "reason": "own state: host and editor config files the installer or doctor edits, never project files"
   },
-  "bridges/claudecode.ts": {
-    "reads": 1,
-    "accessors": 0,
-    "reason": "no source path: the hook payload on fd 0"
-  },
-  "bridges/codex.ts": {
-    "reads": 1,
-    "accessors": 0,
-    "reason": "no source path: the hook payload on fd 0"
-  },
   "bridges/codex_install.ts": {
     "reads": 4,
     "accessors": 0,
@@ -84,11 +74,6 @@
     "accessors": 0,
     "reason": "own state: host and editor config files the installer or doctor edits, never project files"
   },
-  "bridges/grok.ts": {
-    "reads": 1,
-    "accessors": 0,
-    "reason": "no source path: the hook payload on fd 0"
-  },
   "bridges/grok_install.ts": {
     "reads": 1,
     "accessors": 0,
@@ -98,11 +83,6 @@
     "reads": 5,
     "accessors": 0,
     "reason": "own state: host and editor config files the installer or doctor edits, never project files"
-  },
-  "bridges/kimi.ts": {
-    "reads": 1,
-    "accessors": 0,
-    "reason": "no source path: the hook payload on fd 0"
   },
   "bridges/kimi_install.ts": {
     "reads": 1,

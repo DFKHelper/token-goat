@@ -292,6 +292,18 @@ ${SHIM_TRY_SERVER}
 // when entryPath is absent, the sibling file doesn't exist (an older install predating
 // this file), or anything else goes wrong -- this must never throw.
 async function tryInProcess(entryPath, tgEvent, canonical, harness) {
+  let timer
+  const cutOff = new Promise((resolve) => {
+    timer = setTimeout(() => { shimAbandoned = true; resolve(undefined) }, shimBudgetLeft())
+  })
+  try {
+    return await Promise.race([tryInProcessRoutes(entryPath, tgEvent, canonical, harness), cutOff])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function tryInProcessRoutes(entryPath, tgEvent, canonical, harness) {
   if (!entryPath) return undefined
   try {
     // Set before either path: the resident server runs the call under this process's environment.
@@ -336,7 +348,7 @@ async function relayVscode(entryPath, tgEvent, payload) {
       input: JSON.stringify(input),
       encoding: 'utf8',
       windowsHide: true,
-      timeout: SHIM_FALLBACK_TIMEOUT_MS,
+      timeout: shimBudgetLeft(),
       killSignal: 'SIGKILL',
       maxBuffer: SHIM_MAX_BUFFER_BYTES,
       env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'vscode', TOKEN_GOAT_VSCODE_HOOKS_DIR: __dirname }),
@@ -388,7 +400,7 @@ async function main() {
     }
   } else {
     try {
-      raw = await readBoundedHookInput(SHIM_FALLBACK_TIMEOUT_MS, COPILOT_HOOK_MAX_INPUT_BYTES)
+      raw = await readBoundedHookInput(shimBudgetLeft(), COPILOT_HOOK_MAX_INPUT_BYTES)
     } catch {
       process.stdout.write('{}')
       return
@@ -528,7 +540,7 @@ async function main() {
           input: JSON.stringify(canonical),
           encoding: 'utf8',
           windowsHide: true,
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: shimBudgetLeft(),
           killSignal: 'SIGKILL',
           maxBuffer: SHIM_MAX_BUFFER_BYTES,
           env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli', TOKEN_GOAT_COPILOT_HOOKS_DIR: __dirname }),
@@ -538,7 +550,7 @@ async function main() {
           encoding: 'utf8',
           shell: true,
           windowsHide: true,
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: shimBudgetLeft(),
           killSignal: 'SIGKILL',
           maxBuffer: SHIM_MAX_BUFFER_BYTES,
           env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli', TOKEN_GOAT_COPILOT_HOOKS_DIR: __dirname }),
@@ -721,6 +733,7 @@ main()
   })
   .finally(() => {
     process.exitCode = 0
+    shimReleaseAbandoned()
   })
 `
 

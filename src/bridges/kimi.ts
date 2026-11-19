@@ -61,7 +61,7 @@ async function main() {
   if (!VALID_HOOK_EVENTS.has(eventName)) return
   let input = ''
   try {
-    input = require('node:fs').readFileSync(0, 'utf8')
+    input = await shimReadInput()
   } catch {
     return
   }

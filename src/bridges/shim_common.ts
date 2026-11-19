@@ -117,7 +117,20 @@ process.env.TOKEN_GOAT_HOOK_DEADLINE_AT = String(SHIM_DEADLINE_AT)
 function shimBudgetLeft() { return Math.max(1, SHIM_DEADLINE_AT - Date.now()) }
 // Set when the deadline cut a route off: its socket may hold the event loop open, so the shim exits itself.
 let shimAbandoned = false
-function shimReleaseAbandoned() { if (shimAbandoned) process.stdout.write('', () => process.exit()) }`
+function shimReleaseAbandoned() { if (shimAbandoned) process.stdout.write('', () => process.exit()) }
+// Reads stdin to its end, or rejects when the deadline passes first; the caller's catch is its safe answer.
+function shimReadInput() {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    const timer = setTimeout(() => {
+      shimAbandoned = true
+      reject(new Error('stdin stayed open'))
+    }, shimBudgetLeft())
+    process.stdin.on('data', (chunk) => chunks.push(chunk))
+    process.stdin.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(chunks).toString('utf8')) })
+    process.stdin.on('error', (error) => { clearTimeout(timer); reject(error) })
+  })
+}`
 }
 
 /** 32 MiB, matching `MAX_CAPTURE_BYTES` in constants.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */

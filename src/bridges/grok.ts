@@ -44,7 +44,7 @@ async function main() {
   }
   let input = ''
   try {
-    input = require('node:fs').readFileSync(0, 'utf8')
+    input = await shimReadInput()
   } catch {
     process.stdout.write(allowResponse(eventName))
     return

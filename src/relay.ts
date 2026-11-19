@@ -178,6 +178,7 @@ export function nativeFallbackDetail(env: NodeJS.ProcessEnv = process.env): stri
   return reason !== undefined && /^[a-z0-9-]{1,40}$/.test(reason) ? `native-fallback:${reason}` : undefined
 }
 
+// limit: sync handler work (SQLite, file reads) cannot be cut in-process; revisit-when: a host stalls on one
 export function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number, opts: RelayInProcessOptions = {}): Promise<string> {
   // When this event reached token-goat, before any handler time or wait behind an earlier call: call_streak.ts tells a batched call from a serial one by the gap between events.
   const receivedAt = Date.now()

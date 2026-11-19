@@ -79,8 +79,13 @@ describe('shim fallback spawn cap', () => {
       const cap = SHIM_FALLBACK_TIMEOUT_MS[name]
       expect(script, label).toContain(`const SHIM_FALLBACK_TIMEOUT_MS = ${cap}\n`)
       expect(script.match(/timeout: \d+/g), `${label} spawn sites read the named cap, not a number`).toBeNull()
-      const spawns = script.match(/timeout: (SHIM_FALLBACK_TIMEOUT_MS|shimBudgetLeft\(\))/g) ?? []
-      expect(spawns.length, `${label} spawns through the cap or what is left of it`).toBeGreaterThanOrEqual(2)
+      // pi and the relay plugins stay loaded across calls, so a load-time deadline would starve later calls
+      const perCall = !['pi', 'opencode', 'openclaw'].includes(label)
+      const wanted = perCall ? /timeout: shimBudgetLeft\(\)/g : /timeout: SHIM_FALLBACK_TIMEOUT_MS/g
+      const other = perCall ? /timeout: SHIM_FALLBACK_TIMEOUT_MS/g : /timeout: shimBudgetLeft\(\)/g
+      const count = (script.match(wanted) ?? []).length
+      expect(count, `${label} spawns through its deadline model`).toBeGreaterThanOrEqual(2)
+      expect(script.match(other), `${label} mixes no other spawn timeout`).toBeNull()
       expect(cap, label).toBeLessThan(harnessTimeoutMs)
     }
     expect(SHIM_FALLBACK_TIMEOUT_MS.claudecode).toBeGreaterThan(3000)
