@@ -3,7 +3,7 @@ import * as path from 'node:path'
 
 import { formatConflicts, formatConflictSummaries, parseConflicts, summarizeFileConflicts } from './conflict_query.js'
 import { querySymbols } from './index_reader.js'
-import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
+import { displaySafeJson, displaySafeText, normalizePath, resolveIndexPath, toDisplayPath } from './paths.js'
 import { redactReadJson, redactReadText } from './fence_cap.js'
 import { formatSymbolLocation, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
 import type { SymbolEntry } from './parser_types.js'
@@ -19,6 +19,7 @@ import {
   compileGrepMatcher,
   countNoun,
   excludeTestsHiddenNote,
+  foldPath,
   isTestFile,
   runGit,
 } from './util.js'
@@ -257,6 +258,37 @@ function emitUnsafeRef(ref: string): void {
 // The diff `changed` replaces is one shell command, so it is priced like every shell saving: by what the harness would have delivered of it, not by its full size. `git diff --name-only` lists paths relative to the repository top level whatever the cwd, so every git call that takes those names back as pathspecs must run from the top level too (resolveProjectRoot is that top level inside a repository), and must match them literally.
 function literalPathspec(file: string): string {
   return `:(literal)${file}`
+}
+
+/** The path a `diff --git a/P b/P` header names, or null for a quoted, renamed or unparseable header. */
+function diffHeaderPath(header: string): string | null {
+  const rest = header.slice('diff --git '.length)
+  const n = (rest.length - 5) / 2
+  if (!Number.isInteger(n) || n < 1 || !rest.startsWith('a/')) return null
+  const a = rest.slice(2, 2 + n)
+  return rest.slice(n + 2, n + 5) === ' b/' && rest.slice(n + 5) === a ? a : null
+}
+
+/** The sections of a `git diff` naming `filePath`; an unparseable header stays. */
+export function keepRequestedFile(diffText: string, filePath: string): string {
+  const want = foldPath(normalizePath(filePath))
+  const sections = diffText.split(/^(?=diff --git )/m)
+  return sections.filter((section) => {
+    if (!section.startsWith('diff --git ')) return true
+    const named = diffHeaderPath(section.split(/\r?\n/, 1)[0]!)
+    if (named === null) return true
+    const got = foldPath(normalizePath(named))
+    return want === got || want.endsWith(`/${got}`)
+  }).join('')
+}
+
+/** `git diff` of one indexed file, matched literally (a `[id].ts` is no glob) and cut to its own sections. */
+function runFileDiff(ref: string | undefined, filePath: string, cwd: string): GitResult {
+  const refArgs = ref !== undefined ? [ref] : []
+  const prefixes = ['--src-prefix=a/', '--dst-prefix=b/']
+  const args = ['diff', ...refArgs, '--unified=0', ...prefixes, '--', literalPathspec(filePath)]
+  const result = runGit(args, { cwd })
+  return result.exitCode === 0 ? { ...result, stdout: keepRequestedFile(result.stdout, filePath) } : result
 }
 
 // `git diff --name-status` (no `-M`, so the user's diff.renames setting decides, as it did for `--name-only`) is the one listing `changed` takes: the path each row ends in is what `--name-only` printed, and a rename row, which exists only when renames are on, also names the old path the zero-context diff needs and would otherwise cost a second `--name-status` call to learn.
@@ -534,13 +566,9 @@ export function runDiff(opts: DiffOptions): number {
           continue
         }
         const cwd = opts.projectRoot ?? process.cwd()
-        const diffArgs =
-          opts.ref !== undefined
-            ? ['diff', opts.ref, '--unified=0', '--', match.filePath]
-            : ['diff', '--unified=0', '--', match.filePath]
         let diffResult
         try {
-          diffResult = runGit(diffArgs, { cwd })
+          diffResult = runFileDiff(opts.ref, match.filePath, cwd)
         } catch {
           emitErr(formatCommandError(`Could not run git diff for ${echoedValue(match.filePath)}`))
           exitCode = 1
@@ -590,13 +618,9 @@ export function runDiff(opts: DiffOptions): number {
             continue
           }
           const cwd = opts.projectRoot ?? process.cwd()
-          const diffArgs =
-            opts.ref !== undefined
-              ? ['diff', opts.ref, '--unified=0', '--', match.filePath]
-              : ['diff', '--unified=0', '--', match.filePath]
           let diffResult
           try {
-            diffResult = runGit(diffArgs, { cwd })
+            diffResult = runFileDiff(opts.ref, match.filePath, cwd)
           } catch {
             exitCode = 1
             continue
@@ -635,13 +659,9 @@ export function runDiff(opts: DiffOptions): number {
   if (match === null) return 1
   const cwd = opts.projectRoot ?? process.cwd()
 
-  const diffArgs =
-    opts.ref !== undefined
-      ? ['diff', opts.ref, '--unified=0', '--', match.filePath]
-      : ['diff', '--unified=0', '--', match.filePath]
   let diffResult
   try {
-    diffResult = runGit(diffArgs, { cwd })
+    diffResult = runFileDiff(opts.ref, match.filePath, cwd)
   } catch {
     emitErr(formatCommandError(`Could not run git diff for ${echoedValue(match.filePath)}`))
     return 1
