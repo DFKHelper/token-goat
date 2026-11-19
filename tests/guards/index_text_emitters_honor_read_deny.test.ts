@@ -78,7 +78,6 @@ export const PRINTING_READERS: Readonly<Record<string, string>> = {
   'cli_bootstrap_audit.ts': 'reads frontmatter of token-goat own agent files',
   'cli_context_stats.ts': 'reads token-goat own memory report path',
   'cli_doctor.ts': 'reads token-goat own config, scripts and pregenerated name list',
-  'cli_file_ops.ts': 'edit commands read the target to modify it; output is a status (first two reads checked)',
   'cli_mcp_audit.ts': 'reads MCP config files (claude.json and the project mcp config), prints server names',
   'cli_memory.ts': 'reads token-goat own memory report',
   'cli_payloads.ts': 'reads token-goat own payload cache files',

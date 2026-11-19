@@ -36,6 +36,7 @@ import {
 } from './util.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { fileNotFoundError } from './could_not_read.js'
+import { assertReadAllowed } from './read_deny.js'
 
 function atomicWriteBuffer(dest: string, data: Buffer): void {
   try {
@@ -533,6 +534,8 @@ function findClosestLineWindow(targetText: string, oldText: string): { lineStart
 }
 
 export function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean; normalizeNewlines?: boolean }): void {
+  // Refused before any read: the not-found diff and the heading listing both print the file's own text.
+  assertReadAllowed(file)
   validateWritablePath(file, 'target file')
 
   // Stat before the read so the stale-write check also covers a write landing between the two.
@@ -631,6 +634,8 @@ export function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: str
 }
 
 export function cmdInsertSection(file: string, opts: { after: string; contentFrom?: string; contentB64?: string }): void {
+  // Refused before any read: the not-found diff and the heading listing both print the file's own text.
+  assertReadAllowed(file)
   validateWritablePath(file, 'target file')
 
   const usingFrom = opts.contentFrom !== undefined

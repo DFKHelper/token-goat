@@ -986,6 +986,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
 
 /** The bytes of a PDF the caller named, refused when the file alone is past the input bound. */
 async function readPdfBytes(file: string): Promise<Uint8Array> {
+  assertReadAllowed(file)
   if (!pathExists(file)) {
     throw couldNotReadError(file)
   }

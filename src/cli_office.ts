@@ -5,6 +5,7 @@ import { _applyFiltersAndPrint } from './cli_cached_output.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
 import { docxOutline, docxTables, docxText, formatDocxTables } from './docx_extract.js'
 import { emitErr } from './emit.js'
+import { assertReadAllowed } from './read_deny.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
 import { pptxNotesText, pptxOutline, pptxSlideText, pptxTextGrep } from './pptx_extract.js'
@@ -64,6 +65,7 @@ export async function cmdPdfExtract(
   file: string,
   opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean; full?: boolean; lines?: string },
 ): Promise<void> {
+  assertReadAllowed(file)
   const result = await runPdfExtractText(file, opts.pages, opts.layout === true)
   const text = redactSecrets(result.text).text
   const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
@@ -79,6 +81,7 @@ export async function cmdPdfLocate(
   pattern: string,
   opts: { ignoreCase?: boolean; maxMatches?: string; context?: string; pages?: string; json?: boolean },
 ): Promise<void> {
+  assertReadAllowed(file)
   const locateOpts: { ignoreCase?: boolean; maxMatches?: number; context?: number; pages?: string } = {
     ignoreCase: opts.ignoreCase === true,
   }
@@ -111,6 +114,7 @@ export async function cmdPdfLocate(
 }
 
 export async function cmdPdfOutline(file: string, opts: { json?: boolean }): Promise<void> {
+  assertReadAllowed(file)
   const entries = await runPdfOutline(file)
   if (entries.length === 0) {
     if (opts.json === true) {
@@ -131,6 +135,7 @@ export async function cmdPdfOutline(file: string, opts: { json?: boolean }): Pro
 }
 
 export async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}): Promise<void> {
+  assertReadAllowed(file)
   const meta = await runPdfMeta(file)
   const safeField = (v: string | null): string | null => (v === null ? null : fenceFileFieldIfMatched(v))
   const lines = [
@@ -157,6 +162,7 @@ export function formatVideoTimestamp(totalSeconds: number): string {
 }
 
 export function cmdVideoChapters(file: string): void {
+  assertReadAllowed(file)
   const { chapters, subtitleStreams } = extractVideoChapters(file)
   const lines: string[] = []
   if (chapters.length === 0) {
@@ -202,6 +208,7 @@ export function cmdSharepointResolve(url: string): void {
 }
 
 export async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}): Promise<void> {
+  assertReadAllowed(file)
   const sheets = await xlsxListSheets(file)
   const text = opts.json === true ? displaySafeJson(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name), ref: s.ref, rows: s.rows, cols: s.cols }))) : guardAndFenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'), 'xlsx-sheets')
   out(text)
@@ -209,6 +216,7 @@ export async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {})
 }
 
 export async function cmdXlsxHead(file: string, opts: { sheet?: string; rows?: string; columns?: string }): Promise<void> {
+  assertReadAllowed(file)
   const rows = opts.rows !== undefined ? requireNonNegativeInt('--rows', opts.rows) : 20
   const columns = opts.columns
     ? opts.columns.split(',').map((c) => c.trim()).filter(Boolean)
@@ -219,6 +227,7 @@ export async function cmdXlsxHead(file: string, opts: { sheet?: string; rows?: s
 }
 
 export async function cmdXlsxColumns(file: string, opts: { sheet?: string; head?: string; json?: boolean } = {}): Promise<void> {
+  assertReadAllowed(file)
   const maxRows = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 100
   const result = await xlsxColumns(file, opts.sheet, maxRows)
   if (opts.json === true) {
@@ -237,6 +246,7 @@ export async function cmdXlsxColumns(file: string, opts: { sheet?: string; head?
 }
 
 export async function cmdXlsxRange(file: string, opts: { sheet?: string; range: string; formulas?: boolean }): Promise<void> {
+  assertReadAllowed(file)
   const result = await xlsxRangeSheet(file, opts.sheet, opts.range, opts.formulas === true)
   const text = guardAndFenceFileText(formatXlsxRange(result), 'xlsx-range')
   out(text)
@@ -244,6 +254,7 @@ export async function cmdXlsxRange(file: string, opts: { sheet?: string; range: 
 }
 
 export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns?: string; where?: string[]; head?: string; json?: boolean; header?: boolean }): Promise<void> {
+  assertReadAllowed(file)
   const columns = opts.columns
     ? opts.columns
         .split(',')
@@ -282,6 +293,7 @@ export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns
 }
 
 export async function cmdPptxOutline(file: string, opts: { json?: boolean }): Promise<void> {
+  assertReadAllowed(file)
   const slides = await pptxOutline(file)
   const text =
     opts.json === true
@@ -297,6 +309,7 @@ export async function cmdPptxOutline(file: string, opts: { json?: boolean }): Pr
 }
 
 export async function cmdPptxSlide(file: string, opts: { slide: string; notes?: boolean }): Promise<void> {
+  assertReadAllowed(file)
   const n = requireNonNegativeInt('--slide', opts.slide)
   const text = guardAndFenceFileText(await pptxSlideText(file, n, opts.notes === true), 'pptx-slide')
   out(text)
@@ -304,6 +317,7 @@ export async function cmdPptxSlide(file: string, opts: { slide: string; notes?: 
 }
 
 export async function cmdPptxNotes(file: string, opts: { slide?: string }): Promise<void> {
+  assertReadAllowed(file)
   const n = opts.slide !== undefined ? requireNonNegativeInt('--slide', opts.slide) : undefined
   const text = await pptxNotesText(file, n)
   const printed = text.length > 0 ? guardAndFenceFileText(text, 'pptx-notes') : 'no speaker notes found'
@@ -312,6 +326,7 @@ export async function cmdPptxNotes(file: string, opts: { slide?: string }): Prom
 }
 
 export async function cmdPptxText(file: string, opts: { grep: string }): Promise<void> {
+  assertReadAllowed(file)
   const matches = await pptxTextGrep(file, opts.grep)
   if (matches.length === 0) {
     out('no matches')
@@ -323,6 +338,7 @@ export async function cmdPptxText(file: string, opts: { grep: string }): Promise
 }
 
 export async function cmdDocxOutline(file: string, opts: { json?: boolean }): Promise<void> {
+  assertReadAllowed(file)
   const headings = await docxOutline(file)
   if (headings.length === 0) {
     if (opts.json === true) {
@@ -341,6 +357,7 @@ export async function cmdDocxOutline(file: string, opts: { json?: boolean }): Pr
 }
 
 export async function cmdDocxTables(file: string, opts: { table?: string; json?: boolean }): Promise<void> {
+  assertReadAllowed(file)
   const tableIdx = opts.table !== undefined ? requirePositiveInt('--table', opts.table) : undefined
   const tables = await docxTables(file)
   if (tables.length === 0) {
@@ -377,12 +394,14 @@ export async function cmdDocxText(
   file: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean; lines?: string },
 ): Promise<void> {
+  assertReadAllowed(file)
   const text = redactSecrets(await docxText(file, { markdownHeadings: true })).text
   const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
   recordDocStat('docx_text', file, printed)
 }
 
 export function cmdTranscriptOutline(file: string, opts: { json?: boolean }): void {
+  assertReadAllowed(file)
   const cues = readTranscript(file)
   if (cues.length === 0) {
     if (opts.json === true) {
@@ -409,6 +428,7 @@ export function cmdTranscriptOutline(file: string, opts: { json?: boolean }): vo
 }
 
 export function cmdTranscript(file: string, opts: { speaker?: string; from?: string; to?: string; grep?: string }): void {
+  assertReadAllowed(file)
   const cues = readTranscript(file)
   const sliceOpts = parseSliceOptions(opts)
   const sliced = sliceTranscript(cues, sliceOpts)
