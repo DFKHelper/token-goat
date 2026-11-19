@@ -40,16 +40,39 @@ function stalledDist(): string {
 
 type Run = { status: number | null; stdout: string; stderr: string }
 
-function runShim(script: string, event: string, entry: string): Run {
+// Reports on fd 3, when the shim exits, every setTimeout delay it armed during the run.
+const ARMED_AT_EXIT = `const fs = require('node:fs')
+const armed = []
+const realSetTimeout = global.setTimeout
+global.setTimeout = function (fn, ms, ...rest) {
+  armed.push(ms)
+  return realSetTimeout.call(this, fn, ms, ...rest)
+}
+process.on('exit', () => { fs.writeSync(3, JSON.stringify(armed)) })
+`
+
+function runShim(script: string, event: string, entry: string): Run & { armed: number[] } {
   const shim = path.join(dir, 'shim.cjs')
+  const report = path.join(dir, 'armed-at-exit.cjs')
   fs.writeFileSync(shim, script)
-  const run = spawnSync(process.execPath, [shim, event, entry], {
+  fs.writeFileSync(report, ARMED_AT_EXIT)
+  const run = spawnSync(process.execPath, ['--require', report, shim, event, entry], {
     input: '{}',
     encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
     timeout: 60_000,
     killSignal: 'SIGKILL',
   })
-  return { status: run.status, stdout: run.stdout, stderr: run.stderr }
+  const reported = String(run.output[3] ?? '')
+  const armed = reported === '' ? [] : (JSON.parse(reported) as number[])
+  return { status: run.status, stdout: run.stdout, stderr: run.stderr, armed }
+}
+
+/** The shim armed a timer, and none longer than its budget: a longer wait would outlast the deadline. */
+function expectArmedWithin(armed: number[], ms: number): void {
+  expect(armed.length, 'the shim armed no timer, so nothing bounds its wait').toBeGreaterThan(0)
+  const detail = JSON.stringify(armed)
+  expect(Math.max(...armed), `a wait was armed past the ${ms} ms budget: ${detail}`).toBeLessThanOrEqual(ms)
 }
 
 function withBudget(script: string, ms: number): string {
@@ -61,8 +84,9 @@ function withBudget(script: string, ms: number): string {
 
 describe('the shim answers inside its budget when the resident server never replies', () => {
   it('grok: a pre_tool_use call is allowed, exit 0, nothing on stderr', () => {
-    const run = runShim(withBudget(GROK_HOOK_SCRIPT, 400), 'pre_tool_use', stalledDist())
+    const { armed, ...run } = runShim(withBudget(GROK_HOOK_SCRIPT, 400), 'pre_tool_use', stalledDist())
     expect(run).toEqual({ status: 0, stdout: '{"decision":"allow"}', stderr: '' })
+    expectArmedWithin(armed, 400)
   })
 
   // Kimi reads empty stdout as "allow"; the other two answer an empty object.
@@ -71,15 +95,17 @@ describe('the shim answers inside its budget when the resident server never repl
     ['codex', CODEX_HOOK_SCRIPT, '{}'],
     ['kimi', KIMI_HOOK_SCRIPT, ''],
   ])('%s: a stalled server falls through to the safe answer', (_name, script, safe) => {
-    const run = runShim(withBudget(script, 400), 'post_tool_use', stalledDist())
+    const { armed, ...run } = runShim(withBudget(script, 400), 'post_tool_use', stalledDist())
     expect(run).toEqual({ status: 0, stdout: safe, stderr: '' })
+    expectArmedWithin(armed, 400)
   })
 })
 
 describe('the Copilot shim answers inside its budget when the resident server never replies', () => {
   it('a preToolUse call falls through to the empty answer, exit 0, nothing on stderr', () => {
-    const run = runShim(withBudget(COPILOT_CLI_HOOK_SCRIPT, 400), 'preToolUse', stalledDist())
+    const { armed, ...run } = runShim(withBudget(COPILOT_CLI_HOOK_SCRIPT, 400), 'preToolUse', stalledDist())
     expect(run).toEqual({ status: 0, stdout: '{}', stderr: '' })
+    expectArmedWithin(armed, 400)
   })
 })
 
