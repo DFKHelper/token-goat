@@ -54,7 +54,10 @@ const SHIMS: Record<string, string> = {
   'non-ascii multi-line answer, exit 2':
     `process.stdout.write(Buffer.from(${JSON.stringify(NON_ASCII_LINES)}, 'utf8')); ` +
     "process.stderr.write('blocked\\n'); process.exit(2)\n",
-  'exit 2 decision only': "process.stdout.write('{\"d\":\"decision only\"}'); process.exit(2)\n",
+  // Ruling: exit 2 blocks only with non-blank stderr, or stdout whose first non-blank character is `{`.
+  'exit 2 stdout not json': "process.stdout.write('not json'); process.exit(2)\n",
+  'exit 2 decision after a space': "process.stdout.write(' {\"decision\":\"block\"}'); process.exit(2)\n",
+  'exit 2 decision only':"process.stdout.write('{\"d\":\"decision only\"}'); process.exit(2)\n",
   'signal': "process.kill(process.pid, 'SIGKILL')\n",
   'exit 2 block':
     "process.stderr.write('blocked: use the other command\\n'); " +
@@ -119,8 +122,7 @@ describe('a broken Node shim falls through to the safe answer', () => {
       'truncated', 'missing entry module', 'exit 13 and stdout noise', 'stdout noise then a signal', 'signal',
       'silent exit 2', 'exit 2 whitespace stdout',
     ]
-    // limit: PowerShell 5.1 (cmd form) wraps blank stderr in an error record; revisit-when it is read
-    if (shell !== 'cmd') broken.push('exit 2 whitespace stderr')
+    broken.push('exit 2 whitespace stderr', 'exit 2 stdout not json')
     for (const name of broken) {
       it(`${name} through ${shell}: safe answer, exit 0, empty stderr`, () => {
         const o = run(shell, SHIMS[name])
@@ -148,6 +150,14 @@ describe('a broken Node shim falls through to the safe answer', () => {
       expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
         status: 2,
         stdout: '{"d":"decision only"}',
+        stderr: '',
+      })
+    })
+    it(`an exit 2 whose stdout opens with a space then { still blocks through ${shell}`, () => {
+      const o = run(shell, SHIMS['exit 2 decision after a space'])
+      expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
+        status: 2,
+        stdout: ' {"decision":"block"}',
         stderr: '',
       })
     })
