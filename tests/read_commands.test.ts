@@ -6770,7 +6770,8 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       runDiff({ spec: 'a.ts::touchedFn' })
-      expect(mockRunGit).toHaveBeenCalledWith(['diff', '--unified=0', '--', 'a.ts'], expect.anything())
+      const args = ['diff', '--unified=0', '--', ':(literal)a.ts']
+      expect(mockRunGit).toHaveBeenCalledWith(args, expect.anything())
     })
 
     it('passes an explicit ref range straight through to git diff as a single token', () => {
@@ -6780,7 +6781,8 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       runDiff({ spec: 'a.ts::touchedFn', ref: 'HEAD~3..HEAD' })
-      expect(mockRunGit).toHaveBeenCalledWith(['diff', 'HEAD~3..HEAD', '--unified=0', '--', 'a.ts'], expect.anything())
+      const args = ['diff', 'HEAD~3..HEAD', '--unified=0', '--', ':(literal)a.ts']
+      expect(mockRunGit).toHaveBeenCalledWith(args, expect.anything())
     })
 
     it('reports "no changes" (non-error) when a hunk exists but does not overlap the symbol', () => {

@@ -285,8 +285,7 @@ export function keepRequestedFile(diffText: string, filePath: string): string {
 /** `git diff` of one indexed file, matched literally (a `[id].ts` is no glob) and cut to its own sections. */
 function runFileDiff(ref: string | undefined, filePath: string, cwd: string): GitResult {
   const refArgs = ref !== undefined ? [ref] : []
-  const prefixes = ['--src-prefix=a/', '--dst-prefix=b/']
-  const args = ['diff', ...refArgs, '--unified=0', ...prefixes, '--', literalPathspec(filePath)]
+  const args = ['diff', ...refArgs, '--unified=0', '--', literalPathspec(filePath)]
   const result = runGit(args, { cwd })
   return result.exitCode === 0 ? { ...result, stdout: keepRequestedFile(result.stdout, filePath) } : result
 }
