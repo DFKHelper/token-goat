@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// The harness and event of the call in flight, set once the flags are parsed; what a panic or a failure far from the parser answers for.
@@ -48,8 +48,8 @@ pub fn safe_answer(harness: &str, event: &str) -> String {
 
 /// The call's deadline, set once by the entry point; a stdout write still unfinished then ends the process.
 static DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
-/// Whether a stdout write is in flight on the writer thread, which holds the stdout lock until it ends.
-static WRITING: AtomicBool = AtomicBool::new(false);
+/// How many stdout writes are in flight on writer threads, which hold the stdout lock until each ends.
+static WRITING: AtomicUsize = AtomicUsize::new(0);
 
 /// How long a write may take once the deadline has passed, so a ready pipe is not mistaken for a blocked one.
 // limit: a pipe nobody reads ends the process this long after the deadline at the latest; revisit-when: never
@@ -73,7 +73,7 @@ fn write_bounded(data: &str) {
     let Some(end) = DEADLINE.lock().ok().and_then(|slot| *slot) else { return write_now(data.as_bytes()) };
     let bytes = data.as_bytes().to_vec();
     let (tx, rx) = std::sync::mpsc::channel();
-    WRITING.store(true, Ordering::SeqCst);
+    WRITING.fetch_add(1, Ordering::SeqCst);
     // owner: this call; dies when the process exits, which a write still blocked at the deadline ends
     std::thread::spawn(move || {
         write_now(&bytes);
@@ -83,7 +83,7 @@ fn write_bounded(data: &str) {
     if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(wait) {
         std::process::exit(0)
     }
-    WRITING.store(false, Ordering::SeqCst);
+    WRITING.fetch_sub(1, Ordering::SeqCst);
 }
 
 /// Writes `data` to stdout at once and marks the call answered; a second answer is dropped. A host that has stopped reading is not this client's failure to report, so a write error is dropped.
@@ -93,6 +93,11 @@ pub fn emit(data: &str) {
 
 /// Claims the answer for `by` in one step, then writes `data` with `write`; false when `data` is empty or the claim is held by the other answerer, or by an earlier safe answer.
 fn emit_claimed(answered: &AtomicU8, by: u8, data: &str, write: impl FnOnce(&str)) -> bool {
+    emit_claimed_after(answered, by, data, write, &MARKER_WRITE, || {})
+}
+
+/// [`emit_claimed`] with the marker lock and the wait's observer given, so a test can hold a marker write open.
+fn emit_claimed_after(answered: &AtomicU8, by: u8, data: &str, write: impl FnOnce(&str), marker: &Mutex<()>, waiting: impl FnMut()) -> bool {
     if data.is_empty() {
         return false;
     }
@@ -104,14 +109,37 @@ fn emit_claimed(answered: &AtomicU8, by: u8, data: &str, write: impl FnOnce(&str
     if !mine {
         return false;
     }
+    // A marker already past its check is written before this answer, never after it.
+    settle_marker(marker, waiting);
     write(data);
     true
 }
 
+/// Held from the marker's check to the end of its write, so an answer claimed in between waits for it instead of being written first.
+static MARKER_WRITE: Mutex<()> = Mutex::new(());
+
+/// Waits until no marker write is in flight on `marker`, for at most the call's deadline; `waiting` is told of each wait.
+fn settle_marker(marker: &Mutex<()>, mut waiting: impl FnMut()) {
+    let end = bounded_deadline(DEADLINE.lock().ok().and_then(|slot| *slot), Instant::now());
+    while matches!(marker.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
+        waiting();
+        if Instant::now() >= end {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// Writes a leading part of an answer (the async marker) that the final answer follows; does not mark the call answered. Only the first is written: a later route's marker would be a second one.
 pub fn emit_partial(data: &str) {
-    if marker_allowed(&ANSWERED, &MARKER_SENT) {
-        write_bounded(data);
+    emit_partial_with(&ANSWERED, &MARKER_SENT, &MARKER_WRITE, || write_bounded(data));
+}
+
+/// Checks and writes the marker under `lock`, so [`settle_marker`] on the answer's side sees the write in flight.
+fn emit_partial_with(answered: &AtomicU8, sent: &AtomicBool, lock: &Mutex<()>, write: impl FnOnce()) {
+    let _held = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if marker_allowed(answered, sent) {
+        write();
     }
 }
 
@@ -130,13 +158,23 @@ pub fn answered() -> bool {
     ANSWERED.load(Ordering::SeqCst) != UNANSWERED
 }
 
-/// Flushes stdout and ends the process with `code`.
+/// Flushes stdout and ends the process with `code`, once an answer write in flight (a panic on another thread can end the call during one) has ended or the deadline has passed.
 pub fn finish(code: i32) -> ! {
-    // A writer thread blocked in a write holds the stdout lock, so a flush here would wait on it.
-    if !WRITING.load(Ordering::SeqCst) {
-        let _ = std::io::stdout().flush();
-    }
+    let now = Instant::now();
+    let end = bounded_deadline(DEADLINE.lock().ok().and_then(|slot| *slot), now).max(now + WRITE_GRACE);
+    settle_then_flush(&WRITING, end, || std::thread::sleep(Duration::from_millis(1)), || _ = std::io::stdout().flush());
     std::process::exit(code)
+}
+
+/// Runs `flush` once no write is in flight on `writing`; a write still in flight at `end` is blocked in the stdout lock, which a flush would wait on, so none is made then.
+fn settle_then_flush(writing: &AtomicUsize, end: Instant, mut waiting: impl FnMut(), flush: impl FnOnce()) {
+    while writing.load(Ordering::SeqCst) != 0 {
+        if Instant::now() >= end {
+            return;
+        }
+        waiting();
+    }
+    flush();
 }
 
 /// Ends the process with the safe answer and exit 0, unless an answer is already out, which a second one would corrupt.
@@ -153,16 +191,25 @@ pub fn answer_safely() {
     }
 }
 
-/// Runs `record` on its own thread and waits for it only until `deadline`, so a stalled disk cannot hold the process past the call's limit. With no deadline set yet it waits at most the smallest hook limit.
-pub fn record_bounded(record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) {
+/// Runs `record` on its own thread and waits for it until `deadline` or [`RECORD_GRACE`], whichever is first, so a stalled disk cannot hold the process once the answer is out; true when the record finished. With no deadline set yet the smallest hook limit stands in for it.
+pub fn record_bounded(record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) -> bool {
     let (tx, rx) = std::sync::mpsc::channel();
     // owner: this call; dies when the process exits, which a record still blocked at the deadline does not outlast
     std::thread::spawn(move || {
         record();
         let _ = tx.send(());
     });
-    let end = bounded_deadline(deadline, Instant::now());
-    let _ = rx.recv_timeout(end.saturating_duration_since(Instant::now()));
+    let end = record_end(deadline, Instant::now());
+    rx.recv_timeout(end.saturating_duration_since(Instant::now())).is_ok()
+}
+
+/// How long the process waits for a record once the answer is out; a stalled disk loses the record, not the exit.
+// limit: a record slower than this is dropped when the process exits; revisit-when: notes go missing on healthy disks
+const RECORD_GRACE: Duration = Duration::from_millis(250);
+
+/// Where a record's wait ends: the deadline [`bounded_deadline`] gives, or `now` plus [`RECORD_GRACE`] if that is sooner.
+fn record_end(deadline: Option<Instant>, now: Instant) -> Instant {
+    bounded_deadline(deadline, now).min(now + RECORD_GRACE)
 }
 
 /// The deadline a record waits for: the call's own, or, before it is set, the smallest hook limit in the table from `now`.
@@ -191,9 +238,9 @@ fn note_once(entered: &AtomicBool, answer: impl FnOnce(), record: impl FnOnce() 
 }
 
 /// Gives the answer first and only then starts `record`, so nothing a disk does can delay the host's answer.
-pub fn answer_then_record(answer: impl FnOnce(), record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) {
+pub fn answer_then_record(answer: impl FnOnce(), record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) -> bool {
     answer();
-    record_bounded(record, deadline);
+    record_bounded(record, deadline)
 }
 
 /// Turns a panic anywhere, on any thread, into the safe answer and exit 0. Release builds abort on panic, which the host would see as a crash; this hook runs first and ends the process itself.
@@ -321,6 +368,84 @@ mod tests {
         answered.store(UNANSWERED, Ordering::SeqCst);
         assert!(marker_allowed(&answered, &sent), "before the answer the first marker is written");
         assert!(!marker_allowed(&answered, &sent), "a second marker is still refused");
+    }
+
+    #[test]
+    fn the_wait_for_a_record_ends_at_the_grace_unless_the_deadline_comes_first() {
+        let now = Instant::now();
+        let far = now + Duration::from_secs(3600);
+        assert_eq!(record_end(Some(far), now), now + RECORD_GRACE, "a far deadline must not hold the exit after the answer");
+        let near = now + Duration::from_millis(7);
+        assert_eq!(record_end(Some(near), now), near, "a deadline sooner than the grace still wins");
+        assert_eq!(record_end(None, now), now + RECORD_GRACE, "no deadline set must also end at the grace");
+    }
+
+    #[test]
+    fn a_blocked_record_is_given_up_on_after_the_answer_which_was_written_once() {
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let answers = std::sync::atomic::AtomicUsize::new(0);
+        let completed = answer_then_record(
+            || _ = answers.fetch_add(1, Ordering::SeqCst),
+            move || {
+                let _ = blocked.recv();
+            },
+            None,
+        );
+        assert!(!completed, "the record was blocked, so the wait must end by its bound and report it unfinished");
+        assert_eq!(answers.load(Ordering::SeqCst), 1, "the answer is written once, before the record");
+        assert!(release.send(()).is_ok(), "the record had already ended; it was not blocked");
+    }
+
+    #[test]
+    fn an_answer_claimed_while_the_marker_is_being_written_waits_for_it() {
+        let (answered, sent, lock) = (AtomicU8::new(UNANSWERED), AtomicBool::new(false), Mutex::new(()));
+        let in_flight = AtomicBool::new(false);
+        let order = Mutex::new(Vec::<&'static str>::new());
+        let (inside_tx, inside_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (events_tx, events_rx) = std::sync::mpsc::channel::<&'static str>();
+        std::thread::scope(|scope| {
+            let (order, in_flight, answered, lock) = (&order, &in_flight, &answered, &lock);
+            scope.spawn(move || {
+                emit_partial_with(answered, &sent, lock, || {
+                    in_flight.store(true, Ordering::SeqCst);
+                    let _ = inside_tx.send(());
+                    let _ = release_rx.recv();
+                    order.lock().unwrap().push("marker");
+                    in_flight.store(false, Ordering::SeqCst);
+                });
+            });
+            inside_rx.recv().expect("the marker write never began");
+            let (waits, writes) = (events_tx.clone(), events_tx);
+            scope.spawn(move || {
+                let write = |_: &str| {
+                    order.lock().unwrap().push(if in_flight.load(Ordering::SeqCst) { "answer-during-marker" } else { "answer" });
+                    let _ = writes.send("written");
+                };
+                emit_claimed_after(answered, BY_ROUTE, "{}", write, lock, || _ = waits.send("waiting"));
+            });
+            // The first thing the answer's side does: wait for the marker (fixed) or write over it (the defect).
+            assert!(events_rx.recv().is_ok(), "the answer side did neither");
+            let _ = release_tx.send(());
+        });
+        assert_eq!(*order.lock().unwrap(), ["marker", "answer"], "the answer was written while the marker write was in flight");
+    }
+
+    #[test]
+    fn an_exit_flushes_only_once_the_answer_write_in_flight_has_ended() {
+        let writing = AtomicUsize::new(1);
+        let flushed_with = std::cell::Cell::new(usize::MAX);
+        settle_then_flush(&writing, Instant::now() + Duration::from_secs(3600), || _ = writing.fetch_sub(1, Ordering::SeqCst), || flushed_with.set(writing.load(Ordering::SeqCst)));
+        assert_eq!(flushed_with.get(), 0, "the exit went on while an answer write was still in flight");
+    }
+
+    #[test]
+    fn an_exit_does_not_flush_into_a_write_still_blocked_at_its_end() {
+        let writing = AtomicUsize::new(1);
+        let (flushed, waited) = (AtomicBool::new(false), AtomicBool::new(false));
+        settle_then_flush(&writing, Instant::now(), || waited.store(true, Ordering::SeqCst), || flushed.store(true, Ordering::SeqCst));
+        assert!(!flushed.load(Ordering::SeqCst), "a flush would wait on the blocked writer's lock");
+        assert!(!waited.load(Ordering::SeqCst), "no wait is left once the end has passed");
     }
 
     #[test]

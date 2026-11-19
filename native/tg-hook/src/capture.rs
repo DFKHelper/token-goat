@@ -272,15 +272,23 @@ mod tests {
     #[test]
     fn a_hung_route_is_killed_when_exec_times_out() {
         let pidfile = std::env::temp_dir().join(format!("tg-cap-{}.pid", std::process::id()));
-        let _ = std::fs::remove_file(&pidfile);
         let me = std::env::current_exe().unwrap().into_os_string();
-        let argv = [me, "--ignored".into(), "--exact".into(), "capture::tests::hang_child".into(), format!("pidfile={}", pidfile.display()).into()];
-        let limit = Duration::from_millis(2500);
-        let ended = exec(&argv, Stdin::Null, "t", limit, "grok", "pre_tool_use");
-        assert!(matches!(ended, Err(Failure::Timeout(_))), "the hung route must time out");
-        let text = poll_within(BACKSTOP, || std::fs::read_to_string(&pidfile).ok().filter(|t| t.trim().parse::<u32>().is_ok())).unwrap_or_default();
+        let argv = vec![me, "--ignored".into(), "--exact".into(), "capture::tests::hang_child".into(), format!("pidfile={}", pidfile.display()).into()];
+        // A run that overran its limit before the child wrote its pid recorded none: it says nothing about the kill, so another run follows.
+        let pid = poll_within(BACKSTOP, || {
+            let _ = std::fs::remove_file(&pidfile);
+            let (done, ended) = mpsc::channel();
+            let route = argv.clone();
+            // owner: this test; exec ends the child at its limit, and the thread ends with exec
+            std::thread::spawn(move || {
+                let _ = done.send(exec(&route, Stdin::Null, "t", Duration::from_millis(2500), "grok", "pre_tool_use"));
+            });
+            let ended = ended.recv_timeout(BACKSTOP).expect("exec did not return");
+            assert!(matches!(ended, Err(Failure::Timeout(_))), "the hung route must time out");
+            std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse::<u32>().ok())
+        });
         let _ = std::fs::remove_file(&pidfile);
-        let pid: u32 = text.trim().parse().expect("the hung route never wrote its pid");
+        let pid = pid.expect("no run of the hung route recorded its pid before it was killed");
         // The kill was issued before exec returned; the wait here is on the process ending, not on the production reap bound.
         assert!(poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some(), "pid {pid} of the hung route was still alive after exec returned");
     }
