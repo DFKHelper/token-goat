@@ -219,6 +219,9 @@ describe('installCopilotCli (user scope)', () => {
     }))
     try {
       const { installCopilotCli: installWithNative, wiredCopilotHookWords } = await import('../src/bridges/copilot_cli_install.js')
+      // The reset module graph has a fresh self-test seam; a real probe runs the shim under the test entry.
+      const fresh = await import('../src/hook_selftest.js')
+      fresh.setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
       const result = installWithNative()
       const expectedArgs = ['--harness', 'copilot_cli', '--', process.execPath, result.scriptPath, 'preToolUse', entryPath]
       const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {

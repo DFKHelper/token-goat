@@ -3,7 +3,7 @@ import * as path from 'node:path'
 
 import type * as NodeOs from 'node:os'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 // vi.mock is hoisted: `~` points at a temp dir per test, so no real harness config is read or written.
 vi.mock('node:os', async (importOriginal) => {
@@ -23,6 +23,7 @@ import { copilotCliConfigPath, copilotCliScriptPath, installCopilotCli, wiredCop
 import { grokConfigPath, grokHookScriptPath, installGrok, wiredGrokHookWords } from '../src/bridges/grok_install.js'
 import { checkNativeHookWiring, checkNativeHooks, type NativeAvailability, type NativeWiring } from '../src/cli_doctor_native.js'
 import { parseGuardedCommand } from '../src/hook_guard.js'
+import { setHookSelftestRunnerForTesting } from '../src/hook_selftest.js'
 import type { NativeHookCounts } from '../src/hook_latency.js'
 
 /** Hook entries the previous build wrote on Windows read back as not current, which doctor's native rows report as outdated rather than as missing or fine, and a reinstall rewrites every one of them in place. FORMAT-DERIVED: the old command lines are the formulas of commit 0c01d686 (`git show 0c01d686:src/bridges/codex_install.ts` codexHookCommandFor, `:src/bridges/grok_install.ts` grokHookCommandFor, `:src/bridges/copilot_cli_install.ts` hookPowershellCommandFor, `:src/util.ts` hookCommandFor and hookPowershellCommand), typed out here rather than produced by today's source: Codex `& "node" "shim" event "entry"`, Grok's cmd-style `"node" "shim" event "entry"`, which PowerShell rejects as a ParserError, and Copilot's `powershell` field `& 'node' 'shim' event 'entry'` with no exit suffix. */
@@ -186,6 +187,9 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
 
   it("Copilot CLI: a powershell field without the exit suffix reads as outdated, and a reinstall rewrites it, one entry per event", () => {
     // projectRoot pins the project-instructions sync to the temp dir: a user-scope install rewrites an existing <cwd>/.github/copilot-instructions.md, which under vitest is this checkout tracked file.
+    // The Copilot SessionStart shim reports a missing native owner on stderr under this runner's entry path.
+    setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
+    onTestFinished(() => setHookSelftestRunnerForTesting(undefined))
     installCopilotCli({ projectRoot: TMP })
     const configPath = copilotCliConfigPath()
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { hooks: Record<string, Array<{ command: string; powershell: string }>> }

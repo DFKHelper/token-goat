@@ -100,3 +100,30 @@ describe('verifiedInstall restores the file it rolls back with an atomic write',
     expect(fs.readFileSync(file, 'utf8')).toBe(changed)
   })
 })
+
+describe('verifiedInstall rolls back only the bytes it wrote', () => {
+  it('leaves a file another install replaced during the probe', () => {
+    fs.writeFileSync(file, config('echo foreign'))
+    const other = config('echo second install')
+    setHookSelftestRunnerForTesting(() => {
+      fs.writeFileSync(file, other)
+      return { status: 3, stdout: '', stderr: 'boom' }
+    })
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const install = (): void => verifiedInstall([file], () => fs.writeFileSync(file, config(CURRENT)))
+    try {
+      expect(install).toThrow(HookSelftestError)
+    } finally {
+      vi.restoreAllMocks()
+    }
+    expect(writes).toEqual([])
+    expect(fs.readFileSync(file, 'utf8')).toBe(other)
+  })
+
+  it('still removes a file this install created when nothing else touched it', () => {
+    setHookSelftestRunnerForTesting(() => ({ status: 3, stdout: '', stderr: 'boom' }))
+    const install = (): void => verifiedInstall([file], () => fs.writeFileSync(file, config(CURRENT)))
+    expect(install).toThrow(HookSelftestError)
+    expect(fs.existsSync(file)).toBe(false)
+  })
+})

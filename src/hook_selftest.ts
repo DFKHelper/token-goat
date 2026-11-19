@@ -304,7 +304,9 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
       const harness = flagValue(parsed.native, '--harness')
       const nodeArgv = parsed.native.includes('--') ? wrappedNodeArgv(parsed.native) : parsed.native
       const event = flagValue(parsed.native, '--event') ?? nodeArgv[2] ?? 'unknown'
-      const input = JSON.stringify({ hook_event_name: event, session_id: 'tg-selftest' })
+      // A tool name keeps a tool event's payload well formed, so a clean route has nothing to warn about.
+      const probe = { hook_event_name: event, session_id: 'tg-selftest', tool_name: 'tg-selftest' }
+      const input = JSON.stringify(probe)
       const nodeMarker = path.join(scratch, `marker-${String(plans.length)}`)
       const unresolvable = path.join(scratch, 'no-such-dir', path.basename(parsed.native[0]!))
       const viaNode = parsed.native.includes('--') && nodeArgv.length > 0
@@ -345,9 +347,11 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
       const problem = (run: ShellRun, route: string): string | undefined =>
         run.status !== 0
           ? `${label} (${route}): exit ${String(run.status)}: ${run.stderr.trim().slice(0, 300)}`
-          : validAnswer(harness, event, run.stdout, parsed.safe)
-            ? undefined
-            : `${label} (${route}): not a valid answer: ${run.stdout.trim().slice(0, 200)}`
+          : run.stderr.trim() !== ''
+            ? `${label} (${route}): wrote to stderr: ${run.stderr.trim().slice(0, 300)}`
+            : validAnswer(harness, event, run.stdout, parsed.safe)
+              ? undefined
+              : `${label} (${route}): not a valid answer: ${run.stdout.trim().slice(0, 200)}`
       const exeProblem = problem(exe, 'native client')
       if (exeProblem !== undefined) failures.push(exeProblem)
       else if (!plan.markerBefore && guardWroteNotice(parsed.marker)) {
@@ -443,6 +447,14 @@ export function verifiedInstall<T>(files: readonly string[], write: () => T): T 
     assertRegisteredCommandsWork(commands, files.join(', '))
   } catch (e) {
     files.forEach((f, i) => {
+      // Only a file still holding the bytes this install wrote is rolled back: another may have replaced it.
+      const now = snapshot(f)
+      const wrote = after[i]
+      const unchanged = now === wrote || (now instanceof Buffer && wrote instanceof Buffer && now.equals(wrote))
+      if (!unchanged) {
+        process.stderr.write(`token-goat: left ${f} as it is: another install changed it during the check.\n`)
+        return
+      }
       if (before[i] !== undefined && before[i] !== null) atomicWriteBytes(f, before[i]!)
       else fs.rmSync(f, { force: true })
     })
