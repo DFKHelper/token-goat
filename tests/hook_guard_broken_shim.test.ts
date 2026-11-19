@@ -309,7 +309,9 @@ describe('the sh guard with no hold files runs no route', () => {
     fs.mkdirSync(dir)
     fs.writeFileSync(path.join(dir, 'mktemp'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
     const ran = path.join(dir, 'ran')
-    const route = `require('fs').writeFileSync(${JSON.stringify(ran)}, 'ran'); process.stdout.write('not json'); process.exit(2)\n`
+    const route =
+      `require('fs').writeFileSync(${JSON.stringify(ran)}, 'ran'); ` +
+      `process.stdout.write('not json'); process.exit(2)\n`
     const o = run('sh', route, undefined, '', undefined, '{}', { pathFirst: dir })
     expect({ status: o.status, stdout: o.stdout, stderr: o.stderr, ran: fs.existsSync(ran) }).toEqual({
       status: 0,
@@ -319,7 +321,8 @@ describe('the sh guard with no hold files runs no route', () => {
     })
   })
   sh('a TMPDIR naming a missing directory still serves the route answer', () => {
-    const o = run('sh', SHIMS['healthy'], undefined, '', undefined, '{}', { env: { TMPDIR: path.join(root, 'no-such-dir') } })
+    const env = { TMPDIR: path.join(root, 'no-such-dir') }
+    const o = run('sh', SHIMS['healthy'], undefined, '', undefined, '{}', { env })
     expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
       status: 0,
       stdout: '{"route":"node"}',
@@ -330,7 +333,11 @@ describe('the sh guard with no hold files runs no route', () => {
     const o = run('sh', SHIMS['exit 13 and stdout noise'], undefined, '', undefined, '{}', {
       env: { TMPDIR: path.join(root, 'no-such-dir') },
     })
-    expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({ status: 0, stdout: SAFE, stderr: '' })
+    expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
+      status: 0,
+      stdout: SAFE,
+      stderr: '',
+    })
   })
 })
 

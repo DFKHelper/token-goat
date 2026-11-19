@@ -319,7 +319,8 @@ mod tests {
         // A cut that lands on a complete JSON value would otherwise judge as a valid answer.
         let json = b"{\"a\":1}\n{\"b\":2}\n";
         assert_eq!(captured(json, json.len() - 1), Err("larger than the capture limit"));
-        assert!(matches!(judge(Some(0), &json[..8], b"", false), Ok(0)), "the cut prefix alone is a valid answer");
+        let cut = judge(Some(0), &json[..8], b"", false);
+        assert!(matches!(cut, Ok(0)), "the cut prefix alone is a valid answer");
     }
 
     #[test]

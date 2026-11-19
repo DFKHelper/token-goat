@@ -72,7 +72,7 @@ function quoteWord(shell: GuardShell, text: string): string {
 // outcome falls through to the next route. Both streams are held in files ($1 stderr, $2 stdout) until the
 // outcome is accepted, so a failed route never reaches the host. No $NAME word: Grok CLI substitutes those
 // itself in a hook command, so the temp files are parameters 1 and 2.
-// mktemp is tried in TMPDIR then /tmp; with no hold files ($1 and $2 empty) no route runs, the safe answer prints.
+// mktemp is tried in TMPDIR then /tmp; with no hold files ($1, $2 empty) no route runs: the safe answer prints.
 // limit: no writable temp directory gives the safe answer and no hook work; revisit-when: a machine reports it
 const SH_RM_ERR = '[ ! -f "$1" ] || rm -f "$1"; [ ! -f "$2" ] || rm -f "$2"'
 const SH_REPLAY = `cat "$1" >&3; [ -z "$2" ] || cat "$2" >&4; ${SH_RM_ERR}`
@@ -86,9 +86,11 @@ const CASE_SH =
   `*) ${SH_CLEAR};; esac`
 // limit: sh holds the async marker until the route ends (a pipe loses $?); revisit-when: an early read keeps it
 const SH_HOLD_OK = '[ -f "$1" ] && [ -f "$2" ]'
-const SH_TMP_IN_TMP = 'set -- "$(mktemp /tmp/tg-guard.XXXXXX 2>/dev/null)" "$(mktemp /tmp/tg-guard.XXXXXX 2>/dev/null)"'
+const SH_MKTEMP_TMP = '"$(mktemp /tmp/tg-guard.XXXXXX 2>/dev/null)"'
+const SH_TMP_IN_TMP = `set -- ${SH_MKTEMP_TMP} ${SH_MKTEMP_TMP}`
 const SH_STDERR =
-  `set -- "$(mktemp 2>/dev/null)" "$(mktemp 2>/dev/null)"; ${SH_HOLD_OK} || { ${SH_RM_ERR}; ${SH_TMP_IN_TMP}; }; ` +
+  `set -- "$(mktemp 2>/dev/null)" "$(mktemp 2>/dev/null)"; ` +
+  `${SH_HOLD_OK} || { ${SH_RM_ERR}; ${SH_TMP_IN_TMP}; }; ` +
   `${SH_HOLD_OK} || { ${SH_RM_ERR}; set -- "" ""; }; exec 3>&2 4>&1; [ -z "$1" ] || exec 2>>"$1" >>"$2"`
 
 function shRoute(test: string, argv: readonly string[]): string {
