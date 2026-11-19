@@ -22,8 +22,8 @@ export function registerCheckCommands(program: Command, guard: GuardFn): void {
     .allowUnknownOption(true)
     .action(
       guard(async (commandArgs: string[] | undefined) => {
-        const { gateCommandLine, runGate } = await import('./cli_diagnostics.js')
-        process.exitCode = await runGate(gateCommandLine(commandArgs ?? []))
+        const { runGateArgv } = await import('./cli_diagnostics.js')
+        process.exitCode = await runGateArgv(commandArgs ?? [])
       }),
     )
   const permissions = program

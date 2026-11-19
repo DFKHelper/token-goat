@@ -39,11 +39,16 @@ function isRunnerCheck(trimmed: string): boolean {
   return OTHER_VERIFICATION_PATTERNS.some((re) => re.test(trimmed))
 }
 
-function isVerificationSegment(segment: string): boolean {
+/** A segment that is a check itself: a runner or a checking script, not a launcher carrying one. */
+function isDirectVerificationSegment(segment: string): boolean {
   const trimmed = segment.trim().replace(ENV_ASSIGNMENT_PREFIX, '')
-  if (trimmed === '') return false
-  if (isRunnerCheck(trimmed) || isScriptCheckSegment(trimmed)) return true
-  return launcherCarriedCheck(trimmed, isRunnerCheck) !== null
+  return trimmed !== '' && (isRunnerCheck(trimmed) || isScriptCheckSegment(trimmed))
+}
+
+function isVerificationSegment(segment: string): boolean {
+  if (isDirectVerificationSegment(segment)) return true
+  const trimmed = segment.trim().replace(ENV_ASSIGNMENT_PREFIX, '')
+  return trimmed !== '' && launcherCarriedCheck(trimmed, isRunnerCheck) !== null
 }
 
 // An interpreter's inline code string (`python -c "..."`, `node -e '...'`) is program text, not a command line.
@@ -58,6 +63,11 @@ function withoutInlineScriptBodies(command: string): string {
 /** The command as the verdict code reads it: no file-writing heredoc body, no inline interpreter body. */
 function checkableText(typed: string): string {
   return withoutInlineScriptBodies(withoutFileHeredocBodies(typed))
+}
+
+/** True when any segment is a check itself rather than a launcher carrying one. */
+function hasDirectCheck(command: string): boolean {
+  return withoutInlineScriptBodies(command).split(COMMAND_SEPARATOR).some(isDirectVerificationSegment)
 }
 
 /** True when any segment of `command` is a test, lint, typecheck or build invocation. */
@@ -226,6 +236,8 @@ export function noteVerificationRun(
   const command = checkableText(typed)
   if (isVerificationCommand(command) && exitStatusIsCheckVerdict(command)) {
     const status = exitCode ?? (successImpliedWithoutStatus() ? 0 : null)
+    // A launcher-carried check may clear a failure by passing but never records one.
+    if (status !== null && status !== 0 && !hasDirectCheck(command)) return
     recordVerificationRun(storedCommand(command), status, Date.now(), headAt(cwd))
     return
   }
@@ -239,8 +251,30 @@ function headAt(cwd: string | undefined): string | undefined {
   return cwd === undefined ? undefined : (readHeadCommit(cwd) ?? undefined)
 }
 
-const OPAQUE_STRUCTURE = /<<|[<>]\(/
+const HEREDOC_OPENER = /(?<!<)<<(?!<)-?\s*(['"]?)(\w+)\1/g
+const TRAILING_CLOSERS = /(?:\n[ \t]*[)"']+)+$/
 const EXIT_CODE_IN_ERROR =/^Exit code (\d+)/
+
+/** The command with each heredoc's terminator line removed, and the body too when the opener's own segment is a check (that body is the check's stdin, not statements): what is left is what the shell's exit status is read from. A body fed to a shell stays, its last line being the last statement run. A terminator that never appears removes nothing. */
+function withoutHeredocFraming(command: string): string {
+  const lines = command.split('\n')
+  const dropped = new Set<number>()
+  let cursor = 0
+  for (let i = 0; i < lines.length; i++) {
+    if (dropped.has(i)) continue
+    const line = lines[i] as string
+    for (const opener of line.matchAll(HEREDOC_OPENER)) {
+      const own = (line.slice(0, opener.index).split(COMMAND_SEPARATOR).pop() ?? '').trim().replace(ENV_ASSIGNMENT_PREFIX, '')
+      const end = lines.findIndex((text, j) => j > Math.max(i, cursor - 1) && text.trim() === opener[2])
+      if (end < 0) continue
+      dropped.add(end)
+      cursor = end + 1
+      if (isVerificationSegment(own)) for (let j = i + 1; j < end; j++) dropped.add(j)
+    }
+  }
+  // Closing lines of a substitution or quote opened above (`)`, `)"`, `"`) add no statement after a check that ends the script.
+  return lines.filter((_text, j) => !dropped.has(j)).join('\n').trimEnd().replace(TRAILING_CLOSERS, '')
+}
 
 /** Record a Bash call that failed, from the failure event's error text (Claude Code opens it with `Exit code N`; the status is 1 when the text carries none). An interrupt has no verdict. */
 export function noteFailedVerificationRun(
@@ -250,9 +284,8 @@ export function noteFailedVerificationRun(
   cwd?: string,
 ): void {
   const command = checkableText(typed)
-  // limit: a heredoc or process substitution has no statement list to judge revisit-when: one mis-records
-  const judged = OPAQUE_STRUCTURE.test(command) || exitStatusIsCheckVerdict(command)
-  const isVerdict = isVerificationCommand(command) && judged
+  // Same rule as the pass path; when the status cannot be told to belong to a check, nothing is recorded.
+  const isVerdict = hasDirectCheck(command) && exitStatusIsCheckVerdict(withoutHeredocFraming(command), isDirectVerificationSegment)
   if (isInterrupt || !(isVerdict || isDocumentOnlyFailure(command))) return
   const status = EXIT_CODE_IN_ERROR.exec(errorText)
   const exitCode = status !== null && Number(status[1]) !== 0 ? Number(status[1]) : 1

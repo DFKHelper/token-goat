@@ -39,10 +39,10 @@ export function isScriptCheckSegment(segment: string): boolean {
 }
 
 const LAUNCHER_RUN = /^(?:python3?|node)\s+(?:-[\w-]+\s+)*[\w./@~:\\-]+\.(?:py|mjs|cjs|js)\s+(\S[\s\S]*)$/i
-/** A launcher's own word: a bare name or switch, never a quote or expansion. */
-const LAUNCHER_WORD = /^[\w./=:@-]+$/
+/** A launcher's own word: a switch (`-q`, `--timeout=5`), never a subcommand, quote or expansion; so the check starts right after the launcher's switches. */
+const LAUNCHER_WORD = /^--?[A-Za-z][\w-]*(?:=[\w./:@-]*)?$/
 /** A launcher word saying the check runs on without the launcher waiting, so its status is not the check's. */
-const DETACHING_WORD = /^(?:start|bg|background|detach|daemon|spawn|nohup|enqueue|queue)$/i
+const DETACHING_WORD = /^-*(?:start|bg|background|detach|daemon|spawn|nohup|enqueue|queue)$/i
 const MAX_LAUNCHER_WORDS = 3
 const SHELL_EXPANSION = /[`$]/
 
@@ -65,8 +65,7 @@ function launcherWords(rest: string): Array<{ word: string; at: number }> | null
   return quote === '' ? words : null
 }
 
-// False-accept risk: a script taking a command as plain arguments (`python notes.py add npm test`) counts.
-/** The check a launcher run carries in its first words (`python launch.py npx vitest run x`), per `isCheck`. */
+/** The check a launcher run carries right after the launcher's own switches and to the end of the segment (`python launch.py npx vitest run x`), per `isCheck`. A script taking a command as plain arguments (`python notes.py add npm test`) carries none. */
 export function launcherCarriedCheck(segment: string, isCheck: (candidate: string) => boolean): string | null {
   const rest = LAUNCHER_RUN.exec(segment.trim())?.[1]
   if (rest === undefined || SHELL_EXPANSION.test(rest)) return null

@@ -24,7 +24,8 @@ import { sourceLines } from './source_lines.js'
 import { DEFAULT_FAILURES_STATE_KEY, loadFailureSnapshot, saveFailureSnapshot } from './failures_state.js'
 import { DEFAULT_TIMEOUT_SECONDS, run } from './bash_runner.js'
 import { redactSecrets } from './secret_redact.js'
-import { quotePosixShellWord } from './process_util.js'
+import { quoteCmdWord, quotePosixShellWord } from './process_util.js'
+import { wrappedShell } from './shell.js'
 import { assertReadAllowed } from './read_deny.js'
 
 export function cmdCoverageReportGaps(file: string, opts: { file?: string; json?: boolean }): void {
@@ -270,10 +271,37 @@ export interface GateOptions {
   timeout?: number
 }
 
-/** The command line `gate` runs: one word is a shell line, several are a quoted program and arguments. */
-export function gateCommandLine(words: readonly string[]): string {
+/** An argument the shell `gate` would run under cannot carry whole; the message is the one line printed. */
+export class GateArgumentRefused extends Error {}
+
+/** Words that need no quoting under cmd.exe: no `%`, `=`, `,` or `;`, which it expands or reads as separators. */
+const CMD_PLAIN_WORD = /^[A-Za-z0-9_@+:./\\-]+$/
+
+/** The command line `gate` runs: one word is a shell line, several are a quoted program and arguments, quoted for `shell` (what bash_runner's wrappedShell() gives: `true` on Windows is cmd.exe, a path is Git Bash). Throws {@link GateArgumentRefused} for a word cmd.exe cannot carry whole. */
+export function gateCommandLine(words: readonly string[], shell: string | boolean = wrappedShell(), platform: NodeJS.Platform = process.platform): string {
   if (words.length <= 1) return words[0] ?? ''
+  if (platform === 'win32' && shell === true) {
+    return words.map((w) => {
+      if (CMD_PLAIN_WORD.test(w)) return w
+      const quoted = quoteCmdWord(w)
+      if (quoted === null) throw new GateArgumentRefused('gate: no Git Bash was found, and cmd.exe cannot pass an argument with %, a line break or a stray metacharacter whole; install Git for Windows or give one quoted command line')
+      return quoted
+    }).join(' ')
+  }
   return words.map((w) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(w) ? w : quotePosixShellWord(w))).join(' ')
+}
+
+/** Run the argv words after `gate --`: exit 2 with one line, running nothing, when the shell cannot carry them. */
+export async function runGateArgv(words: readonly string[], shell: string | boolean = wrappedShell(), platform: NodeJS.Platform = process.platform): Promise<number> {
+  let line: string
+  try {
+    line = gateCommandLine(words, shell, platform)
+  } catch (e) {
+    if (!(e instanceof GateArgumentRefused)) throw e
+    process.stderr.write(`${displaySafeText(e.message)}\n`)
+    return GATE_FAIL_EXIT
+  }
+  return runGate(line)
 }
 
 /** Run `command` and return the gate verdict: 0 when it exits 0, GATE_FAIL_EXIT for any other outcome. */

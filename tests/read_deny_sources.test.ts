@@ -99,14 +99,21 @@ describe('S5: the check judges the file that will really be opened', () => {
     return { status: run.status, stdout: run.stdout, stderr: run.stderr }
   }
 
-  it('link/../secret: refused or read according to the file the OS opens, through the real check', () => {
-    const { proj, work } = layout()
+  // CAPTURE: on Windows Win32 path normalisation folds `link\..` lexically, so the junction is never followed and the file opened is work/secret.txt; POSIX follows the link first, so the file opened is vault/secret.txt.
+  const PARENT_OF_LINK_IS_VAULT = process.platform !== 'win32'
+
+  it(`link/../secret on ${process.platform}: ${PARENT_OF_LINK_IS_VAULT ? 'refused, the OS opens the vault file' : 'read, the OS opens the work file'}`, () => {
+    const { work, proj } = layout()
     const spelling = `link${path.sep}..${path.sep}secret.txt`
-    const opened = fs.realpathSync.native(`${work}${path.sep}${spelling}`)
-    const inVault = opened.startsWith(path.join(proj, 'vault'))
     const text = readDenial(spelling, { cwd: work, projectDir: proj, home: configDir })
-    expect(text !== null).toBe(inVault)
-    expect(fs.readFileSync(`${work}${path.sep}${spelling}`, 'utf8')).toBe(inVault ? 'VAULTBODY' : 'WORKBODY')
+    expect(text !== null, `the refusal did not match the file the OS opens on ${process.platform}`).toBe(PARENT_OF_LINK_IS_VAULT)
+    expect(fs.readFileSync(`${work}${path.sep}${spelling}`, 'utf8')).toBe(PARENT_OF_LINK_IS_VAULT ? 'VAULTBODY' : 'WORKBODY')
+  })
+
+  it('a junction followed by sub/.. is refused on every platform: both readings open the vault file', () => {
+    const { work, proj } = layout()
+    const spelling = `vlink${path.sep}sub${path.sep}..${path.sep}secret.txt`
+    expect(readDenial(spelling, { cwd: work, projectDir: proj, home: configDir }), 'the vault file was not refused').toContain('is denied by')
   })
 
   it('a denied file reached through a link refuses; an undenied one reached through a link reads', () => {
@@ -117,19 +124,21 @@ describe('S5: the check judges the file that will really be opened', () => {
   })
 
   it('the built CLI (read and recall) refuse the link spelling of a denied file, printing none of it', () => {
-    const { proj, work } = layout()
+    const { work } = layout()
     const spelling = `link${path.sep}..${path.sep}secret.txt`
-    const inVault = fs.realpathSync.native(`${work}${path.sep}${spelling}`).startsWith(path.join(proj, 'vault'))
     for (const args of [['read', spelling], ['bash-output', '--file', spelling]]) {
       const run = cli(args, work)
-      if (inVault) {
-        expect(run.status).toBe(1)
+      if (PARENT_OF_LINK_IS_VAULT) {
+        expect(run.status, `${args[0]} did not refuse the vault file`).toBe(1)
         expect(run.stdout + run.stderr).not.toContain('VAULTBODY')
         expect(run.stderr).toContain('refused')
       } else {
-        expect(run.stdout + run.stderr).toContain('WORKBODY')
+        expect(run.stdout + run.stderr, `${args[0]} did not read the work file`).toContain('WORKBODY')
       }
     }
+    const vault = cli(['read', `vlink${path.sep}secret.txt`], work)
+    expect(vault.status, 'the built CLI read a vault file through a junction').toBe(1)
+    expect(vault.stdout + vault.stderr).not.toContain('VAULTBODY')
     const open = cli(['read', 'open/ok.txt'], work)
     expect(open.stdout).toContain('OPENBODY')
   })

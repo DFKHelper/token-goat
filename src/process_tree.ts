@@ -147,7 +147,7 @@ function killTokenCarriers(token: string): void {
 }
 
 /** Windows: ends exited-shell children by ppid and start. limit: grandchildren; revisit-when: job object. */
-function killChildrenOfExitedRoot(root: number, spawnedAt: number, exitedAt: number): KillResult {
+export function killChildrenOfExitedRoot(root: number, spawnedAt: number, exitedAt: number): KillResult {
   const script = "Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | ForEach-Object { " +
     "[string]$_.ProcessId + ' ' + $_.ParentProcessId + ' ' + " +
     "([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }"
@@ -159,8 +159,8 @@ function killChildrenOfExitedRoot(root: number, spawnedAt: number, exitedAt: num
   let result: KillResult = { ok: true }
   for (const line of listed.stdout.split('\n')) {
     const [pid, ppid, created] = line.trim().split(' ').map(Number)
-    if (!Number.isInteger(pid) || ppid !== root || created === undefined) continue
-    if (created < spawnedAt - 2000 || created > exitedAt) continue
+    if (!Number.isInteger(pid) || ppid !== root || created === undefined || !Number.isFinite(created)) continue
+    if (created < spawnedAt || created > exitedAt) continue
     const killed = killProcessTree(pid)
     if (!killed.ok && killed.gone !== true) result = killed
   }

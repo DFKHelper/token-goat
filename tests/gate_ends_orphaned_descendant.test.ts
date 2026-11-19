@@ -2,6 +2,7 @@
 import type * as ChildProcessModule from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -18,7 +19,7 @@ const spawned = vi.hoisted(() => [] as ChildProcess[])
 vi.mock('node:child_process', async (importOriginal) => {
   const real = await importOriginal<typeof ChildProcessModule>()
   const counting = ((file: string, ...rest: unknown[]) => {
-    syncCalls.push(file)
+    syncCalls.push([file, ...(Array.isArray(rest[0]) ? (rest[0] as string[]) : [])].join(' '))
     return (real.spawnSync as (...args: unknown[]) => unknown)(file, ...rest)
   }) as typeof real.spawnSync
   const recording = ((...args: unknown[]) => {
@@ -29,22 +30,15 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...real, spawn: recording, spawnSync: counting }
 })
 
-// Taken before the timers are faked, so polling keeps real time while the runner's timeout is the faked one.
-const realSetTimeout = globalThis.setTimeout
-const pause = (ms: number): Promise<void> => new Promise((resolve) => realSetTimeout(resolve, ms))
 const GATE_TIMEOUT_SECONDS = 600
 
-async function pollUntil(check: () => boolean): Promise<void> {
-  while (!check()) await pause(25)
-}
-
-// The holder records its pid, then lives until its directory is deleted, so a dying row leaves nothing.
+// The holder reports its pid and its parent's over a loopback socket and lives until its directory is deleted; the operating system closing that socket is the test's event for its death.
 const HOLDER_SCRIPT = `
 const fs = require('node:fs')
-const path = require('node:path')
+const net = require('node:net')
 const dir = process.argv[2]
-fs.writeFileSync(path.join(dir, 'holder.tmp'), String(process.pid))
-fs.renameSync(path.join(dir, 'holder.tmp'), path.join(dir, 'holder.pid'))
+const socket = net.connect(Number(process.argv[3]), '127.0.0.1', () => socket.write(process.pid + ' ' + process.ppid))
+socket.on('error', () => process.exit(0))
 setInterval(() => { if (!fs.existsSync(dir)) process.exit(0) }, 200)
 `
 const quoted = (p: string): string => JSON.stringify(p.replace(/\\/g, '/'))
@@ -52,6 +46,9 @@ const quoted = (p: string): string => JSON.stringify(p.replace(/\\/g, '/'))
 let dir: string | undefined
 let holderPid: number | undefined
 let pending: Promise<number> | undefined
+let server: net.Server | undefined
+let holderGone: Promise<void> | undefined
+const sockets: net.Socket[] = []
 
 afterEach(async () => {
   if (vi.isFakeTimers()) vi.advanceTimersByTime(GATE_TIMEOUT_SECONDS * 1000)
@@ -68,6 +65,10 @@ afterEach(async () => {
     dir = undefined
     if (pending !== undefined) await pending
     pending = undefined
+    for (const socket of sockets.splice(0)) socket.destroy()
+    if (server !== undefined) await new Promise<void>((resolve) => server!.close(() => resolve()))
+    server = undefined
+    holderGone = undefined
     spawned.length = 0
     syncCalls.length = 0
   }
@@ -88,12 +89,23 @@ describe('gate ends a descendant that outlives its shell', () => {
     }) as typeof process.kill)
 
     // The shell backgrounds the holder and exits at once; the holder keeps the pipes the gate reads open.
-    const command = `${quoted(process.execPath)} ${quoted(holder)} ${quoted(dir)} &`
+    // The holder's first write is its pid and the socket closing is its death, so neither is waited on by clock or count.
+    const reported = new Promise<[number, number]>((resolve) => {
+      server = net.createServer((socket) => {
+        sockets.push(socket)
+        socket.on('error', () => undefined)
+        socket.once('data', (chunk) => resolve(chunk.toString().split(' ').map(Number) as [number, number]))
+        holderGone = new Promise<void>((gone) => socket.once('close', () => gone()))
+      })
+    })
+    const port = await new Promise<number>((resolve) => {
+      server!.listen(0, '127.0.0.1', () => resolve((server!.address() as net.AddressInfo).port))
+    })
+    const command = `${quoted(process.execPath)} ${quoted(holder)} ${quoted(dir)} ${port} &`
     const started = runGate(command, { timeout: GATE_TIMEOUT_SECONDS })
     pending = started
-    const pidFile = path.join(dir, 'holder.pid')
-    await pollUntil(() => fs.existsSync(pidFile))
-    holderPid = Number(fs.readFileSync(pidFile, 'utf8'))
+    let holderParent: number
+    ;[holderPid, holderParent] = await reported
     expect(processAlive(holderPid), 'the holder is not running before the timeout').toBe(true)
     const shell = spawned[0]!
     if (shell.exitCode === null && shell.signalCode === null)
@@ -105,13 +117,13 @@ describe('gate ends a descendant that outlives its shell', () => {
     vi.advanceTimersByTime(GATE_TIMEOUT_SECONDS * 1000)
     // The sweep is synchronous inside the timer callback, so a missing descendant kill fails by assertion here.
     const swept = process.platform === 'win32'
-      ? syncCalls.filter((file) => /taskkill/i.test(file)).length
-      : killSignals.length
+      ? syncCalls.filter((call) => /taskkill/i.test(call) && [holderPid, holderParent].some((pid) => call.endsWith(`/PID ${pid}`)))
+      : killSignals.filter((signalled) => signalled === String(holderPid))
     const seen = `spawnSync saw ${JSON.stringify(syncCalls)}, SIGKILL to ${JSON.stringify(killSignals)}`
-    expect(swept, `the timeout ended no descendant of the exited shell (${seen})`).toBeGreaterThan(0)
+    expect(swept.length, `the timeout did not end the holder, pid ${holderPid} (${seen})`).toBeGreaterThan(0)
     expect(await started).toBe(2)
     pending = undefined
-    await pollUntil(() => !processAlive(holderPid!))
+    await holderGone
     expect(processAlive(holderPid), 'the pipe-holding background child is gone after gate returned').toBe(false)
   })
 })

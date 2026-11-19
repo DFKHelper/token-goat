@@ -99,6 +99,19 @@ export function quotePosixShellWord(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`
 }
 
+/** Wraps a word in double quotes so a program started through `cmd.exe /c` receives it whole (backslash runs before a quote are doubled, as the C runtime reads them), or null when cmd.exe cannot carry it: `%` (variable expansion cannot be escaped), a line break or NUL, and any `&|<>^()` that cmd.exe would see outside quotes, which an embedded `"` can cause because cmd.exe toggles its quote state on every one. */
+export function quoteCmdWord(value: string): string | null {
+  if (/[%\r\n\0]/.test(value)) return null
+  const body = value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')
+  const quoted = ['"', body, '"'].join('')
+  let inside = false
+  for (const ch of quoted) {
+    if (ch === '"') inside = !inside
+    else if (!inside && /[&|<>^()]/.test(ch)) return null
+  }
+  return quoted
+}
+
 /** Wraps a path in single quotes for embedding in a generated PowerShell command. */
 export function quotePowershellPath(value: string): string {
   return `'${value.replace(/'/g, "''")}'`

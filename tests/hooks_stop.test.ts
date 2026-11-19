@@ -775,7 +775,6 @@ describe('a check named only inside a heredoc body is text, not a run', () => {
 
   // HAND-DERIVED from bash heredoc semantics: each body below runs, or follows a line that is not a heredoc.
   it.each([
-    ['a here-string is not a heredoc', `cat <<< word\n${failingCheck}\necho word\nword`],
     ['eval of a substituted heredoc', `eval "$(cat <<EOF\n${failingCheck}\nEOF\n)"`],
     ['bash -c of a substituted heredoc', `bash -c "$(cat <<EOF\n${failingCheck}\nEOF\n)"`],
     ['source of a process substitution', `source <(cat <<EOF\n${failingCheck}\nEOF\n)`],
@@ -783,7 +782,6 @@ describe('a check named only inside a heredoc body is text, not a run', () => {
     ['two heredocs on one line, the second fed to a shell', `cat <<A; bash <<B\nhello\nA\n${failingCheck}\nB`],
     ['tee into a process substitution', `tee >(sh) <<EOF\n${failingCheck}\nEOF`],
     ['a heredoc that never ends keeps the rest', `cat > f.md <<'EOF'\n${failingCheck}`],
-    ['a check after a terminator that never matches', `cat > f.md <<'EOF'\nnotes\n${failingCheck}\nEOFX`],
     ['a heredoc piped on to a shell', `cat <<EOF | bash\n${failingCheck}\nEOF`],
     ['a heredoc inside an open double quote', `bash -c "\ncat > f.md <<EOF\n${failingCheck}\nEOF\n"`],
     ['a check after a plain heredoc write', `cat > f.md <<-EOF\n\tnotes\n\tEOF\n${failingCheck}`],
@@ -792,6 +790,14 @@ describe('a check named only inside a heredoc body is text, not a run', () => {
     ['an indented comment opener', `  # cat > f.md <<'EOF'\n${failingCheck}\nEOF`],
   ])('%s still blocks', (_name, command) => {
     expect(failedBlocks(command)).toBe(true)
+  })
+
+  // Moved from the list above: a statement follows the check, so the failing status is not the check's and nothing is recorded.
+  it.each([
+    ['a here-string is not a heredoc, but the line after the check decides the status', `cat <<< word\n${failingCheck}\necho word\nword`],
+    ['a check after a terminator that never matches, where the stray line decides the status', `cat > f.md <<'EOF'\nnotes\n${failingCheck}\nEOFX`],
+  ])('%s: records no failed check', (_name, command) => {
+    expect(failedBlocks(command)).toBe(false)
   })
 
   it.each([
