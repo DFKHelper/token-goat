@@ -72,7 +72,13 @@ afterAll(() => {
   if (root !== '') fs.rmSync(root, { recursive: true, force: true })
 })
 
-function run(shell: GuardShell, shimText: string | undefined, exeText?: string, psPrefix = '') {
+function run(
+  shell: GuardShell,
+  shimText: string | undefined,
+  exeText?: string,
+  psPrefix = '',
+  psProgram?: string,
+) {
   const dir = path.join(root, `c${String(n++)}`)
   fs.mkdirSync(dir)
   const shim = path.join(dir, 'shim.cjs')
@@ -91,7 +97,7 @@ function run(shell: GuardShell, shimText: string | undefined, exeText?: string, 
     safe: SAFE,
     marker,
   })
-  const p = prog(shell)!
+  const p = psProgram === undefined ? prog(shell)! : { program: psProgram, args: powerShellCommandArgs }
   const psDir = path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0')
   const shellDirs = [path.dirname(p.program), psDir]
   const r = spawnSync(p.program, p.args(shell === 'powershell' ? psPrefix + command : command), {
@@ -193,6 +199,66 @@ describe('a broken Node shim falls through to the safe answer', () => {
       hex: Buffer.from(NON_ASCII, 'utf8').toString('hex'),
     })
   })
+  // Provenance: CAPTURE (Windows PowerShell 5.1 on this host): after FreeConsole the assignment throws
+  // "The handle is invalid", the state of a host that starts a hook with no console. A direct
+  // DETACHED_PROCESS child of Node runs nothing at all here (exit 0, no output), so FreeConsole is the
+  // nearest reproducible condition. pwsh does not throw there; the row proves the answer holds on both.
+  const NO_CONSOLE =
+    "Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern bool FreeConsole();' " +
+    '-Name K -Namespace T; [void][T.K]::FreeConsole(); '
+  const sysRoot = process.env['SystemRoot'] ?? 'C:/Windows'
+  const winPs = path.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const found = WIN ? resolvePowerShell() : ''
+  const pwshPs = found.toLowerCase().endsWith('pwsh.exe') ? found : undefined
+  // pwsh 7 with no console cannot start any native program ("handle is invalid" while getting the console
+  // mode), so no route can run there and the safe answer is the correct one; 5.1 still runs the Node route.
+  const consoleless = [
+    ['powershell.exe 5.1', winPs, '{"route":"node"}'],
+    ['pwsh', pwshPs, SAFE],
+  ] as const
+  for (const [label, exe, answer] of consoleless) {
+    it.runIf(WIN && exe !== undefined && fs.existsSync(exe))(
+      `with no console attached the guard still answers through ${label}`,
+      () => {
+        const o = run('powershell', SHIMS['healthy'], undefined, NO_CONSOLE, exe)
+        expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
+          status: 0,
+          stdout: answer,
+          stderr: '',
+        })
+      },
+    )
+  }
+  // The guard changes the console's output encoding to carry bytes; the host's console must be left as it was.
+  for (const [label, exe] of [['powershell.exe 5.1', winPs], ['pwsh', pwshPs]] as const) {
+    const name = `the console output encoding is put back through ${label}`
+    it.runIf(WIN && exe !== undefined && fs.existsSync(exe))(name, () => {
+      const dir = path.join(root, `enc${String(n++)}`)
+      fs.mkdirSync(dir)
+      const shim = path.join(dir, 'shim.cjs')
+      fs.writeFileSync(shim, SHIMS['healthy']!)
+      const guard = buildGuardedCommand({
+        shell: 'powershell',
+        native: [process.execPath, shim],
+        safe: SAFE,
+        marker: path.join(dir, 'hook-broken.json'),
+      })
+      const encoded = Buffer.from(guard, 'utf16le').toString('base64')
+      // The outer host shares its console with the inner one; a fresh child reads the console's live code page.
+      const outer =
+        '[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(850); ' +
+        `& '${exe}' -NoProfile -NonInteractive -EncodedCommand ${encoded} | Out-Null; ` +
+        `& '${exe}' -NoProfile -NonInteractive -Command '[Console]::OutputEncoding.CodePage'`
+      const r = spawnSync(exe!, powerShellCommandArgs(outer), {
+        encoding: 'utf8',
+        timeout: 60_000,
+        windowsHide: true,
+        cwd: dir,
+        input: '{}',
+      })
+      expect({ status: r.status, codePage: r.stdout.trim() }).toEqual({ status: 0, codePage: '850' })
+    })
+  }
   it('runs on at least the sh form', () => {
     expect(SHELLS).toContain('sh')
   })

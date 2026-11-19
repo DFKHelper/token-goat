@@ -99,8 +99,15 @@ const PS_REPLAY = `[Console]::Error.Write([IO.File]::ReadAllText(${PS_ERR_FILE})
 // A route's stdout lines are held in a variable (no $NAME word) and written only once its exit is accepted.
 const PS_OUT_SINK = ['|', 'Tee-Object', '-Variable', 'tgo', '|', 'Out-Null']
 // Latin-1 maps every byte to one char and back, so the route's stdout bytes are replayed as they were written.
-const PS_BYTE_ENCODING = '[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(28591)'
-const PS_OUT_CLEAR = `Remove-Variable tgo -ErrorAction Ignore; ${PS_BYTE_ENCODING}`
+// With no console attached the assignment throws, so it has its own try and the route runs regardless.
+const PS_BYTE_ENCODING = 'try { [Console]::OutputEncoding | Tee-Object -Variable tge | Out-Null; ' +
+  '[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(28591) } catch { }'
+// Puts the console's earlier output encoding back; unset or unwritable, it leaves the console as it is.
+// A function, defined once: cmd.exe refuses a command line over 8191 characters, and the routes call it often.
+const PS_ENCODING_BACK = 'tgb'
+const PS_ENCODING_BACK_DEF =
+  'function tgb { try { [Console]::OutputEncoding = (Get-Variable tge -ValueOnly) } catch { } }'
+const PS_OUT_CLEAR = `Remove-Variable tgo, tge -ErrorAction Ignore; ${PS_BYTE_ENCODING}`
 // limit: PowerShell splits stdout into lines, so CR and a final newline are lost; revisit-when one is needed
 const PS_OUT = '((Get-Variable tgo -ValueOnly -ErrorAction Ignore) -join [char]10)'
 const PS_REPLAY_OUT = `[Console]::Out.Write(${PS_OUT})`
@@ -112,10 +119,10 @@ function psRoute(test: string, argv: readonly string[]): string {
   const call = argv.map((w) => quoteWord('powershell', w)).join(' ')
   const code = '(Get-Variable LASTEXITCODE -ValueOnly)'
   return `if (${test}) { try { ${PS_OUT_CLEAR}; & ${call} 2>${PS_ERR_FILE} ${PS_OUT_SINK.join(' ')}; ` +
-    `if (${code} -eq 0) { ${PS_REPLAY}; ${PS_REPLAY_OUT}; ${PS_RM_ERR}; exit 0 }; ` +
+    `if (${code} -eq 0) { ${PS_REPLAY}; ${PS_REPLAY_OUT}; ${PS_RM_ERR}; ${PS_ENCODING_BACK}; exit 0 }; ` +
     `if (${code} -eq 2) { if (${PS_SPOKE}) { ${PS_REPLAY}; ${PS_REPLAY_OUT}; ` +
-    `${PS_RM_ERR}; exit 2 } } ` +
-    `} catch { } }`
+    `${PS_RM_ERR}; ${PS_ENCODING_BACK}; exit 2 } } ` +
+    `} catch { }; ${PS_ENCODING_BACK} }`
 }
 
 /** The part of a native argv after `--`: the Node command the client falls back to. */
@@ -167,7 +174,7 @@ export function buildGuardedCommand(input: GuardInput): string {
     return parts.join('; ')
   }
   const exists = (p: string): string => `Test-Path -LiteralPath ${q(p)} -PathType Leaf`
-  const parts = ["'tg-guard-v1' | Out-Null"]
+  const parts = ["'tg-guard-v1' | Out-Null", PS_ENCODING_BACK_DEF]
   if (!nodeOnly) {
     parts.push(psRoute(`(${exists(bin)}) -and ((Get-Item -LiteralPath ${q(bin)}).Length -gt 0)`, input.native))
   }
