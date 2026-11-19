@@ -96,6 +96,18 @@ describe('writeHookPointer', () => {
     expect(fs.readFileSync(hookPointerPath(home), 'utf8')).toBe(before)
   })
 
+  it('refuses a nativeBin the reader would reject, keeps the old pointer, and writes one it accepts', () => {
+    const { home, entry, bin } = bundle()
+    expect(writeHookPointer(entry, bin, home)).toBe(true)
+    const before = fs.readFileSync(hookPointerPath(home), 'utf8')
+    const wrongName = path.join(path.dirname(bin), 'other-binary')
+    expect(writeHookPointer(entry, wrongName, home), 'a name that is not tg-hook').toBe(false)
+    expect(writeHookPointer(entry, '', home), 'an empty name').toBe(false)
+    expect(fs.readFileSync(hookPointerPath(home), 'utf8')).toBe(before)
+    expect(writeHookPointer(entry, bin, home, () => new Date(0)), 'the accepted name still writes').toBe(true)
+    expect(readHookPointer(home).ok).toBe(true)
+  })
+
   it('does not throw when the data directory cannot be created', () => {
     const { home, entry, bin } = bundle()
     fs.writeFileSync(home, 'a file where the directory should be')

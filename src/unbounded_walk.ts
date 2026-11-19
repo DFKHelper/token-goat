@@ -141,7 +141,7 @@ function inspectXargs(
   if (WALKER_FAMILY.has(name)) {
     const spec = head.text === name && !head.quoted ? XARGS_WALKERS.get(name) : undefined
     if (spec === undefined) return refuse('xargs')
-    const allowed = proven
+    const allowed = listerProven(seg, prev, fromRoot, true)
       ? walkerWithFlagsOnly(command, spec, parsed!.replace)
       : nonRecursiveUnderUnprovenLister(command)
     return allowed

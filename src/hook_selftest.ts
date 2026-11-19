@@ -102,7 +102,7 @@ const killTree = (child) => {
   const exited = child.exitCode !== null || child.signalCode !== null
   if (Number.isInteger(pid) && pid > 1) {
     if (process.platform === 'win32') {
-      // An exited shell's pid may be recycled and Windows has no group handle, so its descendants are left.
+      // An exited shell's pid may be recycled: its descendants are not ended, they live until they exit.
       if (!exited) {
         const root = process.env.SystemRoot || process.env.windir || 'C:/Windows'
         const taskkill = path.join(root, 'System32', 'taskkill.exe')

@@ -204,15 +204,46 @@ describe('walk guard -- more root spellings', () => {
 })
 
 describe('xargs gate -- a name lister (glob, rg -l) vouches for operands, not for a root', () => {
+  // an empty name list still runs the walker once with no operand, so no flags-only walker is vouched for
   it.each([
-    ["find . -name '*.ts' | xargs rg foo"],
+    ['ls *.ts | xargs du'],
+    ['ls *.ts | xargs du -sh'],
     ['ls *.ts | xargs du -ch'],
+    ['ls *.ts | xargs rg foo'],
+    ['rg -l foo | xargs du'],
+    ['rg -l foo | xargs du -sh'],
+    ['rg -l foo | xargs du -ch'],
     ['rg -l foo | xargs rg bar'],
+    ["find . -name '*.ts' | xargs rg foo"],
     ['ls *.ts | xargs grep -rn foo'],
     ['rg -l foo src | xargs grep -rn foo'],
+  ])('refuses the flags-only walker %s behind a name lister', (command) => {
+    expect(form(command, POSIX)).not.toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).not.toBeNull()
+  })
+
+  it.each([
+    ['git ls-files | xargs du'],
+    ['git ls-files | xargs du -sh'],
+    ['git ls-files | xargs du -ch'],
+    ['git ls-files | xargs rg foo'],
+    ['ls *.ts | xargs grep foo'],
+    ['ls *.ts | xargs ls -l'],
   ])('lets %s through', (command) => {
     expect(form(command, POSIX)).toBeNull()
     expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it.each([
+    ['find / | xargs du -sh'],
+    ['find / | xargs du -ch'],
+    ['find / | xargs rg foo'],
+    ['ls *.ts | xargs du -sh /'],
+    ['rg -l foo | xargs du -sh /'],
+    ['rg -l foo | xargs rg foo /'],
+  ])('keeps refusing the unbounded sibling %s', (command) => {
+    expect(form(command, POSIX)).not.toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).not.toBeNull()
   })
 
   it.each([

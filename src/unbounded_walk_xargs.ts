@@ -270,7 +270,7 @@ export function listerProven(
   return !seg.words.some((w) => !w.quoted && /</.test(w.text)) && isBoundedLister(prev)
 }
 
-/** A lister naming files by glob or content (`ls *.ts`, `rg -l`); a bare walker stays refused behind it. */
+/** A lister naming files by glob or content (`ls *.ts`, `rg -l`); a walker with no operand stays refused. */
 function isNameLister(left: Segment): boolean {
   const listsByName = (t: string): boolean => /[*?]/.test(t) || t === '-l' || t === '--files-with-matches'
   return left.words.slice(1).some((w) => listsByName(w.text))

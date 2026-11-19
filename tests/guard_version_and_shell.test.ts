@@ -79,6 +79,19 @@ describe('the shell Claude Code runs a hook in', () => {
     expect(claudeFindsGitBash(spaces), 'whitespace falls back').toBe(true)
   })
 
+  it('checks the trimmed name for existence as it does for the bash basename', () => {
+    const named = path.join(root, 'bash.exe')
+    fs.writeFileSync(named, '')
+    const padded = { CLAUDE_CODE_GIT_BASH_PATH: `  ${named}\t`, PATH: '' }
+    expect(claudeFindsGitBash(padded), 'a padded name of an existing bash').toBe(true)
+    const seen: string[] = []
+    const probe = (p: string): boolean => (seen.push(p), true)
+    expect(claudeFindsGitBash({ CLAUDE_CODE_GIT_BASH_PATH: ` ${named} ` }, probe)).toBe(true)
+    expect(seen).toEqual([named])
+    const lookalike = { CLAUDE_CODE_GIT_BASH_PATH: ` ${path.join(root, 'my-bash.exe')} `, PATH: '' }
+    expect(claudeFindsGitBash(lookalike, () => true), 'a padded look-alike stays refused').toBe(false)
+  })
+
   it('judges the name of a set path by its trimmed value, so a trailing space does not hide bash', () => {
     const padded = { CLAUDE_CODE_GIT_BASH_PATH: `${path.join(root, 'bash.exe')} `, PATH: '' }
     expect(claudeFindsGitBash(padded, () => true), 'trailing space, file present').toBe(true)

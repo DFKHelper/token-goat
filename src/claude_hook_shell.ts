@@ -24,7 +24,7 @@ export function claudeFindsGitBash(
   const named = env['CLAUDE_CODE_GIT_BASH_PATH']
   const trimmed = named?.trim()
   // A set path is taken at its word; no PATH lookup.
-  if (named !== undefined && trimmed !== '') return isBashName(trimmed!) && exists(named)
+  if (named !== undefined && trimmed !== '') return isBashName(trimmed!) && exists(trimmed!)
   for (const dir of (env['PATH'] ?? '').split(path.delimiter)) {
     if (dir === '' || !exists(path.join(dir, 'git.exe'))) continue
     const root = path.dirname(dir)

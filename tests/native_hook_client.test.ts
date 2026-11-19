@@ -158,8 +158,6 @@ interface Run {
   firstChunkMs?: number
   firstChunk?: Buffer
   exitMs: number
-  /** Whether stdout had delivered a chunk when `exit` fired: an order of events, read off no clock. */
-  answeredBeforeExit: boolean
   /** Whether stdout or stderr was still open 3 s after the client exited: some process it left behind holds the harness's pipe, and a harness reading to end of output would wait for that process rather than the hook. */
   heldOpen: boolean
 }
@@ -186,7 +184,6 @@ function runNative(
     let stderr = ''
     let firstChunkMs: number | undefined
     let exitMs = NaN
-    let answeredBeforeExit = false
     let heldOpen = false
     let settled = false
     child.stdout.on('data', (d: Buffer) => {
@@ -197,7 +194,6 @@ function runNative(
     child.on('error', reject)
     child.on('exit', () => {
       exitMs = performance.now() - started
-      answeredBeforeExit = out.length > 0
       setTimeout(() => {
         if (settled) return
         heldOpen = true
@@ -212,7 +208,7 @@ function runNative(
       settled = true
       const stdout = Buffer.concat(out)
       const firstChunk = out[0]
-      resolve({ stdout, stderr, exit, signal, firstChunkMs, firstChunk, exitMs, answeredBeforeExit, heldOpen })
+      resolve({ stdout, stderr, exit, signal, firstChunkMs, firstChunk, exitMs, heldOpen })
     })
     // A client that stopped reading stdin early would fail this write with EPIPE; that is not what these cases test.
     child.stdin.on('error', () => undefined)
@@ -1099,7 +1095,7 @@ describe('one deadline serves every route', () => {
     expect(gone, `pid ${text} of the hanging route outlived the client`).toBe(true)
   })
 
-  it('at the 3000 ms limit the answer is out before the client exits, both before the limit', async () => {
+  it('at the 3000 ms limit the client ends on its own with exactly one complete answer', async () => {
     // HAND-DERIVED: 3000 - 150 = 2850 left; route one takes 1900, route two starts near 2000, ends by 2850.
     writePointer({ withShim: true })
     const counter = path.join(sb.base, 'route2-margin')
@@ -1110,8 +1106,7 @@ describe('one deadline serves every route', () => {
     expect(res.exit, res.stderr).toBe(0)
     expect(['{"second":true}', '{"decision":"allow"}']).toContain(res.stdout.toString('utf8'))
     expect(res.firstChunk, 'no answer reached stdout').toBeDefined()
-    expect(res.answeredBeforeExit, 'the answer came after the exit').toBe(true)
-    // The client reports no elapsed time, so the in-limit exit is proved by the Rust rows in fallback.rs.
+    // The verdict is read on `close`; the in-limit exit is proved by the Rust rows in fallback.rs.
   })
 
   // A route that shrugs off SIGTERM and leaves a grandchild holding the stdout pipe the client reads.

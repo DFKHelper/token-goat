@@ -73,6 +73,14 @@ function trimmedDir(dir: string): string {
   return process.platform === 'win32' ? text.toLowerCase() : text
 }
 
+/** Why the reader would reject this `nativeBin`, or undefined; the writer asks the same question. */
+function nativeBinProblem(nativeBin: string): string | undefined {
+  const bad = structurallySound(nativeBin)
+  if (bad !== undefined) return bad
+  if (nameMatches(nativeBin, ['tg-hook', 'tg-hook.exe'])) return undefined
+  return `nativeBin is not tg-hook: ${nativeBin}`
+}
+
 /** Judges the text of a pointer file exactly as the native client does. */
 export function validateHookPointer(text: string): { readonly ok: true; readonly pointer: ValidPointer } | { readonly ok: false; readonly reason: string } {
   const fail = (reason: string): { ok: false; reason: string } => ({ ok: false, reason })
@@ -101,9 +109,8 @@ export function validateHookPointer(text: string): { readonly ok: true; readonly
   if (trimmedDir(bundle) !== trimmedDir(entryDir)) return fail(`bundleDir ${bundle} is not the directory of ${entry}`)
   const nativeBin = str('nativeBin')
   if (nativeBin === undefined) return fail('nativeBin missing')
-  const nativeBad = structurallySound(nativeBin)
+  const nativeBad = nativeBinProblem(nativeBin)
   if (nativeBad !== undefined) return fail(nativeBad)
-  if (!nameMatches(nativeBin, ['tg-hook', 'tg-hook.exe'])) return fail(`nativeBin is not tg-hook: ${nativeBin}`)
   const optional = (key: string, names: readonly string[]): { value: string | undefined; error?: string } => {
     const v = o[key]
     if (v === undefined || v === null) return { value: undefined }
@@ -169,6 +176,8 @@ export function writeHookPointer(entry: string, nativeBin: string, home: string 
   try {
     const resolved = path.resolve(entry)
     if (!nameMatches(resolved, [ENTRY_NAME]) || !existingFile(resolved)) return false
+    // The reader rejects the whole pointer for a bad nativeBin, so keep the old one rather than write that.
+    if (nativeBinProblem(path.resolve(nativeBin)) !== undefined) return false
     const shims = existingShims()
     const pointer: HookPointer = {
       schema: 1,
