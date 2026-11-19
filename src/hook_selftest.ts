@@ -419,19 +419,47 @@ function snapshot(file: string): Buffer | undefined | null {
   }
 }
 
+/** Rounds a publish may lose to a second writer before the install gives up without writing. */
+const MAX_PUBLISH_ROUNDS = 3
+
+/** Whether two snapshots hold the same bytes (or both none). */
+function sameSnapshot(a: Buffer | undefined | null, b: Buffer | undefined | null): boolean {
+  return a === b || (a instanceof Buffer && b instanceof Buffer && a.equals(b))
+}
+
 /** Run `write` with `files` held back, self-test the commands they carry, then publish them. */
 export function verifiedInstall<T>(files: readonly string[], write: () => T): T {
+  for (let round = 1; ; round++) {
+    const outcome = installRound(files, write)
+    if (outcome.raced === undefined) return outcome.result
+    // The staged bytes were built from a config another writer has since changed: build them again from it.
+    if (round >= MAX_PUBLISH_ROUNDS) {
+      throw new HookSelftestError(
+        `${outcome.raced} changed under the install ${String(MAX_PUBLISH_ROUNDS)} times while its hooks were ` +
+          `checked, so nothing was written to it: run the install again`,
+      )
+    }
+  }
+}
+
+/** One probe-then-publish pass; `raced` names the file a second writer changed before it could be published. */
+function installRound<T>(files: readonly string[], write: () => T): { result: T; raced?: string } {
   const before = files.map(snapshot)
-  if (before.includes(null)) return write()
+  if (before.includes(null)) return { result: write() }
   const { result, staged } = withStagedWrites(files, write)
   // A held file is probed from the bytes it was given; a file `write` changed some other way is read off disk.
   const after = files.map((f) => staged.get(f) ?? snapshot(f))
-  const publish = (): void => {
-    files.forEach((f, i) => {
+  // limit: compare and rename are two calls, a write between them is lost; revisit-when: a lock exists
+  const publish = (): { result: T; raced?: string } => {
+    const pending = files.flatMap((f, i) => {
       const bytes = staged.get(f)
       const was = before[i] ?? undefined
-      if (bytes !== undefined && !(was !== undefined && bytes.equals(was))) atomicWriteBytes(f, bytes)
+      return bytes !== undefined && !(was !== undefined && bytes.equals(was)) ? [{ f, bytes, i }] : []
     })
+    const raced = pending.find(({ f, i }) => !sameSnapshot(snapshot(f), before[i]))
+    if (raced !== undefined) return { result, raced: raced.f }
+    pending.forEach(({ f, bytes }) => atomicWriteBytes(f, bytes))
+    return { result }
   }
   // Registrations a newer build wrote stay as it wrote them: this build cannot read their guard.
   files.forEach((f, i) => {
@@ -451,8 +479,7 @@ export function verifiedInstall<T>(files: readonly string[], write: () => T): T 
   })
   if (files.every((_f, i) => before[i] !== undefined && after[i] !== undefined && after[i] !== null
     && before[i]!.equals(after[i]!))) {
-    publish()
-    return result
+    return publish()
   }
   const commands = after.flatMap((buf) =>
     buf === undefined || buf === null ? [] : guardedCommandsInText(buf.toString('utf8')))
@@ -475,6 +502,5 @@ export function verifiedInstall<T>(files: readonly string[], write: () => T): T 
     })
     throw e
   }
-  publish()
-  return result
+  return publish()
 }
