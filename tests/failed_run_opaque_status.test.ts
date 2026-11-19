@@ -4,7 +4,11 @@ import { describe, expect, it } from 'vitest'
 
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
-import { evaluateVerification, noteFailedVerificationRun } from '../src/verification_state.js'
+import {
+  evaluateVerification,
+  noteFailedVerificationRun,
+  noteVerificationRun,
+} from '../src/verification_state.js'
 
 const T0 = Date.UTC(2026, 9, 1, 12, 0, 0)
 
@@ -24,6 +28,20 @@ function failedCallRecords(command: string): boolean {
     saveSessionState(key)
   }
   return evaluateVerification(key).failingUnresolved
+}
+
+/** Whether a failed `npm test` is still unresolved after a passing call carrying `command`. */
+function passingCallClears(command: string): boolean {
+  const key = newSession()
+  loadSessionState(key)
+  try {
+    recordFileEdit('C:/proj/src/a.ts')
+    recordVerificationRun('npm test', 1, T0 + 1000)
+    noteVerificationRun(command, 0, false)
+  } finally {
+    saveSessionState(key)
+  }
+  return !evaluateVerification(key).failingUnresolved
 }
 
 describe('a failed heredoc or substitution call after a passing check', () => {
@@ -54,10 +72,17 @@ describe('a failed heredoc or substitution call after a passing check', () => {
     ).toBe(true)
   })
 
-  it('a check that is the last segment after a process substitution records', () => {
+  it('a check after a process substitution joined by && records nothing on a failure', () => {
     expect(
       failedCallRecords('diff <(echo a) <(echo b) && npm test'),
-      'the last segment is the check',
+      'the diff may be what failed, so the check is not blamed',
+    ).toBe(false)
+  })
+
+  it('the same call exiting 0 still clears an earlier failure of the check', () => {
+    expect(
+      passingCallClears('diff <(echo a) <(echo b) && npm test'),
+      'a pass of the whole chain means the check passed',
     ).toBe(true)
   })
 
@@ -66,5 +91,27 @@ describe('a failed heredoc or substitution call after a passing check', () => {
       failedCallRecords("bash <<'EOF'\nnpx vitest run tests/a.test.ts\nEOF"),
       'the check ends the script',
     ).toBe(true)
+  })
+})
+
+describe('a failed and-chain blames a check only when the check ends it', () => {
+  it.each([
+    ['an earlier operand that is not a check fails first', 'false && npm test'],
+    ['the check passed and a later operand failed', 'npm test && false'],
+    ['an install is not a check', 'npm ci && npm test'],
+  ])('%s: %s records nothing', (_why, command) => {
+    expect(failedCallRecords(command), 'the failure was blamed on a check that may not have run').toBe(false)
+  })
+
+  it.each([
+    ['a lone check', 'npm test'],
+    ['a plain cd before the check', 'cd pkg && npm test'],
+    ['an earlier check before the last one', 'npm run lint && npm test'],
+  ])('%s: %s records', (_why, command) => {
+    expect(failedCallRecords(command), 'a real failing check went unrecorded').toBe(true)
+  })
+
+  it('a pass of an install-then-test chain still clears an earlier failure', () => {
+    expect(passingCallClears('npm ci && npm test'), 'the pass rule must stay as it was').toBe(true)
   })
 })

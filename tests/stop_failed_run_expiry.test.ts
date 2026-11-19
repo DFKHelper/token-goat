@@ -163,7 +163,8 @@ describe('the failure path judges a command as the pass path does', () => {
       expect(recordedAfterFailure(command), command).toEqual([])
       expect(recordedAfterPass(command), command).toEqual([])
     }
-    expect(recordedAfterFailure('node -e "console.log(1)" && npm test')).toEqual(['npm test'])
+    expect(recordedAfterFailure('node -e "console.log(1)" && npm test')).toEqual([])
+    expect(recordedAfterPass('node -e "console.log(1)" && npm test')).toEqual(['npm test'])
   })
 
   it('(f) a launcher carrying a check counts as that check', () => {

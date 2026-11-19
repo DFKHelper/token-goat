@@ -449,10 +449,23 @@ describe('stored command credentials', () => {
   it('stores the failed-run path the same way', () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const sid = newSession()
-    inSession(sid, () => noteFailedVerificationRun('X=hunter2 mysqldump -phunter2 db && npm test', 'Exit code 1', false))
+    const chain = 'cd dir-hunter2 && X=hunter2 npm test'
+    inSession(sid, () => noteFailedVerificationRun(chain, 'Exit code 1', false))
     const blob = fs.readFileSync(sessionSidecarPath(sid, '.json') ?? '', 'utf8')
     expect(blob).not.toContain('hunter2')
     expect(evaluateVerification(sid).runs[0]?.command).toBe('npm test')
+  })
+
+  it('a failed mysqldump chain before the check records no run and no secret', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    const chain = 'X=hunter2 mysqldump -phunter2 db && npm test'
+    inSession(sid, () => noteFailedVerificationRun(chain, 'Exit code 1', false))
+    expect(evaluateVerification(sid).runs).toEqual([])
+    const sidecar = sessionSidecarPath(sid, '.json')
+    if (sidecar !== null && fs.existsSync(sidecar)) {
+      expect(fs.readFileSync(sidecar, 'utf8')).not.toContain('hunter2')
+    }
   })
 })
 

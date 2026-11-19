@@ -278,6 +278,22 @@ function withoutHeredocFraming(command: string): string {
   return lines.filter((_text, j) => !dropped.has(j)).join('\n').trimEnd().replace(TRAILING_CLOSERS, '')
 }
 
+const PLAIN_CD = /^cd\s+(?:--\s+)?[^\s;&|<>$`()]+$/
+
+/** A chain with `&&` blames its check only if it ends the chain and each earlier operand is a check, `cd` or pipefail. */
+function andChainEndsInCheck(command: string, isCheck: (segment: string) => boolean): boolean {
+  const parts = command.replace(/[;\s]+$/, '').split(COMMAND_SEPARATOR)
+  if (!parts.includes('&&')) return true
+  const operand = (i: number): string => (parts[i] as string).trim().replace(ENV_ASSIGNMENT_PREFIX, '')
+  const lenient = (i: number): boolean => PLAIN_CD.test(operand(i)) || PIPEFAIL_STATEMENT.test(operand(i))
+  if (!isCheck(parts[parts.length - 1] as string)) return false
+  return parts.every((part, i) => {
+    if (i === parts.length - 1) return true
+    if (i % 2 === 0) return isCheck(part) || lenient(i)
+    return part === '&&' || (lenient(i - 1) && (part === ';' || part === '\n'))
+  })
+}
+
 /** Record a Bash call that failed, from the failure event's error text (Claude Code opens it with `Exit code N`; the status is 1 when the text carries none). An interrupt has no verdict. */
 export function noteFailedVerificationRun(
   typed: string,
@@ -289,7 +305,8 @@ export function noteFailedVerificationRun(
   // Same rule as the pass path; when the status cannot be told to belong to a check, nothing is recorded.
   const isVerdict =
     hasDirectCheck(command) &&
-    exitStatusIsCheckVerdict(withoutHeredocFraming(command), isDirectVerificationSegment)
+    exitStatusIsCheckVerdict(withoutHeredocFraming(command), isDirectVerificationSegment) &&
+    andChainEndsInCheck(withoutHeredocFraming(command), isDirectVerificationSegment)
   if (isInterrupt || !(isVerdict || isDocumentOnlyFailure(command))) return
   const status = EXIT_CODE_IN_ERROR.exec(errorText)
   const exitCode = status !== null && Number(status[1]) !== 0 ? Number(status[1]) : 1
