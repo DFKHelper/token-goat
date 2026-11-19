@@ -18,7 +18,11 @@ const absent: Answer = { code: 1, err: NOT_FOUND }
 const timedOut: Answer = { code: null }
 const ES = 'ERROR: El sistema no pudo encontrar la clave o el valor del Registro especificado.\r\n'
 
-const reg = vi.hoisted(() => ({ calls: [] as { cmd: string; args: string[]; opts: Record<string, unknown>; async?: true }[], answers: {} as Record<string, Answer> }))
+const reg = vi.hoisted(() => ({
+  calls: [] as { cmd: string; args: string[]; opts: Record<string, unknown>; async?: true }[],
+  answers: {} as Record<string, Answer>,
+  onQuery: undefined as (() => void) | undefined,
+}))
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof ChildProcess>()
@@ -27,6 +31,7 @@ vi.mock('node:child_process', async (importOriginal) => {
     spawnSync: (cmd: string, args: readonly string[], ...rest: unknown[]) => {
       if (!/reg\.exe$/i.test(cmd)) return (actual.spawnSync as (...a: unknown[]) => unknown)(cmd, args, ...rest)
       reg.calls.push({ cmd, args: [...args], opts: (rest[0] ?? {}) as Record<string, unknown> })
+      reg.onQuery?.()
       const a = reg.answers[args[1] as string] ?? { code: 1, err: '' }
       return a.code === null ? { status: null, error: new Error('spawnSync reg.exe ETIMEDOUT'), stdout: '', stderr: '' } : { status: a.code ?? 0, stdout: a.out ?? '', stderr: a.err ?? '' }
     },
@@ -43,7 +48,16 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-import { loadHiddenRuleCheck, loadPermissionSnapshot, permissionNeutralRewrite, primeManagedPolicyAhead, readHintCrossesRule, resetPermissionSourceCache, type RewriteRequest } from '../src/rewrite_permission.js'
+import {
+  loadHiddenRuleCheck,
+  loadPermissionSnapshot,
+  loadPermissionSnapshotOrThrow,
+  permissionNeutralRewrite,
+  primeManagedPolicyAhead,
+  readHintCrossesRule,
+  resetPermissionSourceCache,
+  type RewriteRequest,
+} from '../src/rewrite_permission.js'
 
 const FILTER = Symbol.for('token-goat.permission-source-filter')
 const slot = globalThis as unknown as Record<symbol, unknown>
@@ -362,5 +376,37 @@ describe('the resident hook server refreshes the registry policy off the event l
     vi.advanceTimersByTime(20_000)
     expect(asyncKeys(), 'a snapshot did not resume the refresh').toEqual([K_L, K_C])
     await flush()
+  })
+})
+
+describe('a registry read stops at the hook deadline before its next reg query', () => {
+  const T = 1_700_000_000_000
+  afterEach(() => {
+    reg.onQuery = undefined
+  })
+
+  it('a budget gone after the first query never starts the second, and the read throws its expiry', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(T)
+    reg.onQuery = () => vi.setSystemTime(T + 2000)
+    const read = (): unknown => loadPermissionSnapshotOrThrow(root, root, { deadlineAt: T + 1000 })
+    expect(read).toThrow(/not read in time/)
+    expect(keysAsked(), 'the second registry query ran after the budget was gone').toEqual([K_L])
+  })
+
+  it('a budget of N ms left calls each query with a timeout no larger than N', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(T)
+    loadPermissionSnapshotOrThrow(root, root, { deadlineAt: T + 1500 })
+    expect(keysAsked()).toEqual([K_L, K_C])
+    const timeouts = reg.calls.map((c) => c.opts['timeout'])
+    expect(timeouts, 'a query waited longer than the budget left').toEqual([1500, 1500])
+  })
+
+  it('a full budget calls every query with the 5 s cap', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(T)
+    loadPermissionSnapshotOrThrow(root, root, { deadlineAt: T + 60_000 })
+    expect(reg.calls.map((c) => c.opts['timeout'])).toEqual([5000, 5000])
   })
 })

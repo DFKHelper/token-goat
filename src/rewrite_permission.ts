@@ -526,7 +526,19 @@ const REG_SENTINEL = 'HKLM\\SOFTWARE\\TokenGoatNoSuchKey'
 const REG_OPTS = { encoding: 'utf8', windowsHide: true, timeout: 5000 } as const
 const regArgs = (key: string): string[] => ['query', key, '/v', 'Settings']
 type RegResult = { readonly status: number | null; readonly stdout: string; readonly stderr: string }
-const regQuery = (key: string): RegResult => spawnSync(windowsSystem32Exe('reg.exe'), regArgs(key), REG_OPTS)
+/** Throws once an epoch-ms deadline has passed: the expiry every permission read reports. */
+function checkDeadlineAt(deadlineAt: number | undefined): void {
+  if (deadlineAt !== undefined && Date.now() > deadlineAt) {
+    throw new Error('the permission settings were not read in time')
+  }
+}
+/** One reg query, refused once the deadline has passed and waiting no longer than the time it has left. */
+function regQuery(key: string, deadlineAt?: number): RegResult {
+  checkDeadlineAt(deadlineAt)
+  const left = deadlineAt === undefined ? REG_OPTS.timeout : Math.max(1, deadlineAt - Date.now())
+  const timeout = Math.min(REG_OPTS.timeout, left)
+  return spawnSync(windowsSystem32Exe('reg.exe'), regArgs(key), { ...REG_OPTS, timeout })
+}
 /** The same query without blocking the event loop, for the resident hook server's refresh: a timeout, a spawn failure or an oversized answer has no exit code, so it reads as unreadable just as the synchronous query's null status does. */
 function regQueryAsync(key: string): Promise<RegResult> {
   return new Promise((resolve) => {
@@ -549,9 +561,10 @@ function registrySettings(key: string, res: RegResult, missing: () => string): R
   return json
 }
 /** The `Settings` value of each Windows policy key, in order: undefined when provably absent, throws when it cannot be read as a JSON object. */
-function readRegistrySettings(keys: string[]): (Record<string, unknown> | undefined)[] {
+function readRegistrySettings(keys: string[], deadlineAt?: number): (Record<string, unknown> | undefined)[] {
   let missing: string | undefined
-  return keys.map((key) => registrySettings(key, regQuery(key), () => (missing ??= sentinelMessage(regQuery(REG_SENTINEL)))))
+  const sentinel = (): string => (missing ??= sentinelMessage(regQuery(REG_SENTINEL, deadlineAt)))
+  return keys.map((key) => registrySettings(key, regQuery(key, deadlineAt), sentinel))
 }
 /** {@link readRegistrySettings} with every key asked at once and the sentinel asked only when some answer needs it; rejects where that throws. */
 async function readRegistrySettingsAsync(keys: string[]): Promise<(Record<string, unknown> | undefined)[]> {
@@ -586,12 +599,15 @@ export function managedDirs(): string[] {
 }
 
 /** Every managed settings source on this machine (https://code.claude.com/docs/en/managed-settings#where-each-mechanism-stores-the-policy), plus the server-managed cache. */
-function managedDocs(registry?: { readonly keys: string[]; readonly values: (Record<string, unknown> | undefined)[] }): SettingsDoc[] {
+function managedDocs(
+  registry?: { readonly keys: string[]; readonly values: (Record<string, unknown> | undefined)[] },
+  deadlineAt?: number,
+): SettingsDoc[] {
   const out: SettingsDoc[] = []
   for (const dir of managedDirs()) managedFileDocs(dir, 'file', out)
   if (process.platform === 'win32') {
     const keys = registry?.keys ?? policyKeys()
-    const values = registry?.values ?? readRegistrySettings(keys)
+    const values = registry?.values ?? readRegistrySettings(keys, deadlineAt)
     values.forEach((json, i) => {
       if (json !== undefined) {
         const managedGroup = (keys[i] as string).slice(0, 4).toLowerCase()
@@ -627,8 +643,8 @@ interface ManagedCache {
 let managedCache: ManagedCache | undefined
 
 /** The managed sources with the stamp of each file read; a read failure is thrown as managedDocs throws it. */
-function stampedManagedDocs(registry?: Parameters<typeof managedDocs>[0]): ManagedCache {
-  const run = recordingSourceStamps(() => managedDocs(registry))
+function stampedManagedDocs(registry?: Parameters<typeof managedDocs>[0], deadlineAt?: number): ManagedCache {
+  const run = recordingSourceStamps(() => managedDocs(registry, deadlineAt))
   if (run.error !== undefined) throw run.error
   return { at: Date.now(), docs: run.value as SettingsDoc[], stamps: run.stamps }
 }
@@ -725,11 +741,7 @@ export function loadPermissionSnapshotOrThrow(
     readonly deadlineAt?: number | undefined
   } = {},
 ): PermissionSnapshot {
-  const checkDeadline = (): void => {
-    if (options.deadlineAt !== undefined && Date.now() > options.deadlineAt) {
-      throw new Error('the permission settings were not read in time')
-    }
-  }
+  const checkDeadline = (): void => checkDeadlineAt(options.deadlineAt)
   checkDeadline()
   const here = path.resolve(cwd)
   const project = projectDir !== undefined && path.isAbsolute(projectDir) ? path.resolve(projectDir) : undefined
@@ -749,7 +761,7 @@ export function loadPermissionSnapshotOrThrow(
   managedUsedAt = now
   const aged = managedCache === undefined || now - managedCache.at > MANAGED_CACHE_MS
   if (managedCache === undefined || aged || !stampsCurrent(managedCache.stamps)) {
-    managedCache = { ...stampedManagedDocs(), at: now }
+    managedCache = { ...stampedManagedDocs(undefined, options.deadlineAt), at: now }
   }
   stampLog?.push(...managedCache.stamps)
   const docs: SettingsDoc[] = [...managedCache.docs]
