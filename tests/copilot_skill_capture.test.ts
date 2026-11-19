@@ -35,6 +35,7 @@ function mkTemp(prefix: string): string {
 interface Rig {
   proj: string
   copilotHome: string
+  env: NodeJS.ProcessEnv
   hook: (event: string, name: string) => Record<string, unknown>
   cli: (...args: string[]) => { status: number | null; stdout: string; stderr: string }
 }
@@ -73,7 +74,7 @@ function rig(): Rig {
     const res = spawnSync(process.execPath, [BUNDLE, ...args], { cwd: proj, encoding: 'utf8', timeout: 60000, env })
     return { status: res.status, stdout: res.stdout, stderr: res.stderr }
   }
-  return { proj, copilotHome, hook, cli }
+  return { proj, copilotHome, env, hook, cli }
 }
 
 function writeSkill(root: string): string {
@@ -112,6 +113,126 @@ describe('Copilot CLI skill tool (CAPTURE C5)', () => {
     const recalled = cli('skill-body', 'tgcap-echo')
     expect(recalled.status, recalled.stderr).toBe(0)
     expect(recalled.stdout).toContain(BODY_MARKER)
+  })
+
+  it('finds a custom skill directory from COPILOT_SKILLS_DIRS', () => {
+    const customRig = rig()
+    const customRoot = mkTemp('tg-copilot-custom-skills-')
+    writeSkill(customRoot)
+    customRig.env.COPILOT_SKILLS_DIRS = customRoot
+
+    customRig.hook('preToolUse', 'C5-004-preToolUse-skill')
+    customRig.hook('postToolUse', 'C5-005-postToolUse-skill')
+
+    const recalled = customRig.cli('skill-body', 'tgcap-echo')
+    expect(recalled.status, recalled.stderr).toBe(0)
+    expect(recalled.stdout).toContain(BODY_MARKER)
+  })
+
+  it('finds a custom skill directory from the Copilot settings skillDirectories array', () => {
+    const customRig = rig()
+    const customRoot = mkTemp('tg-copilot-settings-skills-')
+    writeSkill(customRoot)
+    fs.writeFileSync(
+      path.join(customRig.copilotHome, 'settings.json'),
+      JSON.stringify({ skillDirectories: [customRoot] }),
+      'utf8',
+    )
+
+    customRig.hook('preToolUse', 'C5-004-preToolUse-skill')
+    customRig.hook('postToolUse', 'C5-005-postToolUse-skill')
+
+    const recalled = customRig.cli('skill-body', 'tgcap-echo')
+    expect(recalled.status, recalled.stderr).toBe(0)
+    expect(recalled.stdout).toContain(BODY_MARKER)
+  })
+
+  it('finds a skill when skillDirectories points at a collection directory', () => {
+    const customRig = rig()
+    const customRoot = mkTemp('tg-copilot-collection-skills-')
+    const nested = path.join(customRoot, 'different-folder')
+    fs.mkdirSync(nested, { recursive: true })
+    fs.writeFileSync(
+      path.join(nested, 'SKILL.md'),
+      '---\nname: tgcap-echo\ndescription: Aliased skill.\n---\n' + SKILL_MD.split('---\n').slice(2).join('---\n'),
+    )
+    fs.writeFileSync(
+      path.join(customRig.copilotHome, 'settings.json'),
+      JSON.stringify({ skillDirectories: [customRoot] }),
+      'utf8',
+    )
+
+    customRig.hook('preToolUse', 'C5-004-preToolUse-skill')
+    customRig.hook('postToolUse', 'C5-005-postToolUse-skill')
+
+    const recalled = customRig.cli('skill-body', 'tgcap-echo')
+    expect(recalled.status, recalled.stderr).toBe(0)
+    expect(recalled.stdout).toContain(BODY_MARKER)
+  })
+
+  it('finds a skill when skillDirectories points directly at a SKILL.md file', () => {
+    const customRig = rig()
+    const skillFile = mkTemp('tg-copilot-direct-skill-')
+    const directFile = path.join(skillFile, 'SKILL.md')
+    fs.mkdirSync(skillFile, { recursive: true })
+    fs.writeFileSync(directFile, SKILL_MD)
+    fs.writeFileSync(
+      path.join(customRig.copilotHome, 'settings.json'),
+      JSON.stringify({ skillDirectories: [directFile] }),
+      'utf8',
+    )
+
+    customRig.hook('preToolUse', 'C5-004-preToolUse-skill')
+    customRig.hook('postToolUse', 'C5-005-postToolUse-skill')
+
+    const recalled = customRig.cli('skill-body', 'tgcap-echo')
+    expect(recalled.status, recalled.stderr).toBe(0)
+    expect(recalled.stdout).toContain(BODY_MARKER)
+  })
+
+  it('does not follow a junction or symlink outside a custom skill collection', () => {
+    const customRig = rig()
+    const outside = mkTemp('tg-copilot-outside-skills-')
+    const outsideSkill = writeSkill(outside)
+    fs.writeFileSync(outsideSkill, SKILL_MD.replace(BODY_MARKER, 'OUTSIDE-SKILL-MUST-NOT-ESCAPE'))
+    const collection = mkTemp('tg-copilot-contained-skills-')
+    const link = path.join(collection, 'escape')
+    fs.symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+
+    fs.writeFileSync(
+      path.join(customRig.copilotHome, 'settings.json'),
+      JSON.stringify({ skillDirectories: [collection] }),
+      'utf8',
+    )
+
+    customRig.hook('preToolUse', 'C5-004-preToolUse-skill')
+    customRig.hook('postToolUse', 'C5-005-postToolUse-skill')
+
+    const recalled = customRig.cli('skill-body', 'tgcap-echo')
+    expect(recalled.status).not.toBe(0)
+    expect(recalled.stdout).not.toContain('OUTSIDE-SKILL-MUST-NOT-ESCAPE')
+  })
+
+  it('does not follow a direct SKILL.md symlink outside the configured file parent', () => {
+    const customRig = rig()
+    const outside = mkTemp('tg-copilot-direct-outside-skill-')
+    const outsideSkill = writeSkill(outside)
+    fs.writeFileSync(outsideSkill, SKILL_MD.replace(BODY_MARKER, 'DIRECT-OUTSIDE-SKILL-MUST-NOT-ESCAPE'))
+    const parent = mkTemp('tg-copilot-direct-link-parent-')
+    const link = path.join(parent, 'SKILL.md')
+    fs.symlinkSync(outsideSkill, link, 'file')
+    fs.writeFileSync(
+      path.join(customRig.copilotHome, 'settings.json'),
+      JSON.stringify({ skillDirectories: [link] }),
+      'utf8',
+    )
+
+    customRig.hook('preToolUse', 'C5-004-preToolUse-skill')
+    customRig.hook('postToolUse', 'C5-005-postToolUse-skill')
+
+    const recalled = customRig.cli('skill-body', 'tgcap-echo')
+    expect(recalled.status).not.toBe(0)
+    expect(recalled.stdout).not.toContain('DIRECT-OUTSIDE-SKILL-MUST-NOT-ESCAPE')
   })
 
   it('does not deny a reload it could not cache, when no skill directory holds the skill', () => {

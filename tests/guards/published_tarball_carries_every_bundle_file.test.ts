@@ -10,6 +10,32 @@ import { pinnedPopulation } from './population.js'
 // @ts-expect-error -- a maintainer script in plain JavaScript, deliberately outside the typed source tree.
 import { npmCommand } from '../../scripts/dependabot-body.mjs'
 
+interface PackedFileRecord {
+  readonly path: string
+}
+
+interface PackedPackageRecord {
+  readonly files: readonly PackedFileRecord[]
+}
+
+export function parseNpmPackJson(stdout: string): string[] {
+  const start = stdout.search(/^\s*(?:\[|\{)/m)
+  if (start < 0) throw new Error('npm pack output did not contain JSON')
+  const parsed: unknown = JSON.parse(stdout.slice(start))
+  const packs: readonly PackedPackageRecord[] = Array.isArray(parsed)
+    ? parsed as readonly PackedPackageRecord[]
+    : typeof parsed === 'object' && parsed !== null
+      ? Object.values(parsed as Record<string, unknown>)
+        .filter((value): value is PackedPackageRecord => (
+          typeof value === 'object'
+          && value !== null
+          && Array.isArray((value as PackedPackageRecord).files)
+        ))
+      : []
+  if (packs.length !== 1) throw new Error(`expected one packed package, received ${packs.length}`)
+  return packs[0]!.files.map((file) => file.path.replaceAll('\\', '/'))
+}
+
 /** What `npm pack` would publish, read from npm itself rather than from package.json's `files` list: `dist/.npmignore` also decides, and it drops every `.cjs` except the hook client by name, so a new CommonJS file added to the build without a matching exception would build, pass every test that reads dist/, and be missing from every install. The dry run reads the working dist/, which the suite's global setup has just built. */
 function packedPaths(): string[] {
   // npm's own entry through this Node rather than its Windows .cmd wrapper, which Node spawns only through a shell.
@@ -17,13 +43,18 @@ function packedPaths(): string[] {
   expect(npm, 'no npm-cli.js to run').not.toBeNull()
   const res = spawnSync(npm.file, [...npm.prefix, 'pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: ROOT, encoding: 'utf8', timeout: 60_000 })
   expect(res.status, res.stderr).toBe(0)
-  // CAPTURE (CI on Node 22, and npm 10.9.9 run here): npm 10 still runs `prepare` for a pack despite --ignore-scripts, and its output ("sync hooks: ...") lands on stdout ahead of the JSON; npm 11 skips it. npm's JSON is the array that opens at the start of a line.
-  const json = res.stdout.slice(res.stdout.search(/^\[/m))
-  const [pack] = JSON.parse(json) as Array<{ files: Array<{ path: string }> }>
-  return pack!.files.map((f) => f.path.replaceAll('\\', '/'))
+  // npm 10 emits a top-level array; npm 11 emits a package-name-keyed object. npm 10 may also prefix the JSON with prepare-hook output.
+  return parseNpmPackJson(res.stdout)
 }
 
 describe('the published tarball', () => {
+  it('parses npm 10 array and npm 11 object pack JSON', () => {
+    const npm10 = '[{"files":[{"path":"dist/token-goat.mjs"},{"path":"dist/token-goat.core.mjs"}]}]'
+    const npm11 = '{"token-goat@2.9.35":{"files":[{"path":"dist/token-goat.mjs"},{"path":"dist/token-goat.core.mjs"}]}}'
+    expect(parseNpmPackJson(npm10)).toEqual(['dist/token-goat.mjs', 'dist/token-goat.core.mjs'])
+    expect(parseNpmPackJson(`prepare hook output\n${npm11}`)).toEqual(['dist/token-goat.mjs', 'dist/token-goat.core.mjs'])
+  })
+
   it('carries every entry file and every chunk the build emits', () => {
     const packed = new Set(packedPaths())
     // FORMAT-DERIVED from scripts/build-options.mjs (ENTRY_POINTS, emitted as `[name].mjs`, and CJS_CLIENT, emitted again as `[name].cjs`) and the launcher esbuild.config.mjs writes as dist/token-goat.mjs. The client is named twice because the shim template (src/bridges/shim_try_server.ts) loads the `.cjs` and the launcher loads the `.mjs`. FORMAT-DERIVED from esbuild.config.mjs too: the WebAssembly runtime's glue module, copied beside the chunks because ONNX Runtime loads it by URL rather than through the bundle.

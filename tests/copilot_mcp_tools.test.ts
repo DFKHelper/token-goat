@@ -155,6 +155,21 @@ describe('readCopilotMcpTools', () => {
     expect(report.servers).toEqual([])
     expect(report.disabledServers).toEqual(['github-mcp-server'])
   })
+
+  it('reports cache persistence as disabled when COPILOT_MCP_TOOL_CACHE=false', () => {
+    writeCache('a.json', { serverName: 'srv', updatedAt: '2026-01-01T00:00:00Z', tools: [tool('t', 'd')] })
+    const previous = process.env['COPILOT_MCP_TOOL_CACHE']
+    process.env['COPILOT_MCP_TOOL_CACHE'] = 'false'
+    try {
+      const report = readCopilotMcpTools(cacheDir())
+      expect(report.cacheFound).toBe(false)
+      expect(report.cacheDisabled).toBe(true)
+      expect(report.servers).toEqual([])
+    } finally {
+      if (previous === undefined) delete process.env['COPILOT_MCP_TOOL_CACHE']
+      else process.env['COPILOT_MCP_TOOL_CACHE'] = previous
+    }
+  })
 })
 
 describe('waste --copilot per-server section', () => {
@@ -237,5 +252,25 @@ describe('waste --copilot per-server section', () => {
     expect(out).toContain('all are disabled in settings (github-mcp-server)')
     expect(out).toContain('None are contributing to active tool-definition overhead')
     expect(out).not.toContain('re-sent every request')
+  })
+
+  it('reports when COPILOT_MCP_TOOL_CACHE disables persistence', async () => {
+    writeSession()
+    writeCache('gh.json', {
+      serverName: 'github-mcp-server',
+      updatedAt: '2026-01-01T00:00:00Z',
+      tools: [tool('search_code', 'Search code')],
+    })
+    const previous = process.env['COPILOT_MCP_TOOL_CACHE']
+    process.env['COPILOT_MCP_TOOL_CACHE'] = 'false'
+    try {
+      const out = await render()
+      expect(out).toContain('MCP tool snapshot cache disabled by COPILOT_MCP_TOOL_CACHE=false')
+      expect(out).toContain('Existing cache files are left untouched')
+      expect(out).not.toContain('re-sent every request')
+    } finally {
+      if (previous === undefined) delete process.env['COPILOT_MCP_TOOL_CACHE']
+      else process.env['COPILOT_MCP_TOOL_CACHE'] = previous
+    }
   })
 })

@@ -41,7 +41,9 @@ afterEach(() => {
 
 // Inline readMcpConfig for testing without import issues
 function readMcpConfig(projectRoot: string): McpServersConfig | null {
-  const configPath = path.join(projectRoot, '.mcp.json')
+  const configPath = fs.existsSync(path.join(projectRoot, '.mcp.json'))
+    ? path.join(projectRoot, '.mcp.json')
+    : path.join(projectRoot, '.github', 'mcp.json')
   try {
     if (!fs.existsSync(configPath)) {
       return null
@@ -234,6 +236,43 @@ describe('mcp-audit', () => {
       expect(output).toContain('Total cost: 0 tok')
     })
 
+    it('discovers servers from .github/mcp.json when workspace .mcp.json is absent', () => {
+      const githubDir = path.join(tempDir, '.github')
+      fs.mkdirSync(githubDir, { recursive: true })
+      const githubMcpJsonPath = path.join(githubDir, 'mcp.json')
+      fs.writeFileSync(githubMcpJsonPath, JSON.stringify({
+        mcpServers: { linear: { url: 'https://mcp.example.test' } },
+      }))
+
+      const report = buildMcpAuditReport(tempDir, homeDir)
+
+      expect(report.configFound).toBe(true)
+      expect(report.configSourcePath).toBe(githubMcpJsonPath)
+      expect(report.configSourcesChecked).toContain(githubMcpJsonPath)
+      expect(report.servers.some((server) => server.name === 'linear')).toBe(true)
+    })
+
+    it('merges Copilot user servers with workspace MCP config', () => {
+      const githubDir = path.join(tempDir, '.github')
+      fs.mkdirSync(githubDir, { recursive: true })
+      fs.writeFileSync(path.join(githubDir, 'mcp.json'), JSON.stringify({
+        mcpServers: { workspace: { url: 'https://workspace.example.test' } },
+      }))
+      const copilotDir = path.join(homeDir, '.copilot')
+      fs.mkdirSync(copilotDir, { recursive: true })
+      fs.writeFileSync(path.join(copilotDir, 'mcp-config.json'), JSON.stringify({
+        mcpServers: { user: { command: 'user-mcp' } },
+      }))
+
+      const report = buildMcpAuditReport(tempDir, homeDir)
+
+      expect(report.servers.map((server) => server.name).sort()).toEqual(['user', 'workspace'])
+      expect(report.configSourcePaths).toEqual([
+        path.join(githubDir, 'mcp.json'),
+        path.join(copilotDir, 'mcp-config.json'),
+      ])
+    })
+
     it('discovers servers from ~/.claude.json when .mcp.json is absent, keyed on the forward-slash project path', () => {
       const claudeJsonPath = path.join(homeDir, '.claude.json')
       fs.writeFileSync(claudeJsonPath, JSON.stringify({
@@ -416,13 +455,22 @@ describe('mcp-audit', () => {
         expect(report.servers.map((s) => s.name)).toEqual(['github'])
       })
 
-      it('ignores Copilot CLI config once any Claude Code scope declares servers', () => {
+      it('merges Copilot CLI config with Claude Code scopes while preserving one entry per name', () => {
         fs.writeFileSync(path.join(homeDir, '.claude.json'), JSON.stringify({ mcpServers: { sentry: { command: 'sentry-mcp' } } }))
         const copilotDir = path.join(homeDir, '.copilot')
         fs.mkdirSync(copilotDir, { recursive: true })
-        fs.writeFileSync(path.join(copilotDir, 'mcp-config.json'), JSON.stringify({ mcpServers: { confluence: { command: 'confluence-mcp' } } }))
+        fs.writeFileSync(path.join(copilotDir, 'mcp-config.json'), JSON.stringify({
+          mcpServers: {
+            confluence: { command: 'confluence-mcp' },
+            sentry: { command: 'copilot-sentry-mcp' },
+          },
+        }))
         const report = buildMcpAuditReport(tempDir, homeDir)
-        expect(report.servers.map((s) => s.name)).toEqual(['sentry'])
+        expect(report.servers.map((s) => s.name).sort()).toEqual(['confluence', 'sentry'])
+        expect(report.configSourcePaths).toEqual([
+          path.join(homeDir, '.claude.json'),
+          path.join(copilotDir, 'mcp-config.json'),
+        ])
       })
     })
 

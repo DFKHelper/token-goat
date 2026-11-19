@@ -50,7 +50,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     '- checking file size/lines before reading → `tokens <file>`',
     '- passing concatenated or unquoted paths to shell tools → verify whitespace and argument separation in multi-path commands (e.g. `git add path1 path2`, never `git add path1path2`)',
     '',
-    'Commands: `answer "<question>"` for a question in words, `symbol NAME`, `tokens <file>`, `outline <file>`, `changed --symbol`, `config-get file KEY`, `json-outline`/`yaml-outline`/`xml-outline`, ' +
+    'Commands: `symbol NAME`, `answer "<question>"`, `tokens <file>`, `outline <file>`, `changed --symbol`, `config-get file KEY`, `json-outline`/`yaml-outline`/`xml-outline`, ' +
       (gdrive ? '`gdrive-sections <file-id>`, ' : '') +
       'and `token-goat --help` for the rest.',
     '',
@@ -62,7 +62,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
 
 /** The `description:` frontmatter line of the Kimi Code skill (`kimiSkillContent` in ./kimi_install.ts). The Claude Code skill does not use it: that one is CANONICAL_SKILL_MD verbatim (../canonical_skill.ts), with a shorter description that opens with the same routing pitch. It is the relevance trigger a harness reads to decide *whether to load the skill at all*, so it is DELIBERATELY exempt from the gate wording {@link buildGuidanceBody} renders: it must stay a plain, keyword-dense one-liner. Do NOT "fix" it into the gate phrasing for consistency with the body -- that degrades skill-loading recall for no benefit. Returned without the trailing newline so each caller can place it. */
 export function skillDescriptionLine(gdrive: boolean): string {
-  return `description: Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output${gdrive ? ', gdrive-sections' : ''}) return narrow slices of code and docs at a fraction of the token cost.`
+  return `description: Use before reading whole files or grepping wide. token-goat commands (symbol, answer, read, section, semantic, outline, skeleton, map, refs, changed, config-get, bash-output, web-output${gdrive ? ', gdrive-sections' : ''}) return narrow slices of code and docs at a fraction of the token cost.`
 }
 
 /** Render the shared token-goat routing gate for one harness, wrapped in the harness's begin/end markers. The body is identical across harnesses (see {@link buildGuidanceBody}); only the markers and the fallback-tool clause vary. Returned as a single string ready to hand to `upsertDelimitedBlock`. */

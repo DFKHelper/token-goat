@@ -1,4 +1,4 @@
-/** CLI handler for `token-goat mcp-audit`. Scans .mcp.json for MCP server definitions and estimates per-server token costs from cached MCP tool calls. Correlates schema complexity against real call frequency. */
+/** CLI handler for `token-goat mcp-audit`. Scans project and user MCP configuration for server definitions and estimates per-server token costs from cached MCP tool calls. Correlates schema complexity against real call frequency. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -74,7 +74,9 @@ function readMcpJsonFile(configPath: string): McpServerConfig | null {
 
 /** Read .mcp.json from the project root. Supports both { mcpServers: {...} } and direct {...} formats. */
 export function readMcpConfig(projectRoot: string): McpServerConfig | null {
-  return readMcpJsonFile(path.join(projectRoot, '.mcp.json'))
+  const mcpJsonPath = path.join(projectRoot, '.mcp.json')
+  if (fs.existsSync(mcpJsonPath)) return readMcpJsonFile(mcpJsonPath)
+  return readMcpJsonFile(path.join(projectRoot, '.github', 'mcp.json'))
 }
 
 /** `projectRoot` in and out of `resolveProjectRoot` (see resolveFilter's cwd handling in dispatch.ts for the same class of case-mismatch) is canonicalized to a lowercase drive letter, but `~/.claude.json` keys `projects` by whatever casing Claude Code literally saw at session start (often uppercase on Windows) -- lowercasing alone would still miss it, so both drive- letter cases are tried alongside both slash forms. */
@@ -109,21 +111,31 @@ function readClaudeJsonConfig(claudeJsonPath: string, projectRoot: string): Clau
   }
 }
 
-/** Discover MCP servers the way Claude Code loads them: local scope (this project's entry in `~/.claude.json`), project scope (`.mcp.json`) and user scope (the top-level `mcpServers` of `~/.claude.json`) are merged, a name declared in several scopes listed once, and Copilot CLI's `mcp-config.json` is read only when no Claude Code scope declares anything; plugin-provided servers (`mcp__plugin_*`) have no on-disk config at all, which is why `printReport` always carries a caveat about them. */
+/** Discover MCP servers across Claude Code and Copilot project/user scopes: local Claude project entries, project `.mcp.json` or `.github/mcp.json`, Claude user entries, and Copilot user `mcp-config.json` are merged. A name declared in several scopes is listed once. Plugin-provided servers have no on-disk config at all, which is why `printReport` carries a caveat about them. */
 function discoverMcpConfig(projectRoot: string, home: string): McpConfigDiscovery {
   const mcpJsonPath = path.join(projectRoot, '.mcp.json')
+  const githubMcpJsonPath = path.join(projectRoot, '.github', 'mcp.json')
   const claudeJsonFile = claudeGlobalJsonPath(home)
   const copilotJsonPath = path.join(copilotCliUserRoot(home), 'mcp-config.json')
-  const sourcesChecked = [mcpJsonPath, claudeJsonFile, copilotJsonPath]
+  const sourcesChecked = [mcpJsonPath, githubMcpJsonPath, claudeJsonFile, copilotJsonPath]
   const claudeJson = readClaudeJsonConfig(claudeJsonFile, projectRoot)
-  const scopes: Array<[McpServerConfig | null, string]> = [[claudeJson.local, claudeJsonFile], [readMcpJsonFile(mcpJsonPath), mcpJsonPath], [claudeJson.user, claudeJsonFile]]
+  const workspaceMcp = fs.existsSync(mcpJsonPath)
+    ? readMcpJsonFile(mcpJsonPath)
+    : readMcpJsonFile(githubMcpJsonPath)
+  const workspaceMcpPath = fs.existsSync(mcpJsonPath) ? mcpJsonPath : githubMcpJsonPath
+  const fromCopilotJson = readMcpJsonFile(copilotJsonPath)
+  const scopes: Array<[McpServerConfig | null, string]> = [
+    [claudeJson.local, claudeJsonFile],
+    [workspaceMcp, workspaceMcpPath],
+    [claudeJson.user, claudeJsonFile],
+    [fromCopilotJson, copilotJsonPath],
+  ]
   const found = scopes.filter((scope): scope is [McpServerConfig, string] => scope[0] !== null)
   if (found.length > 0) {
     const servers: McpServerConfig = Object.fromEntries(found.flatMap(([scope]) => Object.entries(scope)))
     return { servers, sourcePaths: [...new Set(found.map(([, sourcePath]) => sourcePath))], sourcesChecked }
   }
-  const fromCopilotJson = readMcpJsonFile(copilotJsonPath)
-  return { servers: fromCopilotJson, sourcePaths: fromCopilotJson !== null ? [copilotJsonPath] : [], sourcesChecked }
+  return { servers: null, sourcePaths: [], sourcesChecked }
 }
 
 /** Analyze bash output cache for MCP server calls. Returns a map of server name -> call metrics. MCP results share {@link BASH_OUTPUT_SUBDIR} with plain Bash-tool output entries (see mcp_cache.ts's storeMcpOutput), distinguished only by the `mcp_` id prefix it mints -- same filter cmdMcpHistory uses in cache_session_commands.ts. Without it, ordinary Bash command output sitting in the same cache falls through the `command` regex below into the 'unknown' bucket and gets miscounted as MCP server cost. */
