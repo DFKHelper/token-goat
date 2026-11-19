@@ -49,6 +49,7 @@ const SHIMS: Record<string, string> = {
     "process.stderr.write('blocked: use the other command\\n'); " +
     "process.stdout.write('{\"d\":\"block\"}'); process.exit(2)\n",
   healthy: "process.stdout.write('{\"route\":\"node\"}')\n",
+  'multi-line answer': "process.stdout.write('line one\\nline two\\nline three')\n",
 }
 
 let root = ''
@@ -135,6 +136,14 @@ describe('a broken Node shim falls through to the safe answer', () => {
       expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
         status: 0,
         stdout: '{"route":"node"}',
+        stderr: '',
+      })
+    })
+    it(`an answer of several lines reaches the host whole through ${shell}`, () => {
+      const o = run(shell, SHIMS['multi-line answer'])
+      expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
+        status: 0,
+        stdout: 'line one\nline two\nline three',
         stderr: '',
       })
     })
