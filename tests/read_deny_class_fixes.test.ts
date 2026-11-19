@@ -94,7 +94,8 @@ describe('skill commands honor host Read deny rules', () => {
 
   it('a failed Edit gets no near-miss advice quoting a denied file, and gets it for an open one', async () => {
     await loadNearMiss()
-    const body = `# notes\n- keep it as a note only, never${String.fromCharCode(160)}sent from here ${MARKER}.\n`
+    const nbsp = String.fromCharCode(160)
+    const body = `# notes\n- keep it as a note only, never${nbsp}sent from here ${MARKER}.\n`
     const oldString = `- keep it as a note only, never sent from here ${MARKER}.`
     const failed = (file: string): string | null =>
       diagnoseEditFailure(
@@ -166,7 +167,8 @@ describe('skill commands honor host Read deny rules', () => {
 
   it('image-slice --out writes nothing from a denied image and writes the slice of an open one', async () => {
     // HAND-DERIVED: the 1x1 PNG from the PNG specification's minimal example (one white pixel).
-    const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=='
+    const b64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=='
     const png = Buffer.from(b64, 'base64')
     writeFileSync(join(proj, 'locked', 'p.png'), png)
     writeFileSync(join(proj, 'open', 'p.png'), png)
