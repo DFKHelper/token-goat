@@ -115,16 +115,23 @@ fn kill_and_reap(child: &mut std::process::Child, bound: Duration) {
     let _ = poll_within(bound, || matches!(child.try_wait(), Ok(Some(_)) | Err(_)).then_some(()));
 }
 
-fn read_pipe(mut pipe: impl Read, done: mpsc::Sender<Vec<u8>>) {
+/// What a route's stdout read ends with: the bytes past the forwarded marker, or that more than `cap` arrived.
+type Captured = Result<Vec<u8>, &'static str>;
+
+/// Reads `pipe` to its end so the route never stalls; a stream past `cap` bytes is a failed route.
+fn read_pipe(mut pipe: impl Read, cap: usize, done: mpsc::Sender<Captured>) {
     let mut all = Vec::new();
+    let mut over = false;
     let mut forwarded = 0;
     let mut chunk = [0u8; 8192];
     while let Ok(n) = pipe.read(&mut chunk) {
         if n == 0 {
             break;
         }
-        if all.len() < MAX_CAPTURE {
+        if all.len() + n <= cap {
             all.extend_from_slice(&chunk[..n]);
+        } else {
+            over = true;
         }
         if forwarded == 0 && all.starts_with(ASYNC_MARKER) {
             out::emit_partial(std::str::from_utf8(ASYNC_MARKER).unwrap_or(""));
@@ -132,7 +139,7 @@ fn read_pipe(mut pipe: impl Read, done: mpsc::Sender<Vec<u8>>) {
         }
     }
     all.drain(..forwarded);
-    let _ = done.send(all);
+    let _ = done.send(if over { Err("larger than the capture limit") } else { Ok(all) });
 }
 
 /// Runs `argv` with `reason` in its environment as [`crate::fallback::REASON_ENV`] and judges the result within `timeout`. On `Ok` the answer is already on stdout.
@@ -180,7 +187,7 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
     let (tx, rx) = mpsc::channel();
     match child.stdout.take() {
         Some(pipe) => {
-            std::thread::spawn(move || read_pipe(pipe, tx));
+            std::thread::spawn(move || read_pipe(pipe, MAX_CAPTURE, tx));
         }
         None => drop(tx),
     }
@@ -188,7 +195,11 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
     let kill = reap;
     let left = |end: Instant| end.saturating_duration_since(Instant::now());
     let held = match rx.recv_timeout(left(end)) {
-        Ok(bytes) => bytes,
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(what)) => {
+            kill(&mut child);
+            return Err(Failure::Output(what));
+        }
         Err(mpsc::RecvTimeoutError::Timeout) => {
             kill(&mut child);
             return Err(Failure::Timeout(timeout));
@@ -289,6 +300,32 @@ mod tests {
             Err(other) => panic!("expected a judged exit 0, got: {other}"),
             Ok(_) => panic!("the harness header cannot be a JSON answer"),
         }
+    }
+
+    fn captured(bytes: &[u8], cap: usize) -> Captured {
+        let (tx, rx) = mpsc::channel();
+        read_pipe(std::io::Cursor::new(bytes.to_vec()), cap, tx);
+        rx.recv().unwrap()
+    }
+
+    #[test]
+    fn a_stdout_stream_up_to_the_cap_is_kept_whole() {
+        let json = b"{\"a\":1}\n{\"b\":2}\n";
+        assert_eq!(captured(json, json.len()), Ok(json.to_vec()));
+    }
+
+    #[test]
+    fn a_stdout_stream_one_byte_past_the_cap_is_a_failed_route_not_a_cut_answer() {
+        // A cut that lands on a complete JSON value would otherwise judge as a valid answer.
+        let json = b"{\"a\":1}\n{\"b\":2}\n";
+        assert_eq!(captured(json, json.len() - 1), Err("larger than the capture limit"));
+        assert!(matches!(judge(Some(0), &json[..8], b"", false), Ok(0)), "the cut prefix alone is a valid answer");
+    }
+
+    #[test]
+    fn an_over_cap_stream_is_still_read_to_its_end() {
+        let big = vec![b'x'; 3 * 8192 + 5];
+        assert_eq!(captured(&big, 8192), Err("larger than the capture limit"));
     }
 
     #[test]
