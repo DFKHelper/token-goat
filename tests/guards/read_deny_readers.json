@@ -724,6 +724,11 @@
     "accessors": 0,
     "reason": "fixed path: the host session transcript or event log, not a project file"
   },
+  "process_tree.ts": {
+    "reads": 1,
+    "accessors": 0,
+    "reason": "fixed path: /proc/<pid>/environ matched against an owner token, never a project file"
+  },
   "resident_process.ts": {
     "reads": 1,
     "accessors": 0,

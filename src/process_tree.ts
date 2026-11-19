@@ -1,7 +1,11 @@
 // Ending a spawned command means ending everything it started. A child's own kill reaches only the shell it signals, so a command like `find / ...` or a test runner started through that shell kept running after the timeout fired, reparented to init, for as long as it liked. The child stays in this process's own process group (so a group-wide kill by whatever launched token-goat still reaches it) and its tree is ended by freezing and then killing the process table's descendants of it (POSIX, `ps`) or with `taskkill /T` (Windows) while the child is still alive. Not covered: a SIGKILL or TerminateProcess of token-goat itself runs no handler here, so a child started before that is left running (the fix for that is native, PR_SET_PDEATHSIG on Linux and a kill-on-close Job Object on Windows, and is not part of this module), and when that SIGKILL lands during the freeze walk the tree is left stopped instead of running; on Windows `taskkill /T` snapshots the tree with no freeze, so a command that is forking while it is ended can still slip a child out ahead of the kill there; a descendant that already left the tree by being reparented before the kill (its shell exited first); and, on POSIX, a descendant that changed its parent pid by other means.
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+
+import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
 
 // taskkill and ps are local utilities that answer in milliseconds; the bound only keeps a wedged one from holding the caller.
 const HELPER_TIMEOUT_MS = 10_000
@@ -103,6 +107,66 @@ export function killProcessTree(pid: number | undefined): KillResult {
   return note === undefined ? { ok: true } : { ok: false, note }
 }
 
+// Each owned Linux child carries this variable with a per-spawn value, so an orphan is still found.
+const OWNER_TOKEN_VAR = 'TOKEN_GOAT_OWNED_BY'
+
+/** Linux pids carrying *token* (via /proc). limit: macOS, scrubbed env; revisit-when: a job owner exists. */
+function pidsCarryingToken(token: string): number[] {
+  const needle = Buffer.from(`${OWNER_TOKEN_VAR}=${token}\0`)
+  const found: number[] = []
+  let entries: string[]
+  try {
+    entries = fs.readdirSync('/proc')
+  } catch {
+    return found
+  }
+  for (const name of entries) {
+    const pid = Number(name)
+    if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue
+    try {
+      if (fs.readFileSync(`/proc/${pid}/environ`).includes(needle)) found.push(pid)
+    } catch {
+      // A process that exited meanwhile or belongs to another user carries nothing of ours.
+    }
+  }
+  return found
+}
+
+/** Ends every process carrying *token*: stop each new one so it cannot fork, repeat, then kill all. */
+function killTokenCarriers(token: string): void {
+  const stopped = new Set<number>()
+  for (let pass = 0; pass < MAX_FREEZE_PASSES; pass++) {
+    const fresh = pidsCarryingToken(token).filter((pid) => !stopped.has(pid))
+    if (fresh.length === 0) break
+    for (const pid of fresh) {
+      stopped.add(pid)
+      signalPid(pid, 'SIGSTOP')
+    }
+  }
+  for (const pid of stopped) signalPid(pid, 'SIGKILL')
+}
+
+/** Windows: ends exited-shell children by ppid and start. limit: grandchildren; revisit-when: job object. */
+function killChildrenOfExitedRoot(root: number, spawnedAt: number, exitedAt: number): KillResult {
+  const script = "Get-CimInstance Win32_Process | Where-Object { $_.CreationDate } | ForEach-Object { " +
+    "[string]$_.ProcessId + ' ' + $_.ParentProcessId + ' ' + " +
+    "([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }"
+  const listed = spawnSync(windowsPowerShellPath(), powerShellTextQueryArgs(script), {
+    encoding: 'utf8', timeout: HELPER_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
+  })
+  if (listed.status !== 0 || typeof listed.stdout !== 'string')
+    return { ok: false, note: 'the process list could not be read, so the shell\'s descendants were not ended' }
+  let result: KillResult = { ok: true }
+  for (const line of listed.stdout.split('\n')) {
+    const [pid, ppid, created] = line.trim().split(' ').map(Number)
+    if (!Number.isInteger(pid) || ppid !== root || created === undefined) continue
+    if (created < spawnedAt - 2000 || created > exitedAt) continue
+    const killed = killProcessTree(pid)
+    if (!killed.ok && killed.gone !== true) result = killed
+  }
+  return result
+}
+
 /** A child started by {@link spawnOwned}: `kill` ends its whole tree now (at most once, and never after the child has exited), `release` drops the parent-side hooks once the child has finished. */
 export interface OwnedChild {
   child: ChildProcess
@@ -142,20 +206,47 @@ function unhook(): void {
 
 /** Spawn *file* as a child this process answers for. The tree is ended when the caller asks (`kill`, for a timeout or an overflow), when this process exits normally, and when it receives INT, TERM or HUP, in each case only while the child is still running. After a signal the process dies of that signal as it would have without the hook (POSIX), or exits 128 plus the signal number (Windows, where a signal cannot be re-raised). The hooks come off when the last live child closes or fails to start. Not covered: this process being killed outright (SIGKILL, TerminateProcess, a harness killing only its pid) runs nothing here. A tree kill that fails (the helper could not run, or a growing tree) is reported on stderr and the root is then ended through its handle, so a caller waiting on its exit is not left waiting. */
 export function spawnOwned(file: string, args: string[], options: SpawnOptions): OwnedChild {
-  const child = spawn(file, args, options)
+  const token = process.platform === 'linux' ? randomUUID() : undefined
+  const spawnOptions = token === undefined
+    ? options
+    : { ...options, env: { ...(options.env ?? process.env), [OWNER_TOKEN_VAR]: token } }
+  const spawnedAt = Date.now()
+  const child = spawn(file, args, spawnOptions)
   let killed = false
   let ended = false
-  const onChildEnd = (): void => {
+  let closed = false
+  let exitedAt = 0
+  child.once('exit', () => {
     ended = true
-  }
-  child.once('exit', onChildEnd)
-  child.once('close', onChildEnd)
-  child.once('error', () => {
-    if (child.pid === undefined) ended = true
+    exitedAt = Date.now()
   })
+  child.once('close', () => {
+    ended = true
+    closed = true
+  })
+  child.once('error', () => {
+    if (child.pid === undefined) {
+      ended = true
+      closed = true
+    }
+  })
+  // The shell is gone but a descendant may hold its pipes: found by token (Linux) or dead shell pid (Windows).
+  const endSurvivors = (pid: number): void => {
+    let result: KillResult = { ok: true }
+    if (token !== undefined) killTokenCarriers(token)
+    else if (process.platform === 'win32') result = killChildrenOfExitedRoot(pid, spawnedAt, exitedAt)
+    if (!result.ok)
+      process.stderr.write(
+        `[token-goat: could not end descendants of exited pid ${pid}: ${result.note ?? 'unknown'}]\n`,
+      )
+  }
   const kill = (): void => {
-    if (killed || ended || child.pid === undefined) return
+    if (killed || closed || child.pid === undefined) return
     killed = true
+    if (ended) {
+      endSurvivors(child.pid)
+      return
+    }
     const result = killProcessTree(child.pid)
     if (result.ok || ended) return
     // A root that was already gone by the time taskkill ran is not a failure worth a line, but taskkill may also say that of a root that still runs, so the handle is ended either way.

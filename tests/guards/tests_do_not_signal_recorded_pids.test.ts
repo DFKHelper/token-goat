@@ -29,6 +29,7 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'process_tree_freeze_passes.test.ts', text: 'killProcessTree(ROOT)', reason: 'ROOT is a made-up number and spawnSync is mocked, so no real process is signalled' },
   { file: 'process_tree_root_signal_fails.test.ts', text: 'killProcessTree(ROOT_PID)', reason: 'ROOT_PID is a made-up number, process.kill is a stand-in that only records and throws, and ps is scripted, so no real process is signalled' },
   { file: 'worker.test.ts', text: 'process.kill.bind(process)', reason: 'a spy that forwards to the real kill only what claimWorkerPidFile sends it, which is the signal-0 liveness probe of src/worker_lifecycle.ts:111, for pid 999999999' },
+  { file: 'gate_ends_orphaned_descendant.test.ts', text: 'process.kill.bind(process)', reason: 'a spy that forwards the SIGKILL the product sends to a descendant it found by its own owner token or parent pid; the test names no pid itself' },
   { file: 'resident_process.test.ts', text: 'terminateProcessTree(pid, true)', reason: 'the refusal cases: pids 0, 1, -1 and this process and its parent must be refused, so nothing is signalled' },
 ]
 
