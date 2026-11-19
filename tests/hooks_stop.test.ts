@@ -768,6 +768,9 @@ describe('a check named only inside a heredoc body is text, not a run', () => {
     ['a heredoc piped on to a shell', `cat <<EOF | bash\n${failingCheck}\nEOF`],
     ['a heredoc inside an open double quote', `bash -c "\ncat > f.md <<EOF\n${failingCheck}\nEOF\n"`],
     ['a check after a plain heredoc write', `cat > f.md <<-EOF\n\tnotes\n\tEOF\n${failingCheck}`],
+    ['an opener inside a comment', `# x; cat > f.md <<EOF\n${failingCheck}\nEOF`],
+    ['an opener after a comment mark mid-line', `echo hi # y; tee f.md <<EOF\n${failingCheck}\nEOF`],
+    ['an indented comment opener', `  # cat > f.md <<'EOF'\n${failingCheck}\nEOF`],
   ])('%s still blocks', (_name, command) => {
     expect(failedBlocks(command)).toBe(true)
   })
@@ -779,6 +782,9 @@ describe('a check named only inside a heredoc body is text, not a run', () => {
     ['append redirect', `cat >> "$S/f.md" <<'EOF'\nnote: ${failingCheck}\nEOF`],
     ['tee to a file', `tee -a f.md <<EOF\nnote: ${failingCheck}\nEOF`],
     ['statements before it', `S=x; mkdir -p "$S/d"; cat > "$S/f.md" <<'EOF'\nnote: ${failingCheck}\nEOF`],
+    ['a comment line before it', `# note\ncat > f.md <<EOF\nnote: ${failingCheck}\nEOF`],
+    ['a hash inside a quoted path', `cat > "a #b.md" <<EOF\nnote: ${failingCheck}\nEOF`],
+    ['a hash inside a word', `cat > a#b.md <<EOF\nnote: ${failingCheck}\nEOF`],
   ])('a plain file write with %s records no failed check', (_name, command) => {
     expect(failedBlocks(command)).toBe(false)
   })

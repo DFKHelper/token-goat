@@ -144,9 +144,23 @@ function isOpenContext(before: string[]): boolean {
   return count('(') > count(')') || oddQuote || /[|\\]\s*$/.test(before[before.length - 1] ?? '')
 }
 
-/** The line that opens a heredoc whose body only lands in a file, and its terminator word; else null. */
+/** True when an unquoted `#` that starts a word begins a shell comment before the text at `end`. */
+function hasCommentBefore(line: string, end: number): boolean {
+  let quote = ''
+  for (let i = 0; i < end; i++) {
+    const ch = line[i] ?? ''
+    if (quote !== '') {
+      if (ch === quote) quote = ''
+    } else if (ch === '"' || ch === "'") quote = ch
+    else if (ch === '#' && (i === 0 || /[\s;&|(]/.test(line[i - 1] ?? ''))) return true
+  }
+  return false
+}
+
+/** The terminator of a file-only heredoc this line opens, else null; an opener in a comment opens none. */
 function fileHeredocTerminator(line: string, before: string[]): string | null {
   if (SHELL_FED_LINE.test(line) || line.split('<<').length !== 2 || isOpenContext(before)) return null
+  if (hasCommentBefore(line, line.indexOf('<<'))) return null
   return FILE_HEREDOC_OPENER.exec(line)?.[2] ?? null
 }
 

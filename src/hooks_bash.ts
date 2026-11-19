@@ -23,6 +23,7 @@ import { hasHalvedRun, msysDamagesCommand, REPAIR_DECLINE_TEXT, repairByScriptFi
 import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
+import { homedir } from 'node:os'
 import {
   stripCdPrefix,
   stripCommandPrefix,
@@ -838,6 +839,18 @@ const PREFILTER_NAMES = [
 const PREFILTER_WORD = `(?<![A-Za-z0-9_-])(?:${PREFILTER_NAMES})(?![A-Za-z0-9_-])`
 export const WALK_PREFILTER = new RegExp(`${PREFILTER_CHARS}|${PREFILTER_WORD}`, 'i')
 
+// A walker with no start is judged by its cwd; a missing or empty cwd is unknown, so false.
+function cwdIsRootOrHome(cwd: string | undefined, isRoot: (text: string) => boolean): boolean {
+  if (cwd === undefined) return false
+  if (isRoot(cwd)) return true
+  const norm = (p: string): string => {
+    const t = p.replace(/\\/g, '/').replace(/\/+$/, '')
+    return process.platform === 'win32' ? t.toLowerCase() : t
+  }
+  const home = norm(homedir())
+  return home !== '' && norm(cwd) === home
+}
+
 // Refuses an unbounded root or home walk; loaded on demand (off the eager set); a failed load allows it.
 export async function walkRefusal(event: HookEvent): Promise<HookOutput | null> {
   const rawCmd = extractCommand(event)
@@ -855,10 +868,13 @@ export async function walkRefusal(event: HookEvent): Promise<HookOutput | null> 
     return null
   }
   try {
-    const walk = detectUnboundedWalk(rawCmd, {
-      windows: process.platform === 'win32',
-      powershell: isPwshHarness(event),
-    })
+    const { isRoot } = await import('./unbounded_walk_words.js')
+    const walk = detectUnboundedWalk(
+      rawCmd,
+      { windows: process.platform === 'win32', powershell: isPwshHarness(event) },
+      0,
+      cwdIsRootOrHome(getCwd(event), isRoot),
+    )
     if (walk === null) return null
     recordStat('session_hint', 0, 0)
     return syntaxOutput(denyOutput(walk.message))

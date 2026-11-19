@@ -182,6 +182,7 @@ const SANCTIONED_HOME_READS: Readonly<Record<string, number>> = {
   'src/constants.ts': 5,
   'src/copilot_home.ts': 4,
   'src/copilot_skill_path.ts': 2,
+  'src/hooks_bash.ts': 2,
   'src/hooks_bash_commands.ts': 2,
   'src/mcp_server.ts': 2,
   'src/purge.ts': 3,
