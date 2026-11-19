@@ -45,7 +45,22 @@ export default function setup(project: TestProject): (() => void) | void {
   enableCompileCache()
   pinRustHomes()
   buildNativeOnce()
-  return createRunRoot()
+  const teardown = createRunRoot()
+  provideInstalledEntry()
+  return teardown
+}
+
+// A copy of dist outside any checkout, so a test's install bakes an entry the checkout guard accepts.
+function provideInstalledEntry(): void {
+  const runRoot = process.env['TG_TEST_RUN_ROOT']
+  if (process.env['TG_TEST_ENTRY'] !== undefined || runRoot === undefined) return
+  try {
+    const dist = path.join(runRoot, 'installed', 'node_modules', 'token-goat', 'dist')
+    fs.cpSync(path.join(ROOT, 'dist'), dist, { recursive: true })
+    process.env['TG_TEST_ENTRY'] = path.join(dist, 'token-goat.mjs')
+  } catch {
+    // best-effort: without a copy a worker keeps the pool's own argv[1], as before
+  }
 }
 
 // rustup and cargo find the toolchain and the crate cache through HOME unless RUSTUP_HOME and CARGO_HOME say otherwise, and isolate-home points every worker's HOME at a temp directory, so a cargo run from a test file (the conformance suite's `cargo test`) installed the pinned toolchain and fetched every crate again, into a directory deleted with the run. Pinned here, before any worker forks, to the homes this user's rustup actually uses; an outer setting wins.

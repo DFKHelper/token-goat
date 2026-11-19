@@ -153,6 +153,8 @@ if (!process.env['TOKEN_GOAT_HOOK_SERVER']) {
 if (!process.env['TOKEN_GOAT_NATIVE_HOOKS']) {
   process.env['TOKEN_GOAT_NATIVE_HOOKS'] = '0'
 }
+// Install bakes argv[1] into hook commands; vitest's is its worker, so pin the installed-style copy.
+if (process.env['TG_TEST_ENTRY']) process.argv[1] = process.env['TG_TEST_ENTRY']
 // src/rewrite_permission.ts reads Claude Code's settings from the machine's managed policy and from every `.claude` directory above a hook's cwd, which for an event with no cwd is this repository. A developer's own untracked `.claude/settings.local.json` here then decided whether an in-process test saw a rewrite. In-process reads are confined to the run root, where every fixture lives; spawned bundles do not inherit this and pass their own cwd.
 const permissionRoot = path.resolve(runRoot())
 // The predicate lives in permission-source-filter.cjs so the in-process hook and the preload given to spawned node processes cannot diverge (tests/guards/permission_filter_single_predicate.test.ts).
