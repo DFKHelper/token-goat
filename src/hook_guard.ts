@@ -99,7 +99,8 @@ const PS_OUT_CLEAR = 'Remove-Variable tgo -ErrorAction Ignore'
 const PS_OUT = '((Get-Variable tgo -ValueOnly -ErrorAction Ignore) -join [char]10)'
 const PS_REPLAY_OUT = `[Console]::Out.Write(${PS_OUT})`
 // Exit 2 counts as a block only when it speaks: a message on stderr or a decision on stdout.
-const PS_SPOKE = `([IO.File]::ReadAllText(${PS_ERR_FILE}).Trim().Length -gt 0) -or (${PS_OUT}.Trim().Length -gt 0)`
+const PS_SPOKE =
+  `([IO.File]::ReadAllText(${PS_ERR_FILE}).Trim().Length -gt 0) -or (${PS_OUT}.Trim().Length -gt 0)`
 
 function psRoute(test: string, argv: readonly string[]): string {
   const call = argv.map((w) => quoteWord('powershell', w)).join(' ')

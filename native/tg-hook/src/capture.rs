@@ -277,7 +277,8 @@ mod tests {
     #[test]
     fn a_route_writing_past_the_stderr_cap_is_served_when_it_exits() {
         let me = std::env::current_exe().unwrap().into_os_string();
-        let argv = vec![me, "--ignored".into(), "--exact".into(), "capture::tests::chatty_child".into(), "--nocapture".into()];
+        let test = "capture::tests::chatty_child".into();
+        let argv = vec![me, "--ignored".into(), "--exact".into(), test, "--nocapture".into()];
         // Without a drain the reader closes at the cap: the child's write fails and it exits 101, not 0.
         // The harness prints its own header on stdout, so a child that ended on exit 0 is judged "not JSON":
         // that verdict is only reachable after the child exited and its stderr was drained.

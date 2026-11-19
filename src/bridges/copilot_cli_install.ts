@@ -3,7 +3,14 @@ import { registerHookShim } from '../hook_pointer.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig, undoCreatedOnFailure } from './created_configs.js'
+import {
+  ensureDirRecordingCreation,
+  recordCreatedConfig,
+  removeCreatedBackups,
+  removeCreatedIfEmpty,
+  takeCreatedConfig,
+  undoCreatedOnFailure,
+} from './created_configs.js'
 import { removeHookTargetFile } from '../purge.js'
 import { hookCommandFor, hookPowershellCommand, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { powershellHookLine } from '../process_util.js'

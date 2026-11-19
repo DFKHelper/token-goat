@@ -1,4 +1,4 @@
-// Fixture provenance: HAND-DERIVED; seeded configs are minimal files built here, the trees compared are real writes.
+// Fixture provenance: HAND-DERIVED; seeded configs are minimal files built here, trees are real writes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -32,7 +32,7 @@ let restoreEntry: () => void
 let origCwd: string
 let origEnv: Record<string, string | undefined>
 
-/** Every directory and file under `root` with the file bytes, so two snapshots are equal only when nothing changed. */
+/** Every directory and file under `root` with the file bytes, so equal snapshots mean nothing changed. */
 function tree(root: string): string[] {
   const out: string[] = []
   const walk = (dir: string): void => {
@@ -144,7 +144,9 @@ describe('a Copilot hooks file whose hooks fail their probe', () => {
 describe('install --codex --kimi when the Kimi hooks fail their probe', () => {
   it('installs Codex, names Kimi as not installed, prints no Kimi success line and exits 1', async () => {
     setHookSelftestRunnerForTesting((_shell, command) =>
-      command.includes('.kimi-code') ? { status: 3, stdout: '', stderr: 'boom' } : { status: 0, stdout: '{}', stderr: '' })
+      command.includes('.kimi-code')
+        ? { status: 3, stdout: '', stderr: 'boom' }
+        : { status: 0, stdout: '{}', stderr: '' })
     const stdout: string[] = []
     const stderr: string[] = []
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { stdout.push(String(chunk)); return true })
@@ -154,11 +156,11 @@ describe('install --codex --kimi when the Kimi hooks fail their probe', () => {
     await cmdInstall({ codex: true, kimi: true })
 
     const printed = stdout.join('')
-    expect(printed, 'Codex is the other host and must still install').toContain('Installed token-goat Codex CLI integration')
+    expect(printed, 'Codex must still install').toContain('Installed token-goat Codex CLI integration')
     expect(printed).not.toContain('Kimi')
     expect(stderr.join('')).toContain('Kimi Code was not installed')
     expect(process.exitCode).toBe(1)
     expect(kimiBefore).toBe(false)
-    expect(fs.existsSync(path.dirname(kimiConfigPath())), 'the failed Kimi install left its directory').toBe(false)
+    expect(fs.existsSync(path.dirname(kimiConfigPath())), 'failed Kimi install left a directory').toBe(false)
   })
 })

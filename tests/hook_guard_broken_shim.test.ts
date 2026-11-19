@@ -40,7 +40,8 @@ const SHIMS: Record<string, string> = {
   'missing entry module': "require('./no-such-entry-module.cjs')\n",
   'exit 13 and stdout noise':
     "require('fs').writeSync(1, 'stdout noise'); process.stderr.write('loader noise\\n'); process.exit(13)\n",
-  'stdout noise then a signal': "require('fs').writeSync(1, 'stdout noise'); process.kill(process.pid, 'SIGKILL')\n",
+  'stdout noise then a signal':
+    "require('fs').writeSync(1, 'stdout noise'); process.kill(process.pid, 'SIGKILL')\n",
   'silent exit 2': 'process.exit(2)\n',
   'exit 2 message only': "process.stderr.write('blocked: message only\\n'); process.exit(2)\n",
   'exit 2 decision only': "process.stdout.write('{\"d\":\"decision only\"}'); process.exit(2)\n",
