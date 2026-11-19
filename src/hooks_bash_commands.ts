@@ -149,20 +149,69 @@ function shellWords(cmd: string): string[] {
   return words
 }
 
-/** Lowercase basename of the first word past leading assignments, or `script` / `other`. */
-export function commandHead(cmd: string): string {
-  const words = shellWords(cmd)
-  let index = 0
-  while (index < words.length && LEADING_ASSIGNMENT.test(words[index] ?? '')) index++
-  const first = words[index]
-  if (first === undefined || first === '') return 'other'
+/** What a wrapper skips: `flag` words, `pair` flags and their `value`, one `lead` operand, `NAME=value`. */
+interface Wrapper { flag?: RegExp; pair?: RegExp; value: RegExp; lead?: RegExp; assign?: boolean }
+const PLAIN_NAME = /^[A-Za-z_][\w-]*$/
+const WRAPPERS = new Map<string, Wrapper>([
+  ['env', { flag: /^-i$/, pair: /^-u$/, value: PLAIN_NAME, assign: true }],
+  ['sudo', { flag: /^-[EHnSbk]$/, pair: /^-u$/, value: PLAIN_NAME }],
+  ['time', { flag: /^-p$/, value: PLAIN_NAME }],
+  ['command', { flag: /^-p$/, value: PLAIN_NAME }],
+  ['nohup', { value: PLAIN_NAME }],
+  ['nice', { pair: /^-n$/, value: /^-?\d+$/ }],
+  [
+    'timeout',
+    {
+      flag: /^--(?:foreground|preserve-status)$/,
+      pair: /^-[ks]$/,
+      value: /^\w+$/,
+      lead: /^\d+(?:\.\d+)?[smhd]?$/,
+    },
+  ],
+])
+
+/** One word as a head: a bare lowercase tool name (`.exe` dropped), `script` for a path, else `other`. */
+function wordHead(first: string): string {
   // A substitution can print any head, so a head word holding one is unknowable.
   if (first.includes('$(') || first.includes('`')) return 'other'
   if (SCRIPT_WORD.test(first)) return 'script'
   const basename = first.slice(Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\')) + 1)
-  const head = basename.toLowerCase()
+  const head = basename.toLowerCase().replace(/\.exe$/, '')
   if (SECRET_HEAD.test(head)) return 'other'
   return KNOWN_HEADS.has(head) || SAFE_HEAD.test(head) ? head : 'other'
+}
+
+/** The head at `words[at]`; a wrapper (two levels at most) is looked through past the words it takes only. */
+function headAt(words: string[], at: number, level: number): string {
+  const first = words[at]
+  if (first === undefined || first === '') return 'other'
+  const head = wordHead(first)
+  const wrapper = WRAPPERS.get(head)
+  if (wrapper === undefined || level >= 2) return head
+  let leadDone = wrapper.lead === undefined
+  let i = at + 1
+  for (; i < words.length; i++) {
+    const word = words[i] ?? ''
+    if (wrapper.assign === true && LEADING_ASSIGNMENT.test(word) && /^[^=]*=[\w.:,@%+/-]*$/.test(word)) continue
+    if (wrapper.flag?.test(word)) continue
+    if (wrapper.pair?.test(word)) {
+      if (!wrapper.value.test(words[++i] ?? '')) return head
+      continue
+    }
+    if (!leadDone && wrapper.lead?.test(word)) leadDone = true
+    else break
+  }
+  if (!leadDone || i >= words.length) return head
+  const tool = headAt(words, i, level + 1)
+  return tool === 'other' || tool === 'script' || WRAPPERS.has(tool) ? head : tool
+}
+
+/** Lowercase basename of the first word past leading assignments and known wrappers, or `script` / `other`. */
+export function commandHead(cmd: string): string {
+  const words = shellWords(cmd)
+  let index = 0
+  while (index < words.length && LEADING_ASSIGNMENT.test(words[index] ?? '')) index++
+  return headAt(words, index, 0)
 }
 
 export function hasTestRunScopeOrBudget(cmd: string): boolean {

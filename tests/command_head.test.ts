@@ -64,7 +64,8 @@ describe('commandHead', () => {
     ['glpatabcdef run', 'other'],
     ['eyjhbgcio run', 'other'],
     ['a1b2c3d4e5f6 run', 'other'],
-    ['tool.exe run', 'other'],
+    ['tool.exe run', 'tool'],
+    ['tool.dll run', 'other'],
     ['terraform plan', 'terraform'],
     ['docker-compose up', 'docker-compose'],
     ['kubectl get pods', 'kubectl'],
@@ -105,6 +106,104 @@ describe('commandHead', () => {
   it('returns a string for a 2 MB run of substitution openers and of single quotes', () => {
     expect(typeof commandHead('$('.repeat(1024 * 1024))).toBe('string')
     expect(typeof commandHead("'".repeat(2 * 1024 * 1024))).toBe('string')
+  })
+
+  // HAND-DERIVED: the wrapper table of the E6 brief; a plain form records the tool it runs.
+  it.each([
+    ['env FOO=bar rg x', 'rg'],
+    ['env -i FOO=bar rg x', 'rg'],
+    ['env -u HOME rg x', 'rg'],
+    ['FOO=bar rg x', 'rg'],
+    ['sudo rg x', 'rg'],
+    ['sudo -E -u me rg x', 'rg'],
+    ['sudo -u me rg x', 'rg'],
+    ['time rg x', 'rg'],
+    ['time -p rg x', 'rg'],
+    ['nice rg x', 'rg'],
+    ['nice -n 5 rg x', 'rg'],
+    ['nice -n -5 rg x', 'rg'],
+    ['timeout 10 rg x', 'rg'],
+    ['timeout 1.5m rg x', 'rg'],
+    ['timeout --foreground -k 5 -s KILL 10 rg x', 'rg'],
+    ['command rg x', 'rg'],
+    ['command -p rg x', 'rg'],
+    ['nohup rg x', 'rg'],
+    ['sudo env FOO=bar rg x', 'rg'],
+    ['Sudo RG x', 'rg'],
+    ['env rg.exe x', 'rg'],
+  ])('unwraps the plain wrapper form %j to the tool %j', (cmd, head) => {
+    expect(commandHead(cmd)).toBe(head)
+  })
+
+  it.each([
+    ['env FOO="a b" rg', 'env'],
+    ["env FOO='a b' rg", 'env'],
+    ['env FOO=$(x) rg', 'env'],
+    ['env $(x) rg', 'env'],
+    ['env -x rg', 'env'],
+    ['env -u "$U" rg', 'env'],
+    ['env -u', 'env'],
+    ['env FOO=secret123', 'env'],
+    ['env FOO=secret123 ./run.sh', 'env'],
+    ['sudo -u "$U" rg', 'sudo'],
+    ['sudo -u $U rg', 'sudo'],
+    ['sudo -x rg', 'sudo'],
+    ['sudo -u', 'sudo'],
+    ['sudo', 'sudo'],
+    ['time', 'time'],
+    ['time -z rg x', 'time'],
+    ['time $(x) rg', 'time'],
+    ['nice -n x rg', 'nice'],
+    ['nice -n $N rg', 'nice'],
+    ['nice -n 5', 'nice'],
+    ['timeout $N rg', 'timeout'],
+    ['timeout 10', 'timeout'],
+    ['timeout rg x', 'timeout'],
+    ['timeout -k $K 10 rg', 'timeout'],
+    ['timeout 10 "rg" x', 'timeout'],
+    ['command "rg" x', 'command'],
+    ['command -v rg', 'command'],
+    ['command $(x)', 'command'],
+    ['nohup', 'nohup'],
+    ['nohup -x rg', 'nohup'],
+    ['sudo TOOL_B=2 rg x', 'sudo'],
+    ['sudo env time rg x', 'sudo'],
+    ['env sk-abcdefgh run', 'env'],
+    ['sudo ./deploy.sh', 'sudo'],
+    ['sudo C:/tools/rg.exe x', 'sudo'],
+    ['time sudo', 'time'],
+  ])('keeps the wrapper for the unsafe sibling %j, recording %j', (cmd, head) => {
+    expect(commandHead(cmd)).toBe(head)
+  })
+
+  it('leaves npx, npm exec and pnpm exec recorded as themselves', () => {
+    expect(commandHead('npx vitest run')).toBe('npx')
+    expect(commandHead('npm exec vitest')).toBe('npm')
+    expect(commandHead('pnpm exec vitest')).toBe('pnpm')
+  })
+
+  it.each([
+    ['rg.exe x', 'rg'],
+    ['RG.EXE x', 'rg'],
+    ['Rg.Exe x', 'rg'],
+    ['.exe x', 'other'],
+    ['rg.exe.exe x', 'other'],
+    ['sk-abcdefgh.exe x', 'other'],
+    ['"rg.exe" x', 'other'],
+    ['C:/tools/rg.exe x', 'script'],
+    ['c:\\tools\\rg.exe x', 'script'],
+    ['./rg.exe x', 'script'],
+  ])('strips .exe from a bare head only: %j gives %j', (cmd, head) => {
+    expect(commandHead(cmd)).toBe(head)
+  })
+
+  it('records no head holding =, /, a quote, $ or whitespace for any row of the wrapper tables', () => {
+    const cmds = [
+      'env FOO="a b" rg', 'env $(x) rg', 'env FOO=secret123', 'sudo -u "$U" rg', 'timeout $N rg', 'time',
+      'env FOO=bar rg x', 'sudo -u me rg x', 'nice -n 5 rg x', 'timeout 10 rg x', 'command rg x', 'nohup rg x',
+      'env A=b/c rg x', 'env A="x y" rg', "env A='x y' rg", 'sudo env A=1 rg', 'time sudo env rg', 'env -u X',
+    ]
+    for (const cmd of cmds) expect(commandHead(cmd), cmd).not.toMatch(/[=/'"`$\s]/)
   })
 
   it('lowercases the head before the length cut', () => {

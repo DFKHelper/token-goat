@@ -75,6 +75,13 @@ describe('bash_generic_head stat', () => {
     expect(leaksSecret([...recorded, [`bash_generic_head:${command}`]])).toBe(true)
   })
 
+  it('files a wrapped command under the tool and leaves the rewrite of that command byte-identical', () => {
+    const result = preBashHandler(preEvent('env FOO=bar rollup -c'))
+    expect(headCalls()).toEqual([['bash_generic_head:rollup']])
+    const command = "token-goat compress -f generic --timeout 600 -c 'env FOO=bar rollup -c'"
+    expect(result).toEqual({ hookType: 'rewriteInput', updatedInput: { command }, approve: false })
+  })
+
   it('records nothing for a command the generic filter never sees', () => {
     preBashHandler(preEvent('echo hello'))
     expect(headCalls()).toHaveLength(0)
