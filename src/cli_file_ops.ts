@@ -170,6 +170,8 @@ function readFileBoundedRaw(filePath: string, label: string, allowStdIn = false)
   if (filePath.includes('\0')) {
     throw new CliError(`${label} path contains a null byte`)
   }
+  // Every --from flag lands here and its text reaches a note, a file or a diff, so a denied path is refused.
+  assertReadAllowed(filePath)
   if (!allowStdIn && !isWindows() && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(filePath) && process.stdin.isTTY) {
     const altLabel = label.endsWith('-from') ? label.replace('-from', '-b64') : 'a regular file path'
     throw new CliError(`${label} ${filePath} requires piped input; use ${altLabel} for interactive use`)

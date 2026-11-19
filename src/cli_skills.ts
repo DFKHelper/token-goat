@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import { CliError, out } from './cli.js'
 import { buildLineDiff } from './hooks_read_slice.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
+import { assertReadAllowed } from './read_deny.js'
 import { findSpecSeparator } from './read_commands.js'
 import { didYouMeanLines, filterSimilarHeadings } from './read_suggest.js'
 import { listSections } from './section_reader.js'
@@ -31,6 +32,7 @@ export async function cmdSkillBody(name: string, opts: { compact?: boolean }): P
     throw new CliError(`skill ${echoedValue(name)} not found`)
   }
 
+  assertReadAllowed(filePath)
   const body = decodeSource(fs.readFileSync(filePath))
   if (opts.compact === true) {
     const emitted = extractCompactFromMarker(body) ?? body
@@ -60,6 +62,7 @@ export async function cmdSkillCompact(name: string | undefined, opts: { path?: s
       }
       let body: string
       try {
+        assertReadAllowed(filePath)
         body = decodeSource(fs.readFileSync(filePath))
       } catch {
         unresolvable++
@@ -99,6 +102,7 @@ export async function cmdSkillCompact(name: string | undefined, opts: { path?: s
     if (!fs.existsSync(opts.path)) {
       throw new CliError(`skill file not found: ${echoedValue(opts.path)}`)
     }
+    assertReadAllowed(opts.path)
     try {
       body = fs.readFileSync(opts.path, 'utf-8')
     } catch (e) {
@@ -117,6 +121,7 @@ export async function cmdSkillCompact(name: string | undefined, opts: { path?: s
     if (filePath === null) {
       throw new CliError(`skill ${echoedValue(name)} not found`)
     }
+    assertReadAllowed(filePath)
     body = fs.readFileSync(filePath, 'utf-8')
     cacheName = name
     sourcePath = filePath
@@ -307,8 +312,9 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
   if (!filePath) {
     throw new CliError(`skill ${echoedValue(skillName)} not found`)
   }
+  assertReadAllowed(filePath)
   const body = decodeSource(fs.readFileSync(filePath))
-  const extracted = extractNamedSection(body, heading)
+  const extracted =extractNamedSection(body, heading)
   if (!extracted) {
     const allHeadings = listSections(filePath)
     const wanted = stripLower(heading)

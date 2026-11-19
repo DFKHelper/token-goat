@@ -613,6 +613,8 @@ export function cmdCompactDoc(opts: {
   show?: boolean
 }): void {
   const resolved = path.resolve(opts.filePath)
+  // A path the host's Read rules deny is refused before either mode prints its text.
+  assertReadAllowed(resolved)
 
   // Legacy mode: extract a named section, or the content after a `<!-- COMPACT_END -->` marker, straight from the source file. This predates and is independent of the extractive-sidecar pipeline below — --force/--sentences/--show don't apply here.
   if (opts.heading !== undefined) {
@@ -642,7 +644,6 @@ export function cmdCompactDoc(opts: {
     }
   }
 
-  assertReadAllowed(resolved)
   const compactPath = compactPathFor(resolved)
   const fresh = isCompactFresh(compactPath, resolved)
   let rebuilt = false

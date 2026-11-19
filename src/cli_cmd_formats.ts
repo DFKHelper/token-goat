@@ -2,6 +2,7 @@
 
 import type { Command } from 'commander'
 import { loadConfig } from './config.js'
+import { assertReadAllowed } from './read_deny.js'
 import { displaySafeJson } from './paths.js'
 import { recordStat } from './stats.js'
 import { cappedSourceBytesSaved } from './util.js'
@@ -167,6 +168,8 @@ export async function cmdImageSlice(
     ...(opts.quality !== undefined ? { quality: parseInt(opts.quality, 10) } : {}),
   }
 
+  // The slice is pixels of the named image, written to --out, so a host-denied path is refused first.
+  assertReadAllowed(file)
   const result = await sliceImage(file, sliceOpts)
 
   if (opts.out) {

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
+import { readDenial } from './read_deny.js';
 import type { HookOutput } from './types.js';
 import { passOutput, denyOutput, getToolName, getToolInput, getCwd, extractToolResponseField, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js';
 import { getHarnessName } from './bridges/registry.js';
@@ -131,7 +132,9 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
 
     // First (cold) load of an oversized skill with an extractable compact: gate this too, or the full body still lands in context once per skill per session regardless of repeat-load protection.
     const sourcePath = await harnessSkillPath(event, skillName);
-    if (sourcePath) {
+    // The inlined slice is file text, so a host-denied skill file is not read here and the load passes.
+    const cwdOfEvent = getCwd(event);
+    if (sourcePath && readDenial(sourcePath, cwdOfEvent === undefined ? {} : { cwd: cwdOfEvent }) === null) {
       try {
         const body = await readFile(sourcePath, 'utf-8');
         const bodyBytes = Buffer.byteLength(body, 'utf-8');
@@ -208,6 +211,9 @@ export async function postSkillHandler(event: HookEvent): Promise<HookOutput> {
       if (sourcePath === null) {
         return passOutput();
       }
+      // skill-diff prints stored bodies, so a host-denied skill file is not read into the cache.
+      const postCwd = getCwd(event);
+      if (readDenial(sourcePath, postCwd === undefined ? {} : { cwd: postCwd }) !== null) return passOutput();
       body = await readFile(sourcePath, 'utf-8');
     } else {
       body = extractSkillBody(event.raw);

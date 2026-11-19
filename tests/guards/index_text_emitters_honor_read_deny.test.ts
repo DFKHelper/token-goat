@@ -39,7 +39,7 @@ export const KINDS = [
 ] as const
 const GUARDED_AT = /^guarded at ([\w./]+):([\w.$]+): \S/
 /** Set once every entry carries a reviewed reason; until then `unreviewed:` entries are tolerated. */
-const REVIEWED = false
+const REVIEWED = true
 
 const TABLE: ReaderTable = JSON.parse(fs.readFileSync(TABLE_JSON, 'utf8')) as ReaderTable
 

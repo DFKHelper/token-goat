@@ -14,6 +14,7 @@ import { noteFailedVerificationHandler } from './hooks_verification.js'
 import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { contextOutput, getCwd, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
 import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
+import { readDenial } from './read_deny.js'
 import { redactSecrets } from './secret_redact.js'
 import { ensureDirSync, isWithinQuietHours } from './util.js'
 import { sessionSidecarPath } from './session_store.js'
@@ -179,6 +180,9 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
 
   const absPath = hostPathOfIndexKey(normalizePath(filePath))
   if (!existsSync(absPath)) return null
+  // The advice quotes near-miss text from the file, so a host-denied path gets none.
+  const eventCwd = getCwd(event)
+  if (readDenial(absPath, eventCwd === undefined ? {} : { cwd: eventCwd }) !== null) return null
 
   try {
     const stat = statSync(absPath)

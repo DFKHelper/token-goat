@@ -1,6 +1,7 @@
 // Single-command post-compact restoration packet. Emits a structured context bundle for token-goat resume <session_id>.
 import { readFile } from 'node:fs/promises'
 import { loadBlob } from './disk_cache.js'
+import { readDenial } from './read_deny.js'
 import { SESSIONS_SUBDIR } from './session_store.js'
 import { displaySafePath, displaySafeText } from './paths.js'
 import { neutralizeSpokenMarkers } from './injection_scan.js'
@@ -42,7 +43,8 @@ async function buildSkillsSection(sessionId: string): Promise<string[]> {
     let checklist: string | null = null
     try {
       const filePath = await getSkillFilePath(skill.name)
-      if (filePath !== null) {
+      // The checklist is skill-file text, so a host-denied skill file gets the pointer-only line.
+      if (filePath !== null && readDenial(filePath) === null) {
         const body = await readFile(filePath, 'utf-8')
         checklist = extractChecklistSection(body)
       }

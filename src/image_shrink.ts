@@ -23,6 +23,7 @@ import {
 } from './image_engine.js'
 import { ensureDirSync, atomicWriteBytes, toKB } from './util.js'
 import { getCwd, getFilePath } from './hooks_common.js'
+import { readDenial } from './read_deny.js'
 import { preToolPathDeclined, vscodePathAllowed } from './vscode_path_gate.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -503,6 +504,9 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   if (!isImagePath(filePath)) return passOutput()
   // Before any stat or read of the path: see preToolPathDeclined.
   if (preToolPathDeclined(event, filePath)) return passOutput()
+  // The shrunk copy replaces the Read, so a host-denied image must not be copied or shrunk here.
+  const eventCwd = getCwd(event)
+  if (readDenial(filePath, eventCwd === undefined ? {} : { cwd: eventCwd }) !== null) return passOutput()
   // Claude Code's Read of the shrunk copy, which lives outside the working directory, needs permissionDecision "allow" to avoid a prompt, and an allow is only honest for an original Read that would not have prompted either (https://code.claude.com/docs/en/permissions), so only an image inside the working directory is shrunk there; rewrite_permission.ts makes the same check before the allow is sent. Copilot CLI gets the same gate: it asks before a view outside the working directory, its added directories, and the system temp dir, and its permission engine is native code whose order against a preToolUse modifiedArgs no hook can read, so a copy in the temp dir could take an outside image past that prompt; an added directory is invisible to the hook, so an image there is left alone too.
   const harness = detectHarness()
   if ((harness === 'claudecode' || harness === 'copilot_cli') && !vscodePathAllowed(filePath, getCwd(event))) return passOutput()
