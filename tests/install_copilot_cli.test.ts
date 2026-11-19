@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
-import { parseGuardedCommand } from '../src/hook_guard.js'
+import { GUARD_VERSION, parseGuardedCommand } from '../src/hook_guard.js'
 import { HookSelftestError, setHookSelftestRunnerForTesting } from '../src/hook_selftest.js'
 
 import type * as NodeOs from 'node:os'
@@ -154,7 +154,7 @@ describe('installCopilotCli (user scope)', () => {
       for (const command of [entry?.bash, entry?.powershell]) {
         expect(command).toBeDefined()
         expect(command).toContain(process.execPath)
-        expect(command).toContain('tg-guard-v1')
+        expect(command).toContain(`tg-guard-v${String(GUARD_VERSION)}`)
       }
       expect(entry?.bash?.startsWith('node ')).toBe(false)
     }
@@ -196,8 +196,8 @@ describe('installCopilotCli (user scope)', () => {
       return
     }
     // A bare quoted-exe-then-quoted-args string (valid cmd.exe syntax) is a PowerShell parse error without a leading call operator -- two adjacent quoted string literals are not a valid expression/statement in PowerShell. Confirmed live via Copilot CLI's own logged ParserError: "Unexpected token '"...\token-goat-shim.js"' in expression or statement." Single-quoted, not double. PowerShell expands `$` inside double quotes, so a profile path holding one was rewritten before the hook ran, and a path holding a single quote closed the argument early. The `command` field keeps cmd.exe's double quotes, so the two now differ on purpose and this no longer asserts that powershell is command with a prefix.
-    expect(entry?.powershell).toContain("'tg-guard-v1' | Out-Null;")
-    expect(entry?.bash?.startsWith(': tg-guard-v1;')).toBe(true)
+    expect(entry?.powershell).toContain(`'tg-guard-v${String(GUARD_VERSION)}' | Out-Null;`)
+    expect(entry?.bash?.startsWith(`: tg-guard-v${String(GUARD_VERSION)};`)).toBe(true)
     expect(entry).not.toHaveProperty('command')
     // Named independently of the builder: the same two paths the command field runs.
     expect(entry?.powershell).toContain(result.scriptPath)

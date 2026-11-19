@@ -14,9 +14,11 @@ export class HookCommandRewriteError extends Error {
 }
 
 /** Version token every guarded command starts with: a no-op, so a later build recognises both forms. */
-export const GUARD_VERSION = 1
+export const GUARD_VERSION = 2
 const SH_PREFIX = /^:\s+tg-guard-v(\d+)\s*;/
 const PS_PREFIX = /^'tg-guard-v(\d+)'\s*\|\s*Out-Null\s*;/
+// Built from parts so the version is not an interpolation between hand-written quotes (hint_templates guard).
+const PS_VERSION_LINE = ['\'tg-guard-v', String(GUARD_VERSION), '\' | Out-Null'].join('')
 const CMD_PREFIX = 'powershell -NoProfile -NonInteractive -Command "'
 const CMD_QUOTE = "'+[char]34+'"
 const CMD_FORM = /^powershell -NoProfile -NonInteractive -Command "([^"]*)"$/
@@ -68,26 +70,29 @@ function quoteWord(shell: GuardShell, text: string): string {
 // A route's outcome is a hook answer only as exit 0, or exit 2 that speaks: a stderr message or a stdout
 // decision. Node's own failures exit 1, 9, 13 or by signal, and a silent exit 2 is a crash, so any other
 // outcome falls through to the next route. Both streams are held in files ($1 stderr, $2 stdout) until the
-// outcome is accepted, so a failed route never reaches the host. A failed mktemp gives $1 /dev/null (exit 2
-// then counts as a block) and $2 empty (stdout is then not held). No $NAME word: Grok CLI substitutes those
+// outcome is accepted, so a failed route never reaches the host. No $NAME word: Grok CLI substitutes those
 // itself in a hook command, so the temp files are parameters 1 and 2.
+// mktemp is tried in TMPDIR then /tmp; with no hold files ($1 and $2 empty) no route runs, the safe answer prints.
+// limit: no writable temp directory gives the safe answer and no hook work; revisit-when: a machine reports it
 const SH_RM_ERR = '[ ! -f "$1" ] || rm -f "$1"; [ ! -f "$2" ] || rm -f "$2"'
 const SH_REPLAY = `cat "$1" >&3; [ -z "$2" ] || cat "$2" >&4; ${SH_RM_ERR}`
 const SH_WORDS = `[ -n "$(tr -d '[:space:]' <"$1" 2>/dev/null)" ] || ` +
   `{ [ -n "$2" ] && [ "$(tr -d '[:space:]' <"$2" 2>/dev/null | cut -c1)" = '{' ]; }`
 // Exit 2 speaks as non-blank stderr or stdout opening with `{` (a decision); `tr` runs on the exit-2 path only.
-const SH_SPOKE = `{ ${SH_WORDS}; } || [ "$1" = /dev/null ]`
+const SH_SPOKE = `{ ${SH_WORDS}; }`
 const SH_CLEAR = ': >"$1"; [ -z "$2" ] || : >"$2"'
 const CASE_SH =
   `case $? in 0) ${SH_REPLAY}; exit 0;; 2) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ${SH_CLEAR};; ` +
   `*) ${SH_CLEAR};; esac`
 // limit: sh holds the async marker until the route ends (a pipe loses $?); revisit-when: an early read keeps it
+const SH_HOLD_OK = '[ -f "$1" ] && [ -f "$2" ]'
+const SH_TMP_IN_TMP = 'set -- "$(mktemp /tmp/tg-guard.XXXXXX 2>/dev/null)" "$(mktemp /tmp/tg-guard.XXXXXX 2>/dev/null)"'
 const SH_STDERR =
-  'set -- "$(mktemp 2>/dev/null)" "$(mktemp 2>/dev/null)"; [ -n "$1" ] || set -- /dev/null "$2"; ' +
-  'exec 3>&2 4>&1 2>>"$1"; [ -z "$2" ] || exec >>"$2"'
+  `set -- "$(mktemp 2>/dev/null)" "$(mktemp 2>/dev/null)"; ${SH_HOLD_OK} || { ${SH_RM_ERR}; ${SH_TMP_IN_TMP}; }; ` +
+  `${SH_HOLD_OK} || { ${SH_RM_ERR}; set -- "" ""; }; exec 3>&2 4>&1; [ -z "$1" ] || exec 2>>"$1" >>"$2"`
 
 function shRoute(test: string, argv: readonly string[]): string {
-  return `if ${test}; then ${argv.map((w) => quoteWord('sh', w)).join(' ')}; ${CASE_SH}; fi`
+  return `if [ -n "$1" ] && ${test}; then ${argv.map((w) => quoteWord('sh', w)).join(' ')}; ${CASE_SH}; fi`
 }
 
 // The merge of stderr into the held output, as the statement reader returns it.
@@ -170,7 +175,7 @@ export function buildGuardedCommand(input: GuardInput): string {
   const shim = node[1]
   const notice = guardNoticeJson(bin)
   if (input.shell === 'sh') {
-    const parts = [': tg-guard-v1', SH_STDERR]
+    const parts = [`: tg-guard-v${String(GUARD_VERSION)}`, SH_STDERR]
     if (!nodeOnly) parts.push(shRoute(`[ -x ${q(bin)} ] && [ -s ${q(bin)} ]`, input.native))
     // limit: a native route reads stdin then fails: no payload, safe answer. revisit-when: a native client does
     if (shim !== undefined) {
@@ -183,7 +188,7 @@ export function buildGuardedCommand(input: GuardInput): string {
     return parts.join('; ')
   }
   const exists = (p: string): string => `Test-Path -LiteralPath ${q(p)} -PathType Leaf`
-  const parts = ["'tg-guard-v1' | Out-Null", PS_ENCODING_BACK_DEF, PS_ERR_DEF, PS_OUT_DEF]
+  const parts = [PS_VERSION_LINE, PS_ENCODING_BACK_DEF, PS_ERR_DEF, PS_OUT_DEF]
   if (!nodeOnly) {
     parts.push(psRoute(`(${exists(bin)}) -and ((Get-Item -LiteralPath ${q(bin)}).Length -gt 0)`, input.native))
   }

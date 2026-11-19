@@ -6,6 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { GUARD_VERSION } from '../src/hook_guard.js'
 import { claudeHookScriptPath, expectedHookEntryFor, installHooks, hookEventGaps, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
 import { hookExecPartsFor } from '../src/util.js'
 
@@ -62,7 +63,7 @@ describe('exec-form hook registration', () => {
       const settings = readSettingsFile(settingsPath('project'))
       const entry = settings.hooks?.['PreToolUse']?.[0]?.hooks[0]
       // An exec-form entry dies with its program, so every registered command carries the guard prelude.
-      expect(entry?.command.startsWith(': tg-guard-v1;')).toBe(true)
+      expect(entry?.command.startsWith(`: tg-guard-v${String(GUARD_VERSION)};`)).toBe(true)
       expect(entry?.command).toContain(path.join(TMP, 'home', '.claude', 'hooks', 'token-goat-shim.cjs'))
       expect(entry?.args).toBeUndefined()
     })

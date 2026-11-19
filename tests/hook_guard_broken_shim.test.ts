@@ -89,6 +89,7 @@ function run(
   psPrefix = '',
   psProgram?: string,
   input = '{}',
+  extra: { env?: Record<string, string>; pathFirst?: string } = {},
 ) {
   const dir = path.join(root, `c${String(n++)}`)
   fs.mkdirSync(dir)
@@ -111,8 +112,9 @@ function run(
   const p = psProgram === undefined ? prog(shell)! : { program: psProgram, args: powerShellCommandArgs }
   const psDir = path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0')
   const shellDirs = [path.dirname(p.program), psDir]
+  const pathDirs = extra.pathFirst === undefined ? shellDirs : [extra.pathFirst, ...shellDirs]
   const r = spawnSync(p.program, p.args(shell === 'powershell' ? psPrefix + command : command), {
-    env: { ...process.env, PATH: shellDirs.join(path.delimiter) },
+    env: { ...process.env, ...extra.env, PATH: pathDirs.join(path.delimiter) },
     encoding: 'buffer',
     timeout: 60_000,
     windowsHide: true,
@@ -297,6 +299,38 @@ describe('a broken Node shim falls through to the safe answer', () => {
   }
   it('runs on at least the sh form', () => {
     expect(SHELLS).toContain('sh')
+  })
+})
+
+describe('the sh guard with no hold files runs no route', () => {
+  const sh = it.runIf(SHELLS.includes('sh'))
+  sh('a mktemp that always fails gives the safe answer, exit 0, and the route never ran', () => {
+    const dir = path.join(root, `nm${String(n++)}`)
+    fs.mkdirSync(dir)
+    fs.writeFileSync(path.join(dir, 'mktemp'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    const ran = path.join(dir, 'ran')
+    const route = `require('fs').writeFileSync(${JSON.stringify(ran)}, 'ran'); process.stdout.write('not json'); process.exit(2)\n`
+    const o = run('sh', route, undefined, '', undefined, '{}', { pathFirst: dir })
+    expect({ status: o.status, stdout: o.stdout, stderr: o.stderr, ran: fs.existsSync(ran) }).toEqual({
+      status: 0,
+      stdout: SAFE,
+      stderr: '',
+      ran: false,
+    })
+  })
+  sh('a TMPDIR naming a missing directory still serves the route answer', () => {
+    const o = run('sh', SHIMS['healthy'], undefined, '', undefined, '{}', { env: { TMPDIR: path.join(root, 'no-such-dir') } })
+    expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
+      status: 0,
+      stdout: '{"route":"node"}',
+      stderr: '',
+    })
+  })
+  sh('a TMPDIR naming a missing directory still judges a broken route', () => {
+    const o = run('sh', SHIMS['exit 13 and stdout noise'], undefined, '', undefined, '{}', {
+      env: { TMPDIR: path.join(root, 'no-such-dir') },
+    })
+    expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({ status: 0, stdout: SAFE, stderr: '' })
   })
 })
 

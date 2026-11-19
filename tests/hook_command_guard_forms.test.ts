@@ -359,7 +359,7 @@ describe('the parser reads back what the builder wrote', () => {
       kind: 'newer',
       version: GUARD_VERSION + 1,
     })
-    expect(parseGuardedCommand(': tg-guard-v1; exit 0')?.kind).toBe('malformed')
+    expect(parseGuardedCommand(`: tg-guard-v${String(GUARD_VERSION)}; exit 0`)?.kind).toBe('malformed')
     expect(parseGuardedCommand('token-goat hook x')).toBeUndefined()
   })
 })
