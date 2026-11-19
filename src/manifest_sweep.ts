@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS } from './baseline.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
+import { assertReadAllowed } from './read_deny.js'
 import { findLockfile, parseLockFile, type DepEntry } from './text_commands.js'
 
 const MAX_WALK_DEPTH = 32
@@ -73,6 +74,7 @@ function readManifest(filePath: string): {
   version: string | null
   dependencies: ManifestSweepDependency[]
 } {
+  assertReadAllowed(filePath)
   let contents: string
   try {
     contents = fs.readFileSync(filePath, 'utf8')

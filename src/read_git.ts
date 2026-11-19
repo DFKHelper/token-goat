@@ -10,6 +10,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { emitGuarded, guardJsonRows, guardText, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
+import { dropDeniedRows } from './read_deny.js'
 import { type GitResult } from './types.js'
 import { parseColonLineRange, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement, resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { trimBlankLines } from './read_suggest.js'
@@ -357,7 +358,8 @@ export function runChanged(opts: ChangedOptions = {}): number {
     }
     // A name with a quote, backslash or control character comes back C-quoted even with core.quotePath off.
     const listing = parseNameStatus(result.stdout)
-    changedFiles = listing.files
+    // A changed file the host denies keeps its hunks out of the answer; the rest still print.
+    changedFiles = dropDeniedRows(listing.files, (f) => path.resolve(cwd, f))
     renamedFrom = listing.renamedFrom
   } catch {
     emitErr(formatCommandError(`Could not run git diff against ${echoedValue(ref)}`))

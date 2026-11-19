@@ -5,6 +5,7 @@ import { redactReadText } from './fence_cap.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { pushAll, decodeSource, escapeRegExp } from './util.js'
 import { sourceLines } from './source_lines.js'
+import { noteOmitted, readDenial } from './read_deny.js'
 
 const DEFAULT_KINDS = ['TODO', 'FIXME', 'HACK', 'XXX', 'NOTE']
 
@@ -41,6 +42,11 @@ function isMarkerOccurrence(matched: string, hasColon: boolean): boolean {
 }
 
 function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
+  const denial = readDenial(filePath)
+  if (denial !== null) {
+    noteOmitted(denial)
+    return []
+  }
   let text: string
   try {
     text = decodeSource(fs.readFileSync(filePath))

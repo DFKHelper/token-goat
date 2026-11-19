@@ -15,6 +15,7 @@ import { pathPriorityWeight } from './path_weight.js';
 import { loadConfig } from '../config.js';
 import { redactReadText } from '../fence_cap.js';
 import { sourceLines } from '../source_lines.js';
+import { decodeSource } from '../encoding.js';
 import { snippetAround } from '../snippet_window.js';
 import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from '../semantic_relevance.js';
 import { ALL_CHANNELS, type ChannelHit, type FusedSearchResult, type SearchChannel, type SearchExecutionSummary, type SearchLowConfidence, type SearchOptions } from './types.js';
@@ -38,6 +39,15 @@ export function symbolPreview(sym: { name: string; docstring?: string | null; bo
 }
 
 /** A text hit's preview: a window of its line around the match, sized to fit the terminal's 120-character preview, so a match past the line's opening columns is still in what gets printed. */
+// Whether a host-denied file mentions the query; the text is compared in memory and never printed or cached.
+function deniedFileMentions(filePath: string, lowerQuery: string): boolean {
+  try {
+    return decodeSource(fs.readFileSync(filePath)).toLowerCase().includes(lowerQuery);
+  } catch {
+    return false;
+  }
+}
+
 function matchPreview(line: string, lowerQuery: string): string {
   const text = line.trim();
   return snippetAround(text, Math.max(0, text.toLowerCase().indexOf(lowerQuery)), 114);
@@ -157,9 +167,10 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string,
         }
         if (found.count > 0) matched.push(found);
       } catch (err: unknown) {
-        // A denied file is left out and said so; it is not a read error.
-        if (err instanceof ReadDeniedError) noteOmitted(err.message);
-        else unreadableCount++;
+        // A denied file is left out and said so only when it matched, once; it is not a read error.
+        if (err instanceof ReadDeniedError) {
+          if (deniedFileMentions(fullPath, lowerQuery)) noteOmitted(err.message);
+        } else unreadableCount++;
       }
     }
 

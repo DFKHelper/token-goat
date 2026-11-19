@@ -5,6 +5,7 @@ import { spawnSync } from 'child_process'
 import * as fs from 'fs'
 // Type-only imports: erased at compile time, so referencing them here does not eagerly load mcp_server.js (and transitively the whole MCP protocol layer and zod) at CLI startup. The runtime values are lazy-imported only inside cmdMcpServe.
 import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
+import { assertReadAllowed } from './read_deny.js'
 import type { StdioServerTransport as StdioServerTransportClass } from './mcp_stdio.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
@@ -117,6 +118,7 @@ function readBoundedText(text: string | undefined, file: string | undefined): st
   if (text === undefined && file === undefined) throw new CliError('provide text or --file')
   let value: string
   if (file !== undefined) {
+    assertReadAllowed(file)
     if (fs.statSync(file).size > CONTENT_MAX_INPUT_CHARS) {
       throw new CliError(`file exceeds the ${CONTENT_MAX_INPUT_CHARS}-byte safety limit`)
     }

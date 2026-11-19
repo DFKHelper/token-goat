@@ -40,6 +40,7 @@ import { emit, emitErr } from './emit.js'
 import { formatCommandError } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 import { couldNotReadError } from './could_not_read.js'
+import { readDenial } from './read_deny.js'
 
 // ---- dead -------------------------------------------------------------------
 
@@ -240,6 +241,11 @@ const SOURCE_EXTENSIONS = [
 ]
 
 export function runDeps(opts: DepsOptions): number {
+  const denial = readDenial(opts.file)
+  if (denial !== null) {
+    emitErr(formatCommandError(denial))
+    return 1
+  }
   let text: string
   try {
     text = decodeSource(fs.readFileSync(opts.file))

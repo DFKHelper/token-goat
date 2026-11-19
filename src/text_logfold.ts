@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import { redactReadText } from './fence_cap.js'
 import { FILTERS } from './filters.js'
+import { assertReadAllowed } from './read_deny.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { requireNonNegativeStrictInt } from './util.js'
 
@@ -76,7 +77,10 @@ function applyFiltersAndFold(lines: string[], noNormalize: boolean, foldRepeats:
 }
 
 function readInput(src: string | undefined): string {
-  if (src !== undefined) return fs.readFileSync(src, 'utf8')
+  if (src !== undefined) {
+    assertReadAllowed(src)
+    return fs.readFileSync(src, 'utf8')
+  }
   return fs.readFileSync(0, 'utf8')
 }
 

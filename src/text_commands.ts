@@ -24,6 +24,7 @@ import { cmdTodo } from './text_todo.js'
 import { cmdTrace, isPathUnderRoot } from './text_trace.js'
 import { cmdLogfold } from './text_logfold.js'
 import { sourceLines } from './source_lines.js'
+import { assertReadAllowed } from './read_deny.js'
 
 export { cmdTodo, cmdTrace, cmdLogfold }
 
@@ -322,6 +323,7 @@ function parsePnpmLock(content: string): DepEntry[] {
 
 export function parseLockFile(filePath: string): { deps: DepEntry[]; format: string } {
   const base = path.basename(filePath)
+  assertReadAllowed(filePath)
   const content = fs.readFileSync(filePath, 'utf8')
   if (base === 'package-lock.json') return { format: 'npm', deps: parsePackageLockJson(content) }
   if (base === 'yarn.lock') return { format: 'yarn', deps: parseYarnLock(content) }

@@ -26,6 +26,7 @@ import { emit, emitErr } from './emit.js'
 import { CliError } from './command_error.js'
 import { levenshteinDistance } from './util_suggest.js'
 import { echoedValue } from './hint_suggestion_guard.js'
+import { assertReadAllowed } from './read_deny.js'
 
 /** Ensure the config parent directory exists then call saveConfig. */
 function saveConfigSafe(cfg: Parameters<typeof saveConfig>[0], explicitKeys: readonly string[] = []): void {
@@ -641,6 +642,7 @@ export function cmdCompactDoc(opts: {
     }
   }
 
+  assertReadAllowed(resolved)
   const compactPath = compactPathFor(resolved)
   const fresh = isCompactFresh(compactPath, resolved)
   let rebuilt = false

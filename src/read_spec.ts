@@ -13,6 +13,7 @@ import { expandSpecPath, resolveSpecPath } from './spec_path.js'
 import { findProject, getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, indexFreshness, readFileText, readRedactedFileText, recordStaleServed, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
 import { emitErr } from './emit.js'
+import { assertReadAllowed, ReadDeniedError } from './read_deny.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
   didYouMean,
@@ -570,5 +571,13 @@ export function resolveSymbolSpecOrEmitError(
     return null
   }
 
+  // The commands behind this resolver print git history of the file, which holds the text a Read rule protects.
+  try {
+    assertReadAllowed(resolution.entry.filePath)
+  } catch (e) {
+    if (!(e instanceof ReadDeniedError)) throw e
+    emitErr(formatCommandError(e))
+    return null
+  }
   return resolution.entry
 }
