@@ -20,6 +20,7 @@ import { redactReadText } from './fence_cap.js'
 import { quotedArg, fencedCommand } from './hint_suggestion_guard.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
 import { hasSkipSegmentBelowRoot } from './skip_scope.js'
+import { noteOmitted, readDenial } from './read_deny.js'
 
 /** Summary of a project's shape: file/language counts and headline symbols. */
 export interface ProjectMap {
@@ -519,6 +520,11 @@ export function findMemSuggestionCandidates(projectRoot: string): MemSuggestion[
 
   const suggestions: MemSuggestion[] = []
   for (const filePath of candidateFiles) {
+    const denial = readDenial(filePath)
+    if (denial !== null) {
+      noteOmitted(denial)
+      continue
+    }
     let text: string
     try {
       text = fs.readFileSync(filePath, { encoding: 'utf-8' })

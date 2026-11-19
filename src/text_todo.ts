@@ -43,14 +43,15 @@ function isMarkerOccurrence(matched: string, hasColon: boolean): boolean {
 
 function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
   const denial = readDenial(filePath)
-  if (denial !== null) {
-    noteOmitted(denial)
-    return []
-  }
   let text: string
   try {
     text = decodeSource(fs.readFileSync(filePath))
   } catch {
+    return []
+  }
+  if (denial !== null) {
+    // Ruling 74: a denied file is said once, and only when it had a marker; no marker text leaves this function.
+    if (scanTextForTodos(filePath, text, kindSet).length > 0) noteOmitted(denial)
     return []
   }
   const found = scanTextForTodos(filePath, text, kindSet)

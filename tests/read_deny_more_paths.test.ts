@@ -174,6 +174,30 @@ describe('file readers that print or summarize the text they read', () => {
     expect(omittedLines(run.stderr).some((l) => l.includes('secrets'))).toBe(true)
   })
 
+  it('todo says a denied file once, only when it had a marker (Ruling 74)', () => {
+    put(project, 'secrets/two.py', '# TODO: FIRSTMARKERX\n# FIXME: SECONDMARKERX\n')
+    put(project, 'secrets/none.py', 'x = 1  # nothing to flag NOMARKERX\n')
+    const run = tg(['todo'])
+    expect(text(run)).not.toContain('MARKERX')
+    const lines = omittedLines(run.stderr)
+    expect(lines.filter((l) => l.includes('two.py'))).toHaveLength(1)
+    expect(lines.some((l) => l.includes('none.py'))).toBe(false)
+  })
+
+  it('baseline --suggest-mem skips a denied CLAUDE.md and counts an allowed one', () => {
+    put(project, 'secrets/CLAUDE.md', '- prefer SECRETBULLETX always\n- also SECRETBULLETX\n')
+    put(project, 'CLAUDE.md', '- prefer tabs\n- prefer OPENBULLETY\n')
+    const run = runBundle(['baseline', '--suggest-mem', '--json'], {
+      cwd: path.join(project, 'secrets'),
+      env: { ...env, CLAUDE_PROJECT_DIR: project },
+      timeout: 60000,
+    })
+    expect(text(run)).not.toContain('SECRETBULLETX')
+    const suggestions = (JSON.parse(run.stdout) as { memSuggestions: { path: string; count: number }[] }).memSuggestions
+    expect(suggestions.map((s) => normalizePath(s.path))).toEqual([normalizePath(path.join(project, 'CLAUDE.md'))])
+    expect(omittedLines(run.stderr).some((l) => l.includes('secrets'))).toBe(true)
+  })
+
   it('deps refuses a denied file and reads an allowed one', () => {
     const denied = tg(['deps', 'secrets/hidden.py'])
     expect(denied.status).toBe(1)

@@ -115,10 +115,11 @@ describe('rule forms', () => {
     expect(verdict(settings, (p) => path.join(p, 'a', '.envrc'))).toBeNull()
   })
 
-  it('a bare filename does not match a parent directory or another project', () => {
+  it('a bare filename matches the project root from a subdirectory but not another project', () => {
     const settings = { deny: ['Read(.env)'] }
     const sub = (p: string): Partial<ReadDenyContext> => ({ cwd: path.join(p, 'sub') })
-    expect(verdict(settings, (p) => path.join(p, '.env'), sub)).toBeNull()
+    // Ruling 75: a relative rule is anchored to the project root of its settings file and to cwd, as a union.
+    expect(verdict(settings, (p) => path.join(p, '.env'), sub)).toContain('.env')
     expect(verdict(settings, () => path.join(tmp(), '.env'))).toBeNull()
   })
 

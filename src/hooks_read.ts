@@ -30,6 +30,7 @@ import {
   requestedSliceSpan,
   estimateRequestedSlice,
   describeSliceAdvice,
+  hookReadDenied,
   loadSnapshotDiff,
   rereadIdentity,
   type SnapshotDiffResult,
@@ -1605,6 +1606,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const rawGrepPath = event.toolName === 'Grep' ? event.toolInput['path'] : undefined
   const target = getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? resolveEventPath(event, rawGrepPath) : undefined)
   if (preToolPathDeclined(event, target)) return passOutput()
+  // A path the host denies gets no diff, hint or snapshot from here: the call passes through to the host's own permission layer.
+  if (target !== undefined && hookReadDenied(target, getCwd(event))) return passOutput()
   const before = event.toolName === 'Read' && target !== undefined ? getSessionFileEntry(target) : undefined
   // Let the content-aware policy decide re-reads. A second count-only gate here bypasses changed-file checks, exact-output redirects, configuration, and the range/whole-file circuit breakers that prevent repeated denial loops.
   const output = preReadHandlerInner(event)

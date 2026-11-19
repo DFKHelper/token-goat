@@ -1,6 +1,5 @@
 [
  "agent_receipt.ts",
- "baseline.ts",
  "bash_output_cache.ts",
  "bash_range_savings.ts",
  "bridges/aider_install.ts",
@@ -58,7 +57,6 @@
  "hooks_bash_post.ts",
  "hooks_read.ts",
  "hooks_read_post.ts",
- "hooks_read_slice.ts",
  "hooks_skill.ts",
  "hooks_stop.ts",
  "hooks_tool_failure.ts",

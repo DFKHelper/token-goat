@@ -12,6 +12,7 @@ import { addSectionReadReceipt } from './served_extent.js'
 import { countNoun, decodeSource, statSize, toKB } from './util.js'
 import { TIMESTAMP_TICK_SEC } from './fingerprint.js'
 import { load as snapshotLoad } from './snapshots.js'
+import { readDenial } from './read_deny.js'
 import { BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
 import { readWindowFromDiskStreaming, STREAMING_READ_MIN_BYTES } from './hooks_read_window_stream.js'
 
@@ -377,8 +378,14 @@ export type SnapshotDiffResult =
   | { readonly kind: 'diff'; readonly diff: string; readonly savedBytes: number; readonly currentContent: string }
   | { readonly kind: 'none' }
 
-/** Compare prior snapshot to the file's current on-disk content. */
+/** Whether a hook must leave `target` alone because the host denies its Read; a check that fails counts as denied and never throws. */
+export function hookReadDenied(target: string, cwd: string | undefined): boolean {
+  return readDenial(target, cwd === undefined ? {} : { cwd }) !== null
+}
+
+/** Compare prior snapshot to the file's current on-disk content; a host-denied file has none, and its stored text is not read. */
 export function loadSnapshotDiff(sessionId: string, normalized: string, basename: string): SnapshotDiffResult {
+  if (hookReadDenied(hostPathOfIndexKey(normalized), undefined)) return { kind: 'none' }
   const oldSnap = snapshotLoad(sessionId, normalized)
   if (oldSnap === null) return { kind: 'none' }
   try {

@@ -16,7 +16,7 @@ import { writeSessionManifest } from './compact.js'
 import { store as snapshotStore } from './snapshots.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { hasPreciseSecret } from './secret_redact.js'
-import { countTextLines, harnessNumbersReadContent, isTruncatedReadDelivery, type NumberedRow, numberedRenderBytes, parseReadDelivery, readRequestedSliceWindow, readStartLine, readWindowFromDisk, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
+import { countTextLines, harnessNumbersReadContent, hookReadDenied, isTruncatedReadDelivery, type NumberedRow, numberedRenderBytes, parseReadDelivery, readRequestedSliceWindow, readStartLine, readWindowFromDisk, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
 import type { HookOutput } from './types.js'
 import { type ReadShape, recordReadShape } from './read_shape.js'
 import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
@@ -49,6 +49,8 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean,
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
   const normalized = normalizePath(filePath)
+  // A denied path stores no snapshot and is told nothing: the host's own permission layer answers.
+  if (hookReadDenied(filePath, getCwd(event))) return passOutput()
   const shown = displaySafePath(normalized)
   if (isTruncatedReadDelivery(event, respText)) {
     markFileTruncated(normalized, !readRequestedSliceWindow(event).isExplicitSlice)

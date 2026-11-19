@@ -10,7 +10,6 @@ import { isInsideRoot } from './path_containment.js'
 import { resolveProjectRoot } from './project.js'
 import { getReadNavigationEvidence } from './read_navigation_evidence.js'
 import { redactOrWithhold } from './redact_or_withhold.js'
-import { ReadDeniedError } from './read_deny.js'
 import { countRedactionPlaceholders } from './secret_redact.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import type { HookEvent } from './hook_registry.js'
@@ -221,11 +220,8 @@ export async function inlineSymbolAnswer(args: InlineAnswerArgs): Promise<Inline
     readBody: async (candidate) => {
       const row = rows.find((r) => r.name === candidate.name && r.filePath === candidate.file)
       if (row === undefined) return null
-      // A file the host denies is no inline answer: the hook answers nothing instead of failing.
-      return await readIndexedBody(row, args.cwd).catch((err: unknown) => {
-        if (err instanceof ReadDeniedError) return null
-        throw err
-      })
+      // A file the host denies, or whose Read rules could not be checked (a config that will not load), is no inline answer: no text and no throw.
+      return await readIndexedBody(row, args.cwd).catch(() => null)
     },
   })
   if (!('inline' in decision)) return decision
