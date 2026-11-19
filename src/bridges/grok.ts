@@ -67,7 +67,7 @@ ${SHIM_SPAWN_LADDER}
           input,
           encoding: 'utf8',
           shell: true,
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: shimBudgetLeft(),
           killSignal: 'SIGKILL',
           maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })
@@ -106,5 +106,5 @@ main().catch((err) => {
   } catch {
     // stdout itself is broken; nothing more can be done here.
   }
-})
+}).finally(shimReleaseAbandoned)
 `

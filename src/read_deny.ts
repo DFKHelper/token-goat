@@ -322,6 +322,13 @@ export function resetReadDenyCache(): void {
   cache = undefined
 }
 
+/** The shim's end-to-end deadline (epoch ms) for this hook call, or undefined outside a shim-run hook. */
+export function hookDeadlineAt(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = env['TOKEN_GOAT_HOOK_DEADLINE_AT']
+  if (raw === undefined || !/^[0-9]{1,15}$/.test(raw)) return undefined
+  return Number(raw)
+}
+
 function load(
   cwd: string,
   projectDir: string | undefined,
@@ -341,14 +348,20 @@ function load(
     const load =
       ctx.loadSnapshot ??
       ((c: string, p: string | undefined) =>
-        loadPermissionSnapshotOrThrow(c, p, { outsideProject: 'project-only', sources: 'host-loaded' }))
+        loadPermissionSnapshotOrThrow(c, p, {
+          outsideProject: 'project-only',
+          sources: 'host-loaded',
+          deadlineAt: hookDeadlineAt(),
+        }))
     return compileSnapshot(load(cwd, projectDir), bases, home, platform)
   })
   const compiled: Compiled =
     run.error === undefined
       ? (run.value as Compiled)
       : { groups: [], failure: `could not read the host permission settings: ${(run.error as Error).message}` }
-  if (ctx.loadSnapshot === undefined) cache = { key, at: now, compiled, stamps: run.stamps }
+  // A failure under the hook deadline is about this call's time, not the settings, so it is never kept.
+  const timedOut = run.error !== undefined && hookDeadlineAt() !== undefined
+  if (ctx.loadSnapshot === undefined && !timedOut) cache = { key, at: now, compiled, stamps: run.stamps }
   return compiled
 }
 

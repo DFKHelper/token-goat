@@ -79,7 +79,7 @@ ${SHIM_SPAWN_LADDER}
           input,
           encoding: 'utf8',
           shell: true,
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: shimBudgetLeft(),
           killSignal: 'SIGKILL',
           maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })
@@ -98,5 +98,5 @@ ${SHIM_SPAWN_LADDER}
 
 main().catch(() => {
   // Fail open: write nothing, exit 0. Kimi treats a silent hook as "allow".
-})
+}).finally(shimReleaseAbandoned)
 `

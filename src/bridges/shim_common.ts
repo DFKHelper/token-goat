@@ -55,6 +55,18 @@ export const SHIM_TRY_IN_PROCESS = `// Attempts the in-process hook call: import
 // is forwarded straight through: this runs in the same process as the caller, so its
 // performance.now() reading shares the same origin and needs no conversion.
 async function tryInProcess(entryPath, eventName, input, harnessWaitMs) {
+  let timer
+  const cutOff = new Promise((resolve) => {
+    timer = setTimeout(() => { shimAbandoned = true; resolve(undefined) }, shimBudgetLeft())
+  })
+  try {
+    return await Promise.race([tryInProcessRoutes(entryPath, eventName, input, harnessWaitMs), cutOff])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function tryInProcessRoutes(entryPath, eventName, input, harnessWaitMs) {
   if (!entryPath) return undefined
   try {
     const payload = JSON.parse(input)
@@ -74,7 +86,7 @@ export const SHIM_SPAWN_LADDER = `    const res = entryPath
       ? spawnSync(process.execPath, [entryPath, 'hook', eventName], {
           input,
           encoding: 'utf8',
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: shimBudgetLeft(),
           killSignal: 'SIGKILL',
           maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })`
@@ -97,7 +109,15 @@ export const SESSION_START_TEST_BUDGET_MAX_MS = 600_000
 
 /** The `const` line each shim declares for {@link SHIM_FALLBACK_TIMEOUT_MS}, so every spawn site in the script reads one name and the number lives only above. */
 export function shimFallbackTimeoutConst(harness: keyof typeof SHIM_FALLBACK_TIMEOUT_MS): string {
-  return `const SHIM_FALLBACK_TIMEOUT_MS = ${SHIM_FALLBACK_TIMEOUT_MS[harness]}`
+  return `const SHIM_FALLBACK_TIMEOUT_MS = ${SHIM_FALLBACK_TIMEOUT_MS[harness]}
+// One end-to-end deadline for the whole call: resident server, in-process hook and spawn all draw on it.
+const SHIM_DEADLINE_AT = Date.now() + SHIM_FALLBACK_TIMEOUT_MS
+// Read by the hook's own bounded loops (the Read pre-hook's permission snapshot) so they give up in time.
+process.env.TOKEN_GOAT_HOOK_DEADLINE_AT = String(SHIM_DEADLINE_AT)
+function shimBudgetLeft() { return Math.max(1, SHIM_DEADLINE_AT - Date.now()) }
+// Set when the deadline cut a route off: its socket may hold the event loop open, so the shim exits itself.
+let shimAbandoned = false
+function shimReleaseAbandoned() { if (shimAbandoned) process.stdout.write('', () => process.exit()) }`
 }
 
 /** 32 MiB, matching `MAX_CAPTURE_BYTES` in constants.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */

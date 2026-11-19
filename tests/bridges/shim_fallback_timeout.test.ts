@@ -79,7 +79,8 @@ describe('shim fallback spawn cap', () => {
       const cap = SHIM_FALLBACK_TIMEOUT_MS[name]
       expect(script, label).toContain(`const SHIM_FALLBACK_TIMEOUT_MS = ${cap}\n`)
       expect(script.match(/timeout: \d+/g), `${label} spawn sites read the named cap, not a number`).toBeNull()
-      expect((script.match(/timeout: SHIM_FALLBACK_TIMEOUT_MS/g) ?? []).length, `${label} spawns through the named cap`).toBeGreaterThanOrEqual(2)
+      const spawns = script.match(/timeout: (SHIM_FALLBACK_TIMEOUT_MS|shimBudgetLeft\(\))/g) ?? []
+      expect(spawns.length, `${label} spawns through the cap or what is left of it`).toBeGreaterThanOrEqual(2)
       expect(cap, label).toBeLessThan(harnessTimeoutMs)
     }
     expect(SHIM_FALLBACK_TIMEOUT_MS.claudecode).toBeGreaterThan(3000)

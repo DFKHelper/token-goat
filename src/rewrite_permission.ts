@@ -721,8 +721,16 @@ export function loadPermissionSnapshotOrThrow(
   options: {
     readonly outsideProject?: 'throw' | 'project-only'
     readonly sources?: 'every' | 'host-loaded'
+    /** Epoch ms after which the walk stops and throws, so a hook on a stalled disk can still answer in time. */
+    readonly deadlineAt?: number | undefined
   } = {},
 ): PermissionSnapshot {
+  const checkDeadline = (): void => {
+    if (options.deadlineAt !== undefined && Date.now() > options.deadlineAt) {
+      throw new Error('the permission settings were not read in time')
+    }
+  }
+  checkDeadline()
   const here = path.resolve(cwd)
   const project = projectDir !== undefined && path.isAbsolute(projectDir) ? path.resolve(projectDir) : undefined
   const outside = project !== undefined && !isInsideRoot(here, project)
@@ -731,7 +739,9 @@ export function loadPermissionSnapshotOrThrow(
     throw new Error(`the working directory ${here} is outside the project ${project}`)
   }
   const start = project ?? here
+  checkDeadline()
   const mainRoot = gitMainRoot(start)
+  checkDeadline()
   // settings.local.json comes from the start dir on Windows, else the main checkout root; allows need both.
   const localAgrees = process.platform === 'win32' || mainRoot === undefined || samePath(mainRoot, start)
   const localDir = samePath(here, start) && localAgrees ? start : undefined
@@ -762,6 +772,7 @@ export function loadPermissionSnapshotOrThrow(
   const hostDirs = [start, ...(mainRoot === undefined ? [] : [mainRoot])]
   const dirs = hostLoaded ? hostDirs : roots.flatMap(selfAndAncestors)
   for (const dir of dirs) {
+    checkDeadline()
     const key = process.platform === 'win32' ? dir.toLowerCase() : dir
     if (seen.has(key)) continue
     seen.add(key)

@@ -92,7 +92,7 @@ ${SHIM_SPAWN_LADDER}
           input,
           encoding: 'utf8',
           shell: true,
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: shimBudgetLeft(),
           killSignal: 'SIGKILL',
           maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })
@@ -119,6 +119,6 @@ ${SHIM_SPAWN_LADDER}
 
 main().catch(() => {
   process.stdout.write('{}')
-})
+}).finally(shimReleaseAbandoned)
 `
 
