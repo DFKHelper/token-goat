@@ -22,6 +22,7 @@ import { estimateTokensFromLength } from './overflow_guard.js'
 import { displaySafeJson } from './paths.js'
 import { writeCommandFailure } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
+import { assertReadAllowed } from './read_deny.js'
 
 export interface WasteCommandOptions {
   project?: string
@@ -241,6 +242,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
   // 1. Explicit transcript path passed
   if (opts.transcript !== undefined) {
     const resolvedPath = path.resolve(opts.transcript)
+    assertReadAllowed(resolvedPath)
     if (!fs.existsSync(resolvedPath)) {
       const what = opts.copilot === true ? 'Copilot session event log' : 'transcript'
       writeCommandFailure(opts.json === true, { error: `${what} not found: ${resolvedPath}` }, `${what} not found: ${echoedValue(resolvedPath)}`)
@@ -277,6 +279,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
       writeCommandFailure(opts.json === true, { error: jsonDetail }, detail)
       return
     }
+    assertReadAllowed(eventsPath)
     const copilotReport = buildCopilotWasteReport(eventsPath)
     if (opts.json === true) {
       process.stdout.write(`${displaySafeJson(copilotReport, 0)}\n`)
@@ -294,6 +297,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
     return
   }
 
+  assertReadAllowed(detected.path)
   if (detected.kind === 'copilot') {
     const copilotReport = buildCopilotWasteReport(detected.path)
     if (opts.json === true) {

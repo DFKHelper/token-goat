@@ -2,6 +2,7 @@
 
 import * as fs from 'node:fs'
 import { displaySafeText } from './paths.js'
+import { assertReadAllowed } from './read_deny.js'
 import Database from './sqlite_driver.js'
 import type { SqliteDatabase } from './sqlite_driver.js'
 import { echoedValue } from './hint_suggestion_guard.js'
@@ -38,6 +39,7 @@ export function isSqliteFile(filePath: string): boolean {
 
 /** Opens `filePath` as a read-only SQLite connection. Never creates a file (fileMustExist) and never accepts a path that doesn't exist or doesn't look like a SQLite database -- both fail fast with a plain Error instead of reaching the native addon with a bogus path. */
 export function openReadonlySqlite(filePath: string): SqliteDatabase {
+  assertReadAllowed(filePath)
   if (!fs.existsSync(filePath)) {
     throw new Error(`file not found: ${displaySafeText(filePath)}`)
   }

@@ -17,6 +17,7 @@ import {
 import { displaySafeJson } from './paths.js'
 import { writeCommandFailure } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
+import { assertReadAllowed } from './read_deny.js'
 import { countNoun } from './util.js'
 
 export interface AuditCommandOptions {
@@ -144,6 +145,7 @@ export async function runAuditCommand(opts: AuditCommandOptions = {}): Promise<v
   // 1. Explicit transcript
   if (opts.transcript !== undefined) {
     const resolved = path.resolve(opts.transcript)
+    assertReadAllowed(resolved)
     if (!fs.existsSync(resolved)) {
       const err = `transcript not found: ${echoedValue(resolved)}`
       writeCommandFailure(opts.json === true, { error: err }, err)
@@ -179,6 +181,7 @@ export async function runAuditCommand(opts: AuditCommandOptions = {}): Promise<v
     return
   }
 
+  assertReadAllowed(detected.path)
   if (detected.kind === 'copilot') {
     const report = buildCopilotWasteReport(detected.path)
     const card = buildFeedbackCardFromCopilot(report)

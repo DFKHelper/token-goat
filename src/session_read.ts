@@ -8,6 +8,7 @@ import { projectTranscriptsDir } from './claude_config_dir.js'
 import { findLatestTranscript, safeStringify, extractResultText } from './waste.js'
 import { resolveProjectRoot } from './project.js'
 import { displaySafeText } from './paths.js'
+import { assertReadAllowed } from './read_deny.js'
 
 // ---- resolution -----------------------------------------------------------
 
@@ -25,6 +26,13 @@ export function resolveSessionTranscript(arg?: string, opts: { project?: string 
 
   const projectRoot = resolveProjectRoot(opts.project !== undefined ? { project: opts.project } : {})
   return findLatestTranscript(projectRoot)
+}
+
+/** {@link resolveSessionTranscript} for a command that prints transcript text: a host-denied transcript, named by path or resolved from a session id, throws ReadDeniedError before any read. */
+export function resolveReadableSessionTranscript(arg?: string, opts: { project?: string } = {}): string | null {
+  const resolved = resolveSessionTranscript(arg, opts)
+  if (resolved !== null) assertReadAllowed(resolved)
+  return resolved
 }
 
 // ---- parsing ----------------------------------------------------------------

@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { CliError, out } from './cli.js'
 import { buildLineDiff } from './hooks_read_slice.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
-import { assertReadAllowed } from './read_deny.js'
+import { assertReadAllowed, noteOmitted, readDenial } from './read_deny.js'
 import { findSpecSeparator } from './read_commands.js'
 import { didYouMeanLines, filterSimilarHeadings } from './read_suggest.js'
 import { listSections } from './section_reader.js'
@@ -270,6 +270,15 @@ export async function cmdSkillDiff(name: string): Promise<void> {
 
   const newer = versions[0]!
   const older = versions[1]!
+  // The stored bodies outlive the rule that now denies their source, so the source paths are judged at print time.
+  const sources = [newer.sourcePath, older.sourcePath, await getSkillFilePath(name)]
+  for (const source of new Set(sources.filter((s): s is string => typeof s === 'string' && s !== ''))) {
+    const denial = readDenial(source)
+    if (denial !== null) {
+      noteOmitted(denial)
+      return
+    }
+  }
   const newerBody = await fs.promises.readFile(path.resolve(dir, `${newer.outputId}.txt`), 'utf-8').catch(() => null)
   const olderBody = await fs.promises.readFile(path.resolve(dir, `${older.outputId}.txt`), 'utf-8').catch(() => null)
   if (newerBody === null || olderBody === null) {
@@ -314,7 +323,7 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
   }
   assertReadAllowed(filePath)
   const body = decodeSource(fs.readFileSync(filePath))
-  const extracted =extractNamedSection(body, heading)
+  const extracted = extractNamedSection(body, heading)
   if (!extracted) {
     const allHeadings = listSections(filePath)
     const wanted = stripLower(heading)

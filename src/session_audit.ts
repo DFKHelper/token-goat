@@ -5,6 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { echoedValue } from './hint_suggestion_guard.js'
+import { dropDeniedRows } from './read_deny.js'
 import * as readline from 'node:readline'
 
 import { COLD_WRITE_MULTIPLIER_1H, type ColdGapAccumulator, type ColdGapCensus, type ColdGapFile, coldGapToolLabel, emptyColdGapCensus, newColdGapAccumulator } from './cold_gap.js'
@@ -1190,7 +1191,8 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     throw new Error(`session corpus directory not found: ${echoedValue(corpusDir)}`)
   }
   const windowDays = opts.windowDays ?? 0
-  const allFiles = listCorpusTranscripts(corpusDir)
+  // A host-denied transcript is skipped with one omitted line, so no count or label of it reaches the report.
+  const allFiles = dropDeniedRows(listCorpusTranscripts(corpusDir), (file) => file)
   if (allFiles.length === 0) {
     throw new Error(`no .jsonl session transcripts found under ${corpusDir}`)
   }

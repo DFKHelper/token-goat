@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { estimateTokens } from './compact.js'
 import { loadConfig } from './config.js'
 import * as embeddings from './embeddings.js'
+import { noteOmitted, readDenial } from './read_deny.js'
 import { atomicWriteText, foldPath } from './util.js'
 
 // Entry regex: matches markdown link entries in MEMORY.md.
@@ -359,6 +360,11 @@ export function auditClaudeMd(files: string[]): ClaudeMdReport[] {
   const allLines: Array<[string, number, string]> = []
 
   for (const filePath of files) {
+    const denial = readDenial(filePath)
+    if (denial !== null) {
+      noteOmitted(denial)
+      continue
+    }
     let text: string
     try {
       text = fs.readFileSync(filePath, { encoding: 'utf-8' })
