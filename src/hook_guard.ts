@@ -170,6 +170,7 @@ export function buildGuardedCommand(input: GuardInput): string {
   if (input.shell === 'sh') {
     const parts = [': tg-guard-v1', SH_STDERR]
     if (!nodeOnly) parts.push(shRoute(`[ -x ${q(bin)} ] && [ -s ${q(bin)} ]`, input.native))
+    // limit: a native route reads stdin then fails: no payload, safe answer. revisit-when: a native client does
     if (shim !== undefined) {
       parts.push(shRoute(`[ -f ${q(shim)} ] && [ -x ${q(node[0]!)} ]`, node))
       parts.push(shRoute(`[ -f ${q(shim)} ] && command -v node >/dev/null 2>&1`, ['node', ...node.slice(1)]))

@@ -64,7 +64,13 @@ const SHIMS: Record<string, string> = {
     "process.stdout.write('{\"d\":\"block\"}'); process.exit(2)\n",
   healthy: "process.stdout.write('{\"route\":\"node\"}')\n",
   'multi-line answer': "process.stdout.write('line one\\nline two\\nline three')\n",
+  // Provenance: HAND-DERIVED. Echoes the stdin it read; no input is treated as a failed route.
+  'echo the payload it read':
+    "let d = ''; process.stdin.on('data', (c) => { d += c }); " +
+    "process.stdin.on('end', () => { if (d === '') process.exit(1); " +
+    "process.stdout.write(JSON.stringify({ route: 'node', got: d })) })\n",
 }
+const PAYLOAD = '{"tool":"fx9-payload-7c1e"}'
 
 let root = ''
 let n = 0
@@ -81,6 +87,7 @@ function run(
   exeText?: string,
   psPrefix = '',
   psProgram?: string,
+  input = '{}',
 ) {
   const dir = path.join(root, `c${String(n++)}`)
   fs.mkdirSync(dir)
@@ -109,7 +116,7 @@ function run(
     timeout: 60_000,
     windowsHide: true,
     cwd: dir,
-    input: Buffer.from('{}'),
+    input: Buffer.from(input),
     windowsVerbatimArguments: p.verbatim === true,
   })
   const [stdout, stderr] = [r.stdout.toString('utf8'), r.stderr.toString('utf8')]
@@ -191,13 +198,16 @@ describe('a broken Node shim falls through to the safe answer', () => {
         stderr: '',
       })
     })
-    it(`a native client that crashes with exit 1 falls to the Node route through ${shell}`, () => {
-      const o = run(shell, SHIMS['healthy'], "process.stderr.write('boom\\n'); process.exit(1)\n")
-      expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
-        status: 0,
-        stdout: '{"route":"node"}',
-        stderr: '',
-      })
+    it(`a native route that fails unread hands the node route its payload through ${shell}`, () => {
+      const o = run(shell, SHIMS['echo the payload it read'], 'process.exit(1)\n', '', undefined, PAYLOAD)
+      expect({ status: o.status, stderr: o.stderr }).toEqual({ status: 0, stderr: '' })
+      expect(JSON.parse(o.stdout)).toEqual({ route: 'node', got: PAYLOAD })
+    })
+    it(`limit: a route that drains stdin then fails leaves the next route the safe answer, ${shell}`, () => {
+      const reads = "require('fs').readFileSync(0); process.exit(1)\n"
+      const o = run(shell, SHIMS['echo the payload it read'], reads, '', undefined, PAYLOAD)
+      expect({ status: o.status, stdout: o.stdout, stderr: o.stderr })
+        .toEqual({ status: 0, stdout: SAFE, stderr: '' })
     })
   }
   // A console code page that cannot carry the bytes (here 7-bit ASCII) must not alter the route's answer.
@@ -227,8 +237,9 @@ describe('a broken Node shim falls through to the safe answer', () => {
     ['pwsh', pwshPs, SAFE],
   ] as const
   for (const [label, exe, answer] of consoleless) {
+    const claim = answer === SAFE ? 'the safe answer, no route starts there' : 'the node route answer'
     it.runIf(WIN && exe !== undefined && fs.existsSync(exe))(
-      `with no console attached the guard still answers through ${label}`,
+      `with no console attached ${label} gives ${claim}`,
       () => {
         const o = run('powershell', SHIMS['healthy'], undefined, NO_CONSOLE, exe)
         expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
@@ -245,8 +256,15 @@ describe('a broken Node shim falls through to the safe answer', () => {
     it.runIf(WIN && exe !== undefined && fs.existsSync(exe))(name, () => {
       const dir = path.join(root, `enc${String(n++)}`)
       fs.mkdirSync(dir)
+      const state = path.join(dir, 'route-codepage.txt')
       const shim = path.join(dir, 'shim.cjs')
-      fs.writeFileSync(shim, SHIMS['healthy']!)
+      // The route asks the console for its live code page and writes the answer down before it answers.
+      const codePageArgs = ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding.CodePage']
+      const probe =
+        `require('node:fs').writeFileSync(${JSON.stringify(state)}, require('node:child_process')` +
+        `.spawnSync(${JSON.stringify(exe)}, ${JSON.stringify(codePageArgs)}, ` +
+        `{ encoding: 'utf8' }).stdout.trim())\n`
+      fs.writeFileSync(shim, probe + SHIMS['healthy']!)
       const guard = buildGuardedCommand({
         shell: 'powershell',
         native: [process.execPath, shim],
@@ -254,10 +272,10 @@ describe('a broken Node shim falls through to the safe answer', () => {
         marker: path.join(dir, 'hook-broken.json'),
       })
       const encoded = Buffer.from(guard, 'utf16le').toString('base64')
-      // The outer host shares its console with the inner one; a fresh child reads the console's live code page.
+      // Outer and inner hosts share one console; the separator splits the guard's answer from the code page.
       const outer =
         '[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(850); ' +
-        `& '${exe}' -NoProfile -NonInteractive -EncodedCommand ${encoded} | Out-Null; ` +
+        `& '${exe}' -NoProfile -NonInteractive -EncodedCommand ${encoded}; Write-Output 'tg-sep'; ` +
         `& '${exe}' -NoProfile -NonInteractive -Command '[Console]::OutputEncoding.CodePage'`
       const r = spawnSync(exe!, powerShellCommandArgs(outer), {
         encoding: 'utf8',
@@ -266,7 +284,14 @@ describe('a broken Node shim falls through to the safe answer', () => {
         cwd: dir,
         input: '{}',
       })
-      expect({ status: r.status, codePage: r.stdout.trim() }).toEqual({ status: 0, codePage: '850' })
+      const [answer = '', codePage = ''] = r.stdout.split('tg-sep')
+      const routeCodePage = fs.existsSync(state) ? fs.readFileSync(state, 'utf8') : 'the route never ran'
+      expect({ status: r.status, answer: answer.trim(), routeCodePage, codePage: codePage.trim() }).toEqual({
+        status: 0,
+        answer: '{"route":"node"}',
+        routeCodePage: '28591',
+        codePage: '850',
+      })
     })
   }
   it('runs on at least the sh form', () => {
