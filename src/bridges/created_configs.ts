@@ -11,6 +11,7 @@ import {
   foldPath,
   removeEmptyDirInScope,
   removeFileInScope,
+  tracingWrites,
   withFileLock,
 } from '../util.js'
 
@@ -242,15 +243,18 @@ export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => 
   const recordedBefore = new Set([...absent, ...targets.map((t) => path.resolve(t))].filter(hasCreatedConfig))
   const backupsBefore = new Set(targets.flatMap(createdBackupsFor))
   const earlier = earlierBytes(targets)
+  const wrote = new Map<string, Buffer>()
+  const leftAsFound: string[] = []
   try {
-    return work()
+    return tracingWrites(wrote, work)
   } catch (error) {
-    undoQuietly(() => restoreEarlierBytes(earlier))
+    undoQuietly(() => restoreEarlierBytes(earlier, wrote, leftAsFound))
     undoQuietly(() => {
       for (const p of [...absent].sort((a, b) => b.length - a.length)) {
         if (!fs.existsSync(p)) continue
         if (fs.lstatSync(p).isDirectory()) removeEmptyDirInScope(p)
-        else removeFileInScope(p)
+        else if (holdsBytesWritten(p, wrote)) removeFileInScope(p)
+        else leftAsFound.push(p)
       }
     })
     for (const backup of targets.flatMap(createdBackupsFor).filter((b) => !backupsBefore.has(b))) {
@@ -261,6 +265,9 @@ export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => 
     }
     for (const p of [...absent, ...targets.map((t) => path.resolve(t))]) {
       if (!recordedBefore.has(p)) undoQuietly(() => void takeCreatedConfig(p))
+    }
+    if (leftAsFound.length > 0 && error instanceof Error) {
+      error.message += `\nchanged by another program, left as found: ${leftAsFound.join(', ')}`
     }
     throw error
   }
@@ -281,11 +288,27 @@ function earlierBytes(targets: readonly string[]): Map<string, Buffer> {
   return earlier
 }
 
-/** Write back each file in `earlier` whose bytes changed, atomically; a failure leaves the rest to try. */
-function restoreEarlierBytes(earlier: ReadonlyMap<string, Buffer>): void {
+/** True when `p` holds exactly the bytes this attempt last published there: only then is it ours to undo. */
+function holdsBytesWritten(p: string, wrote: ReadonlyMap<string, Buffer>): boolean {
+  const mine = wrote.get(foldPath(path.resolve(p)))
+  try {
+    return mine !== undefined && fs.readFileSync(p).equals(mine)
+  } catch {
+    return false
+  }
+}
+
+/** Write back each `earlier` file still holding the bytes this attempt published; any other goes in `left`. */
+function restoreEarlierBytes(
+  earlier: ReadonlyMap<string, Buffer>,
+  wrote: ReadonlyMap<string, Buffer>,
+  left: string[],
+): void {
   for (const [p, bytes] of earlier) {
     undoQuietly(() => {
-      if (!fs.existsSync(p) || !fs.readFileSync(p).equals(bytes)) atomicWriteBytes(p, bytes)
+      if (holdsBytesWritten(p, new Map([[foldPath(path.resolve(p)), bytes]]))) return
+      if (holdsBytesWritten(p, wrote)) atomicWriteBytes(p, bytes)
+      else left.push(p)
     })
   }
 }

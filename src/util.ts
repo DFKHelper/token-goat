@@ -291,6 +291,19 @@ export function withStagedWrites<T>(
   }
 }
 
+/** Maps filling with the bytes each path (keyed by `foldPath(path.resolve(p))`) was last published with. */
+const writeTraces: Map<string, Buffer>[] = []
+
+/** Run `work`, recording in `into` the bytes each atomic write published (not a held one), even on a throw. */
+export function tracingWrites<T>(into: Map<string, Buffer>, work: () => T): T {
+  writeTraces.push(into)
+  try {
+    return work()
+  } finally {
+    writeTraces.splice(writeTraces.lastIndexOf(into), 1)
+  }
+}
+
 /** Shared atomic-write core for text and bytes. Writes `content` to a sibling temp file (created with 0o600 so it is never world-readable even transiently on POSIX), then renames over `dest`. On Windows a brief exclusive-lock window can make the rename fail with EPERM/EBUSY/ETXTBSY; we retry up to 5 times with a `50 * attempt` ms backoff. Any failure past this point -- a failed write (ENOSPC, EIO, ...) just as much as a failed rename -- cleans up the temp file before the error propagates, so a partial write never leaks a `.tmp` file next to `dest`. */
 function atomicWriteCore(requested: string, content: string | Uint8Array): void {
   assertWriteInScope(requested)
@@ -332,6 +345,8 @@ function atomicWriteCore(requested: string, content: string | Uint8Array): void 
     }
 
     withRetryOnLock(() => renameSync(tmp, dest))
+    const published = typeof content === 'string' ? Buffer.from(content, 'utf-8') : Buffer.from(content)
+    for (const trace of writeTraces) trace.set(foldPath(path.resolve(requested)), published)
   } catch (err) {
     // Clean up the orphaned temp file on ANY failure past this point, not just a failed rename: the temp file is created by openSync before the write attempt, so it exists (and leaks) whether the write or the rename is what failed. Best-effort: a failed cleanup-unlink must never mask the original error.
     try {
