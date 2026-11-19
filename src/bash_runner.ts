@@ -94,6 +94,8 @@ export interface RunOptions {
   heartbeatIntervalMs?: number
   /** Hand the wrapped command the caller's standard input; without it the command gets none, on every path. */
   rawStdin?: boolean | undefined
+  /** The caller owns the tree it starts: what the command left running is ended before this returns. */
+  endTreeAfterExit?: boolean | undefined
 }
 
 /** Accumulates chunks up to `cap` total bytes, then silently drops the rest and flags `overflowed` so the caller can kill the child and append a truncation marker -- the async-spawn equivalent of `spawnSync`'s `maxBuffer` + `ENOBUFS`. */
@@ -384,6 +386,7 @@ async function wrapAndCompress(
   })
   heartbeat.stop()
   clearTimeout(timeoutHandle)
+  if (opts.endTreeAfterExit === true) owned.endLeftovers()
   owned.release()
   // Release the caller's stdin explicitly instead of relying on the pipe's own cleanup, so a library caller's event loop is never held open by it.
   if (child.stdin) {

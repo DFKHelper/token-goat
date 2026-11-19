@@ -171,6 +171,8 @@ export function killChildrenOfExitedRoot(root: number, spawnedAt: number, exited
 export interface OwnedChild {
   child: ChildProcess
   kill: () => void
+  /** After close, ends what the child left running. limit: macOS; revisit-when: a process group. */
+  endLeftovers: () => void
   release: () => void
 }
 
@@ -254,6 +256,9 @@ export function spawnOwned(file: string, args: string[], options: SpawnOptions):
     // A tree kill that failed reached nothing (taskkill unreachable or wedged), so a caller waiting on the child's exit would wait for ever; the handle Node owns ends the root itself and cannot hit a reused pid, which a signal to the bare pid could.
     child.kill('SIGKILL')
   }
+  const endLeftovers = (): void => {
+    if (child.pid !== undefined && closed) endSurvivors(child.pid)
+  }
   const handle = { kill }
   const release = (): void => {
     live.delete(handle)
@@ -266,5 +271,5 @@ export function spawnOwned(file: string, args: string[], options: SpawnOptions):
   child.on('error', () => {
     if (child.pid === undefined) release()
   })
-  return { child, kill, release }
+  return { child, kill, endLeftovers, release }
 }

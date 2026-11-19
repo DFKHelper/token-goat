@@ -25,7 +25,7 @@ it('resets the running heartbeat when run reads child output', async () => {
   child.stdout = stdout
   child.stderr = stderr
   const release = vi.fn()
-  spawnState.spawnOwned.mockReturnValue({ child, kill: vi.fn(), release })
+  spawnState.spawnOwned.mockReturnValue({ child, kill: vi.fn(), endLeftovers: vi.fn(), release })
 
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
   const result = run('heartbeat wiring test', {

@@ -335,6 +335,7 @@ export async function runGate(command: string, options: GateOptions = {}): Promi
       timeout: options.timeout ?? DEFAULT_TIMEOUT_SECONDS,
       writeStdout: capture,
       writeStderr: capture,
+      endTreeAfterExit: true,
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)

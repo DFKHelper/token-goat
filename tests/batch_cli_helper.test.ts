@@ -166,7 +166,8 @@ describe('batch client exit reporting', () => {
     const stdout = new PassThrough()
     proc.stdout = stdout
     proc.stderr = new PassThrough()
-    const client = createBatchClient(() => ({ child: proc, kill: () => undefined, release: () => undefined }))
+    const noop = (): undefined => undefined
+    const client = createBatchClient(() => ({ child: proc, kill: noop, endLeftovers: noop, release: noop }))
     clients.push(client)
     const request = rejection(client.run(['quit', 'in', 'order']))
     // The client's own close listener ran before this one, so the close has been handled when this resolves.
