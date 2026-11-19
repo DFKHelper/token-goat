@@ -9,7 +9,8 @@ export function buildLegacyStartupOwner(root: string): string {
   const source = join(process.cwd(), 'native', 'tg-hook')
   const fixture = join(root, 'legacy-crate')
   mkdirSync(fixture)
-  for (const name of ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml', 'safe_answers.json']) {
+  const crateFiles = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml']
+  for (const name of [...crateFiles, 'safe_answers.json', 'hook_limits.json']) {
     copyFileSync(join(source, name), join(fixture, name))
   }
   cpSync(join(source, 'src'), join(fixture, 'src'), { recursive: true })
@@ -17,9 +18,11 @@ export function buildLegacyStartupOwner(root: string): string {
   let text = readFileSync(main, 'utf8')
   const dispatch = '        #[cfg(windows)]\n        Some("--session-start-owner-v1") => startup_owner::run(&raw[1..]),\n'
   const route = '    if let Some(call) = hook.call.as_ref().filter(|c| startup_entry::is_startup(c)) {\n'
-    + '        return startup_entry::run(hook.fallback.clone(), main_start, call);\n    }\n'
-  expect(text).toContain(dispatch)
-  expect(text).toContain(route)
+    + '        return startup_entry::run(hook.fallback.clone(), main_start, call, hook.limit);\n    }\n'
+  // The anchors are main.rs text: a main.rs edit that moves one fails here, naming it, not later as a missing binary.
+  const missing = (anchor: string): string => `legacy_startup_owner anchor missing from main.rs: ${anchor}`
+  expect(text, missing(dispatch)).toContain(dispatch)
+  expect(text, missing(route)).toContain(route)
   text = text.replace(dispatch, '').replace(route, '')
     .replace('mod startup_entry;\n', '')
     .replace('#[cfg(windows)]\nmod startup_owner;\n', '')
