@@ -67,7 +67,11 @@ function printCopilotReport(report: CopilotWasteReport): void {
   // The aggregate above is the largest number in this report and the least actionable one: it says the tool definitions are expensive without saying which tools. Copilot caches the resolved tool list per MCP server, so that question is answerable, but only as an estimate and only for part of the total -- Copilot's built-in tools are never cached there. Both limits are stated in the output rather than left for the reader to work out, because a per-server number printed under an exact one reads as a split of it.
   w('\n## Tool definitions by MCP server (estimated)\n')
   const mcp = report.mcpTools
-  if (!mcp.cacheFound) {
+  if (mcp.cacheDisabled === true) {
+    w(`  MCP tool snapshot cache disabled by COPILOT_MCP_TOOL_CACHE=false.\n`)
+    w('  Existing cache files are left untouched, and this report cannot estimate\n')
+    w('  per-server definitions from them while the host setting disables cache use.\n')
+  } else if (!mcp.cacheFound) {
     w(`  No MCP tool cache at ${copilotCliMcpToolsDir()}.\n`)
     w('  That is not the same as having no MCP servers: it means nothing has been cached\n')
     w('  there yet, which is also what a Copilot that has never connected one looks like.\n')

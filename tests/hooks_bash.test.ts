@@ -1919,7 +1919,7 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     const result = preBashHandler(makeBashEvent('Get-Content payload.json.bak | ConvertFrom-Json'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat json-query "file.json" "items[*].id" --head 20')
+      expect(result.context).toContain('token-goat json-query "-" "items[*].id" --head 20')
     }
   })
 
@@ -1928,12 +1928,14 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('pass')
   })
 
-  it('emits generic json-query hint when ConvertFrom-Json has no file path', () => {
-    const result = preBashHandler(makeBashEvent('$response | ConvertFrom-Json'))
+  it('suggests json-query stdin for gh api JSON without a file path', () => {
+    const result = preBashHandler(makeBashEvent('gh api repos/test-owner/test-repo/issues | ConvertFrom-Json'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query "file.json" "items[*].id" --head 20')
+      expect(result.context).toContain('token-goat json-query "-" "items[*].id" --head 20')
+      expect(result.context).not.toContain('json-query "file.json"')
+      expect(result.context).toContain('raw JSON on stdin')
       expect(result.context).toContain('token-goat web-output')
     }
   })

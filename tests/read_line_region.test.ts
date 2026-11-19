@@ -134,8 +134,7 @@ describe('Windows file selectors', () => {
     expect(resolveSpecPath(file)).toBe(expected)
   })
 
-  it('reads slash and backslash range-qualified paths on Windows', () => {
-    if (process.platform !== 'win32') return
+  it.skipIf(process.platform !== 'win32')('reads slash and backslash range-qualified paths on Windows', () => {
     withSample((file) => {
       const windowsSpellings = [file.replaceAll('\\', '/'), file]
       for (const windowsFile of windowsSpellings) {

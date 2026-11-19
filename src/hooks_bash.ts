@@ -482,7 +482,9 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       )
     }
     return contextOutput(
-      'PowerShell `ConvertFrom-Json` pipeline detected. For a file, use `' + jsonQueryExample('file.json') + '` to select and print JSON values directly (arrays and objects included); use `token-goat web-output` for browser results.',
+      'PowerShell `ConvertFrom-Json` pipeline detected. For raw JSON on stdin, keep the producer ' +
+      'and replace `ConvertFrom-Json` with `' + jsonQueryExample('-') +
+      '` (choose a path that matches the response); use `token-goat web-output` for browser results.',
     )
   }
 

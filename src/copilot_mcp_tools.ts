@@ -66,6 +66,8 @@ export interface CopilotMcpServerTools {
 export interface CopilotMcpToolsReport {
   /** False when the cache directory does not exist at all, which is a different fact from an existing but empty directory. The first means Copilot has never cached a server here (or is not installed); the second means it has looked and there are none. Reporting both as "no servers" would state as measured a thing that was never measured. */
   cacheFound: boolean
+  /** True when COPILOT_MCP_TOOL_CACHE disables loading and persistence of MCP tool snapshots. */
+  cacheDisabled?: boolean
   /** Deduplicated, active (non-disabled) servers, largest contributor first. */
   servers: CopilotMcpServerTools[]
   /** Cached servers that are currently disabled in settings.json. */
@@ -97,6 +99,11 @@ export function readCopilotMcpTools(
   dir: string = copilotCliMcpToolsDir(),
   userRoot: string = copilotCliUserRoot(),
 ): CopilotMcpToolsReport {
+  const cacheSetting = process.env['COPILOT_MCP_TOOL_CACHE']?.trim().toLowerCase()
+  if (cacheSetting === 'false' || cacheSetting === '0' || cacheSetting === 'off' || cacheSetting === 'no') {
+    return { cacheFound: false, cacheDisabled: true, servers: [], disabledServers: [], unreadable: 0 }
+  }
+
   let entries: string[]
   try {
     entries = fs.readdirSync(dir)
