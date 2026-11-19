@@ -6,6 +6,7 @@ import path from 'node:path'
 import { resolve } from 'node:path'
 
 import { copilotCliUserRoot } from './copilot_home.js'
+import { copilotSkillDirectoriesEnv, skillDirectories } from './copilot_host_config.js'
 import { isInsideRoot } from './path_containment.js'
 import { safeSkillName } from './skill_cache.js'
 
@@ -77,28 +78,18 @@ export async function copilotSkillPath(skillName: string, cwd: string | null): P
   if (cwd) {
     roots.push(resolve(cwd, '.github', 'skills'), resolve(cwd, '.agents', 'skills'), resolve(cwd, '.claude', 'skills'))
   }
-  roots.push(resolve(copilotCliUserRoot(), 'skills'), resolve(homedir(), '.agents', 'skills'))
+  const userRoot = copilotCliUserRoot()
+  roots.push(resolve(userRoot, 'skills'), resolve(homedir(), '.agents', 'skills'))
 
   const customRoots: string[] = []
-  const envDirs = process.env['COPILOT_SKILLS_DIRS']
+  const envDirs = copilotSkillDirectoriesEnv()
   if (envDirs !== undefined) {
     for (const entry of envDirs.split(',')) {
       if (entry.trim() !== '') customRoots.push(expandCopilotSkillDir(entry.trim(), cwd))
     }
   }
-  try {
-    const settingsPath = path.join(copilotCliUserRoot(), 'settings.json')
-    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
-    const settingDirs = parsed['skillDirectories']
-    if (typeof settingDirs === 'string' && settingDirs.trim() !== '') {
-      customRoots.push(expandCopilotSkillDir(settingDirs.trim(), cwd))
-    } else if (Array.isArray(settingDirs)) {
-      for (const entry of settingDirs) {
-        if (typeof entry === 'string' && entry.trim() !== '') customRoots.push(expandCopilotSkillDir(entry.trim(), cwd))
-      }
-    }
-  } catch {
-    // Missing or malformed settings.json leaves the standard roots intact.
+  for (const entry of skillDirectories(userRoot)) {
+    customRoots.push(expandCopilotSkillDir(entry, cwd))
   }
   roots.push(...customRoots)
 
