@@ -262,16 +262,8 @@ export function listerProven(
   seg: Segment,
   prev: Segment | undefined,
   fromRoot: boolean,
-  bareCommand = false,
 ): boolean {
   if (!seg.pipedIn || fromRoot || seg.redirectedIn) return false
   if (prev === undefined || prev.group !== seg.group) return false
-  if (bareCommand && isNameLister(prev)) return false
   return !seg.words.some((w) => !w.quoted && /</.test(w.text)) && isBoundedLister(prev)
-}
-
-/** A lister naming files by glob or content (`ls *.ts`, `rg -l`); a walker with no operand stays refused. */
-function isNameLister(left: Segment): boolean {
-  const listsByName = (t: string): boolean => /[*?]/.test(t) || t === '-l' || t === '--files-with-matches'
-  return left.words.slice(1).some((w) => listsByName(w.text))
 }

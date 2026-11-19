@@ -204,22 +204,29 @@ describe('walk guard -- more root spellings', () => {
 })
 
 describe('xargs gate -- a name lister (glob, rg -l) vouches for operands, not for a root', () => {
-  // an empty name list still runs the walker once with no operand, so no flags-only walker is vouched for
-  it.each([
-    ['ls *.ts | xargs du'],
-    ['ls *.ts | xargs du -sh'],
-    ['ls *.ts | xargs du -ch'],
-    ['ls *.ts | xargs rg foo'],
-    ['rg -l foo | xargs du'],
-    ['rg -l foo | xargs du -sh'],
-    ['rg -l foo | xargs du -ch'],
-    ['rg -l foo | xargs rg bar'],
-    ["find . -name '*.ts' | xargs rg foo"],
-    ['ls *.ts | xargs grep -rn foo'],
-    ['rg -l foo src | xargs grep -rn foo'],
-  ])('refuses the flags-only walker %s behind a name lister', (command) => {
-    expect(form(command, POSIX)).not.toBeNull()
-    expect(form(command, GIT_BASH_ON_WINDOWS)).not.toBeNull()
+  // a walker behind a name lister is the same walker run bare in the cwd: an empty list runs it once there
+  const LISTED = [
+    'ls *.ts | xargs du',
+    'ls *.ts | xargs du -sh',
+    'ls *.ts | xargs du -ch',
+    'ls *.ts | xargs rg foo',
+    'rg -l foo | xargs du',
+    'rg -l foo | xargs du -sh',
+    'rg -l foo | xargs du -ch',
+    'rg -l foo | xargs rg bar',
+    "find . -name '*.ts' | xargs rg foo",
+    'ls *.ts | xargs grep -rn foo',
+    'rg -l foo src | xargs grep -rn foo',
+  ]
+
+  it.each(LISTED.map((c) => [c]))('lets %s through in an ordinary cwd', (command) => {
+    expect(form(command, POSIX)).toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it.each(LISTED.flatMap((c) => [['/', c], ['~', c]]))('refuses with the cwd at %s: %s', (dir, command) => {
+    expect(form(`cd ${dir} && ${command}`, POSIX)).not.toBeNull()
+    expect(form(`cd ${dir} && ${command}`, GIT_BASH_ON_WINDOWS)).not.toBeNull()
   })
 
   it.each([
@@ -275,10 +282,11 @@ describe('xargs gate -- a name lister (glob, rg -l) vouches for operands, not fo
     expect(form(command, GIT_BASH_ON_WINDOWS)).not.toBeNull()
   })
 
-  it('does not vouch for a bare walker behind a name lister', () => {
-    expect(form('ls *.ts | xargs du', POSIX)).not.toBeNull()
-    expect(form('rg -l x | xargs du', POSIX)).not.toBeNull()
-    expect(form('ls s*c | xargs rg foo', POSIX)).not.toBeNull()
+  it('treats a bare walker behind a name lister as the bare walker in the cwd', () => {
+    expect(form('ls *.ts | xargs du', POSIX)).toBeNull()
+    expect(form('rg -l x | xargs du', POSIX)).toBeNull()
+    expect(form('cd / && ls *.ts | xargs du', POSIX)).not.toBeNull()
+    expect(form('cd ~ && rg -l x | xargs du', POSIX)).not.toBeNull()
   })
 })
 

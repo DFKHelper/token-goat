@@ -323,13 +323,15 @@ describe("walk guard wrappers and recursion: walkers", () => {
 describe("walk guard wrappers and recursion: g12 g13", () => {
   it.each<readonly [WalkContext, string]>([
     [POSIX, "$HOME"],
-    [POSIX, "ls *.ts | xargs du"],
+    [POSIX, "cd / && ls *.ts | xargs du"],
+    [POSIX, "cd ~ && ls *.ts | xargs du"],
   ])('refuses %#', (ctx, command) => {
     expect(detectUnboundedWalk(command, ctx)).not.toBeNull()
     expect(WALK_PREFILTER.test(command)).toBe(true)
   })
   it.each<readonly [WalkContext, string]>([
     [POWERSHELL, "$env:PATH"],
+    [POSIX, "ls *.ts | xargs du"],
     [POSIX, "ls *.ts | xargs ls"],
     [POSIX, "git ls-files | xargs du -sh"],
   ])('lets through %#', (ctx, command) => {

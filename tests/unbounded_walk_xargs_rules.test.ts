@@ -23,9 +23,22 @@ describe('xargs allowance -- the commands it exists for', () => {
     ['ls src | xargs du'],
     ['rg --files src | xargs du -h'],
     ['git ls-files | xargs -n 1 -P 4 du'],
+    // a name lister vouches like any lister: the walker is the bare walker in the cwd (refused at a root below)
+    ['rg -l x | xargs du'],
+    ["find src -name '*.ts' | xargs du"],
   ])('lets %s through', (command) => {
     expect(form(command, POSIX)).toBeNull()
     expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it.each([
+    ['cd / && rg -l x | xargs du'],
+    ["cd / && find src -name '*.ts' | xargs du"],
+    ['cd ~ && rg -l x | xargs du'],
+    ["cd ~ && find src -name '*.ts' | xargs du"],
+  ])('refuses %s once the cwd is a root or home', (command) => {
+    expect(form(command, POSIX)).not.toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).not.toBeNull()
   })
 })
 
@@ -68,8 +81,6 @@ describe('xargs allowance -- rule 1: the lister is one plain command from a shor
     ['fd -d1 --search-path=~/.. | xargs du', 'xargs'],
     ['rg --files -g x | xargs du', 'xargs'],
     ['rg --files --max-depth=1 | xargs du', 'xargs'],
-    ['rg -l x | xargs du', 'xargs'],
-    ["find src -name '*.ts' | xargs du", 'xargs'],
     ['find src -name a/b | xargs du', 'xargs'],
     ['find src -maxdepth 1 -exec echo / ; | xargs du', 'xargs'],
     ['find -L src | xargs du', 'xargs'],
