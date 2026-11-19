@@ -234,7 +234,7 @@ export function noteVerificationRun(
 ): void {
   if (runInBackground) return
   const command = checkableText(typed)
-  if (isVerificationCommand(command) && exitStatusIsCheckVerdict(command)) {
+  if (isVerificationCommand(command) && exitStatusIsCheckVerdict(withoutHeredocFraming(command))) {
     const status = exitCode ?? (successImpliedWithoutStatus() ? 0 : null)
     // A launcher-carried check may clear a failure by passing but never records one.
     if (status !== null && status !== 0 && !hasDirectCheck(command)) return
