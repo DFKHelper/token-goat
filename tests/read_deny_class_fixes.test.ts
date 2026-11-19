@@ -94,8 +94,8 @@ describe('skill commands honor host Read deny rules', () => {
 
   it('a failed Edit gets no near-miss advice quoting a denied file, and gets it for an open one', async () => {
     await loadNearMiss()
-    const body = `# notes\n- keep it as a note only, never sent from here ${MARKER}.\n`
-    const oldString = `- keep it as a note only, not shown from here ${MARKER}.`
+    const body = `# notes\n- keep it as a note only, never${String.fromCharCode(160)}sent from here ${MARKER}.\n`
+    const oldString = `- keep it as a note only, never sent from here ${MARKER}.`
     const failed = (file: string): string | null =>
       diagnoseEditFailure(
         {
