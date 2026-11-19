@@ -38,7 +38,12 @@ const SHELLS = (['sh', 'powershell', 'cmd'] as const).filter((s) => prog(s) !== 
 const SHIMS: Record<string, string> = {
   truncated: 'const x = ;\n',
   'missing entry module': "require('./no-such-entry-module.cjs')\n",
-  'exit 13 and stdout noise': "process.stderr.write('loader noise\\n'); process.exit(13)\n",
+  'exit 13 and stdout noise':
+    "require('fs').writeSync(1, 'stdout noise'); process.stderr.write('loader noise\\n'); process.exit(13)\n",
+  'stdout noise then a signal': "require('fs').writeSync(1, 'stdout noise'); process.kill(process.pid, 'SIGKILL')\n",
+  'silent exit 2': 'process.exit(2)\n',
+  'exit 2 message only': "process.stderr.write('blocked: message only\\n'); process.exit(2)\n",
+  'exit 2 decision only': "process.stdout.write('{\"d\":\"decision only\"}'); process.exit(2)\n",
   'signal': "process.kill(process.pid, 'SIGKILL')\n",
   'exit 2 block':
     "process.stderr.write('blocked: use the other command\\n'); " +
@@ -91,7 +96,11 @@ function run(shell: GuardShell, shimText: string | undefined, exeText?: string) 
 
 describe('a broken Node shim falls through to the safe answer', () => {
   for (const shell of SHELLS) {
-    for (const name of ['truncated', 'missing entry module', 'exit 13 and stdout noise', 'signal']) {
+    const broken = [
+      'truncated', 'missing entry module', 'exit 13 and stdout noise', 'stdout noise then a signal', 'signal',
+      'silent exit 2',
+    ]
+    for (const name of broken) {
       it(`${name} through ${shell}: safe answer, exit 0, empty stderr`, () => {
         const o = run(shell, SHIMS[name])
         expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
@@ -107,6 +116,19 @@ describe('a broken Node shim falls through to the safe answer', () => {
       expect(o.status).toBe(2)
       expect(o.stdout).toBe('{"d":"block"}')
       expect(o.stderr).toContain('blocked: use the other command')
+    })
+    it(`an exit 2 with only a message still blocks through ${shell}`, () => {
+      const o = run(shell, SHIMS['exit 2 message only'])
+      expect({ status: o.status, stdout: o.stdout }).toEqual({ status: 2, stdout: '' })
+      expect(o.stderr).toContain('blocked: message only')
+    })
+    it(`an exit 2 with only a decision on stdout still blocks through ${shell}`, () => {
+      const o = run(shell, SHIMS['exit 2 decision only'])
+      expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
+        status: 2,
+        stdout: '{"d":"decision only"}',
+        stderr: '',
+      })
     })
     it(`a healthy shim answers through ${shell}`, () => {
       const o = run(shell, SHIMS['healthy'])

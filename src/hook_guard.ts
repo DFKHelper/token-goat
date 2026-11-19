@@ -65,13 +65,22 @@ function quoteWord(shell: GuardShell, text: string): string {
   return shell === 'sh' ? `'${word.replace(/'/g, "'\\''")}'` : `'${text.replace(PS_QUOTES, (q) => q + q)}'`
 }
 
-// A route's outcome is a hook answer only as exit 0 or exit 2 (a deliberate block, stderr replayed from $1).
-// Node's own failures exit 1, 9, 13 or by signal, never 2, so any other status falls through to the next route.
-// No $NAME word: Grok CLI substitutes those itself in a hook command, so the temp file is parameter 1.
-const SH_RM_ERR = '[ ! -f "$1" ] || rm -f "$1"'
-const SH_REPLAY = `cat "$1" >&3; ${SH_RM_ERR}`
-const CASE_SH = `case $? in 0) ${SH_REPLAY}; exit 0;; 2) ${SH_REPLAY}; exit 2;; *) : >"$1";; esac`
-const SH_STDERR = 'set -- "$(mktemp 2>/dev/null)"; [ -n "$1" ] || set -- /dev/null; exec 3>&2 2>>"$1"'
+// A route's outcome is a hook answer only as exit 0, or exit 2 that speaks: a stderr message or a stdout
+// decision. Node's own failures exit 1, 9, 13 or by signal, and a silent exit 2 is a crash, so any other
+// outcome falls through to the next route. Both streams are held in files ($1 stderr, $2 stdout) until the
+// outcome is accepted, so a failed route never reaches the host. A failed mktemp gives $1 /dev/null (exit 2
+// then counts as a block) and $2 empty (stdout is then not held). No $NAME word: Grok CLI substitutes those
+// itself in a hook command, so the temp files are parameters 1 and 2.
+const SH_RM_ERR = '[ ! -f "$1" ] || rm -f "$1"; [ ! -f "$2" ] || rm -f "$2"'
+const SH_REPLAY = `cat "$1" >&3; [ -z "$2" ] || cat "$2" >&4; ${SH_RM_ERR}`
+const SH_SPOKE = '[ -s "$1" ] || [ -s "$2" ] || [ "$1" = /dev/null ]'
+const SH_CLEAR = ': >"$1"; [ -z "$2" ] || : >"$2"'
+const CASE_SH =
+  `case $? in 0) ${SH_REPLAY}; exit 0;; 2) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ${SH_CLEAR};; ` +
+  `*) ${SH_CLEAR};; esac`
+const SH_STDERR =
+  'set -- "$(mktemp 2>/dev/null)" "$(mktemp 2>/dev/null)"; [ -n "$1" ] || set -- /dev/null "$2"; ' +
+  'exec 3>&2 4>&1 2>>"$1"; [ -z "$2" ] || exec >>"$2"'
 
 function shRoute(test: string, argv: readonly string[]): string {
   return `if ${test}; then ${argv.map((w) => quoteWord('sh', w)).join(' ')}; ${CASE_SH}; fi`
@@ -84,13 +93,21 @@ const PS_ERR_REDIRECT_WORD = '2>' + PS_ERR_FILE.split("'").join('')
 const PS_RM_ERR = `Remove-Item -LiteralPath ${PS_ERR_FILE} -ErrorAction Ignore`
 const PS_REPLAY = `[Console]::Error.Write([IO.File]::ReadAllText(${PS_ERR_FILE}))`
 
+// A route's stdout lines are held in a variable (no $NAME word) and written only once its exit is accepted.
+const PS_OUT_SINK = ['|', 'Tee-Object', '-Variable', 'tgo', '|', 'Out-Null']
+const PS_OUT_CLEAR = 'Remove-Variable tgo -ErrorAction Ignore'
+const PS_OUT = '(@(Get-Variable tgo -ValueOnly -ErrorAction Ignore) -join [char]10)'
+const PS_REPLAY_OUT = `[Console]::Out.Write(${PS_OUT})`
+// Exit 2 counts as a block only when it speaks: a message on stderr or a decision on stdout.
+const PS_SPOKE = `([IO.File]::ReadAllText(${PS_ERR_FILE}).Trim().Length -gt 0) -or (${PS_OUT}.Trim().Length -gt 0)`
+
 function psRoute(test: string, argv: readonly string[]): string {
   const call = argv.map((w) => quoteWord('powershell', w)).join(' ')
   const code = '(Get-Variable LASTEXITCODE -ValueOnly)'
-  return `if (${test}) { try { & ${call} 2>${PS_ERR_FILE}; ` +
-    `if (${code} -eq 0) { ${PS_REPLAY}; ${PS_RM_ERR}; exit 0 }; ` +
-    `if (${code} -eq 2) { ${PS_REPLAY}; ` +
-    `${PS_RM_ERR}; exit 2 } ` +
+  return `if (${test}) { try { ${PS_OUT_CLEAR}; & ${call} 2>${PS_ERR_FILE} ${PS_OUT_SINK.join(' ')}; ` +
+    `if (${code} -eq 0) { ${PS_REPLAY}; ${PS_REPLAY_OUT}; ${PS_RM_ERR}; exit 0 }; ` +
+    `if (${code} -eq 2) { if (${PS_SPOKE}) { ${PS_REPLAY}; ${PS_REPLAY_OUT}; ` +
+    `${PS_RM_ERR}; exit 2 } } ` +
     `} catch { } }`
 }
 
@@ -139,7 +156,7 @@ export function buildGuardedCommand(input: GuardInput): string {
     }
     parts.push(SH_RM_ERR)
     parts.push(`[ -e ${q(input.marker)} ] || printf '%s' ${q(notice)} > ${q(input.marker)} 2>/dev/null`)
-    parts.push(`printf '%s' ${q(input.safe)}`, 'exit 0')
+    parts.push(`printf '%s' ${q(input.safe)} >&4`, 'exit 0')
     return parts.join('; ')
   }
   const exists = (p: string): string => `Test-Path -LiteralPath ${q(p)} -PathType Leaf`
@@ -274,6 +291,8 @@ export function parseGuardedCommand(command: string): GuardedParse | undefined {
       const call = t.indexOf('&')
       if (native === undefined && call >= 0) {
         native = t.slice(call + 1)
+        const sink = native.length - PS_OUT_SINK.length
+        if (native.slice(sink).join(' ') === PS_OUT_SINK.join(' ')) native.length = sink
         if (native.at(-1) === PS_ERR_REDIRECT_WORD) native.pop()
       }
       if (t[0] === '[Console]::Out.Write(') safe = t[1]

@@ -93,7 +93,7 @@ describe('codexHookCommandFor', () => {
   // Windows only: the real powershell.exe runs the command, as the host does, against a stub that exits 2.
   it.skipIf(process.platform !== 'win32')('the Windows command exits with a deliberate block status', () => {
     const stub = path.join(TMP, 'exit-two.js')
-    fs.writeFileSync(stub, 'process.exit(2)\n')
+    fs.writeFileSync(stub, "process.stderr.write('blocked: stub\\n'); process.exit(2)\n")
     const cmd = codexHookCommandFor(stub, 'pre_compact', { sync: false })
     const parsed = parseGuardedCommand(cmd)
     expect(parsed?.kind === 'v1' ? parsed.shell : undefined, cmd).toBe('powershell')
@@ -103,6 +103,22 @@ describe('codexHookCommandFor', () => {
     try {
       expect(res.error, 'the command did not end on its own').toBeUndefined()
       expect(res.status, `${res.stdout}${res.stderr}`).toBe(2)
+    } finally {
+      if (res.error !== undefined && res.pid !== undefined) {
+        killIfCommandLine(res.pid, (commandLine) => commandLine.includes(stub), { tree: true })
+      }
+    }
+  })
+
+  it.skipIf(process.platform !== 'win32')('the Windows command treats a silent exit 2 as a broken shim', () => {
+    const stub = path.join(TMP, 'exit-two-silent.js')
+    fs.writeFileSync(stub, 'process.exit(2)\n')
+    const cmd = codexHookCommandFor(stub, 'pre_compact', { sync: false })
+    const argv = ['-NoProfile', '-NonInteractive', '-Command', cmd]
+    const res = spawnSync('powershell.exe', argv, { encoding: 'utf8', timeout: 60_000, windowsHide: true })
+    try {
+      expect(res.error, 'the command did not end on its own').toBeUndefined()
+      expect({ status: res.status, stderr: res.stderr }, res.stdout).toEqual({ status: 0, stderr: '' })
     } finally {
       if (res.error !== undefined && res.pid !== undefined) {
         killIfCommandLine(res.pid, (commandLine) => commandLine.includes(stub), { tree: true })

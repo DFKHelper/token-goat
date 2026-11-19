@@ -84,6 +84,14 @@ fn judge(code: Option<i32>, held: &[u8], held_err: &[u8], empty_ok: bool) -> Res
 /// The most stderr a route's block message may carry through.
 const STDERR_CAP: u64 = 64 * 1024;
 
+/// Keeps the first `cap` bytes of `pipe` and drains the rest, so a chatty route never stalls on a full pipe.
+fn read_capped(mut pipe: impl Read, cap: u64) -> Vec<u8> {
+    let mut all = Vec::new();
+    let _ = pipe.by_ref().take(cap).read_to_end(&mut all);
+    let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+    all
+}
+
 /// The longest a killed route is waited for; one that outlasts it is left to the job object or PDEATHSIG.
 pub const REAP_BOUND: Duration = Duration::from_millis(100);
 
@@ -164,9 +172,7 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
     match child.stderr.take() {
         Some(pipe) => {
             std::thread::spawn(move || {
-                let mut all = Vec::new();
-                let _ = pipe.take(STDERR_CAP).read_to_end(&mut all);
-                let _ = err_tx.send(all);
+                let _ = err_tx.send(read_capped(pipe, STDERR_CAP));
             });
         }
         None => drop(err_tx),
@@ -232,6 +238,56 @@ mod tests {
         assert!(matches!(judge(Some(0), b"{} junk", b"", false), Err(Failure::Output(_))));
         assert!(matches!(judge(Some(0), b"", b"", false), Err(Failure::Output("empty"))));
         assert!(matches!(judge(Some(2), b"", b"", true), Err(Failure::Output("empty"))));
+    }
+
+    #[test]
+    fn exit_two_blocks_only_when_it_carries_a_message_or_a_decision() {
+        // The guard forms (sh, PowerShell, cmd) apply the same rule: a silent exit 2 is a crash, not a block.
+        assert!(matches!(judge(Some(2), b"", b"", false), Err(Failure::Output("empty"))));
+        assert!(matches!(judge(Some(2), b"\n", b" \r\n", true), Err(Failure::Output("empty"))));
+        assert_eq!(judge(Some(2), b"", b"blocked: use the other command\n", false).unwrap(), 2);
+        assert_eq!(judge(Some(2), b"{\"decision\":\"deny\"}", b"", false).unwrap(), 2);
+    }
+
+    #[test]
+    fn a_capped_stream_keeps_its_head_and_is_read_to_the_end() {
+        let data = vec![b'x'; 1000];
+        let mut reader = std::io::Cursor::new(data);
+        let kept = read_capped(&mut reader, 100);
+        assert_eq!(kept.len(), 100);
+        assert_eq!(reader.position(), 1000, "the rest of the stream was left unread");
+    }
+
+    /// Child for the next test: `--ignored --exact <this>` writes past the stderr cap, answers `{}`, exit 0.
+    #[test]
+    #[ignore = "only runs as the chatty child of the test below"]
+    fn chatty_child() {
+        if !std::env::args().any(|a| a == "capture::tests::chatty_child") {
+            return;
+        }
+        let block = [b'e'; 8192];
+        let mut err = std::io::stderr();
+        for _ in 0..(STDERR_CAP as usize / block.len() * 4) {
+            // A reader that closed its end early makes this fail, and the child then exits 101, not 0.
+            err.write_all(&block).expect("stderr was closed by the reader");
+        }
+        println!("{{}}");
+    }
+
+    #[test]
+    fn a_route_writing_past_the_stderr_cap_is_served_when_it_exits() {
+        let me = std::env::current_exe().unwrap().into_os_string();
+        let argv = vec![me, "--ignored".into(), "--exact".into(), "capture::tests::chatty_child".into(), "--nocapture".into()];
+        // Without a drain the reader closes at the cap: the child's write fails and it exits 101, not 0.
+        // The harness prints its own header on stdout, so a child that ended on exit 0 is judged "not JSON":
+        // that verdict is only reachable after the child exited and its stderr was drained.
+        let got = exec(&argv, Stdin::Null, "test", BACKSTOP, "claudecode", "pre_tool_use");
+        match got {
+            Err(Failure::Timeout(_)) => panic!("the route stalled on its full stderr pipe until the deadline"),
+            Err(Failure::Output(what)) => assert_eq!(what, "not JSON", "the child did not end on exit 0"),
+            Err(other) => panic!("expected a judged exit 0, got: {other}"),
+            Ok(_) => panic!("the harness header cannot be a JSON answer"),
+        }
     }
 
     #[test]
