@@ -5,6 +5,7 @@ import * as path from 'path'
 import { dataDir } from '../constants.js'
 import { normalizePath } from '../paths.js'
 import {
+  atomicWriteBytes,
   atomicWriteText,
   ensureDirSync,
   foldPath,
@@ -265,25 +266,26 @@ export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => 
   }
 }
 
-/** The bytes of each of `targets` that is a plain file now, so a failed install can put them back. */
+/** The bytes of each of `targets` that is a file now (or a link to one), for a failed install to restore. */
 function earlierBytes(targets: readonly string[]): Map<string, Buffer> {
   const earlier = new Map<string, Buffer>()
   for (const target of targets) {
     const p = path.resolve(target)
     try {
-      if (fs.lstatSync(p).isFile()) earlier.set(p, fs.readFileSync(p))
+      // The installers write through a link to its target, so the target's bytes are what changed.
+      if (fs.statSync(p).isFile()) earlier.set(p, fs.readFileSync(p))
     } catch {
-      // Absent or unreadable: nothing to put back, and an absent target is removed by the caller.
+      // Absent, dangling or unreadable: nothing to put back, and an absent target is removed by the caller.
     }
   }
   return earlier
 }
 
-/** Write back each file in `earlier` whose bytes changed; a failure on one leaves the rest to try. */
+/** Write back each file in `earlier` whose bytes changed, atomically; a failure leaves the rest to try. */
 function restoreEarlierBytes(earlier: ReadonlyMap<string, Buffer>): void {
   for (const [p, bytes] of earlier) {
     undoQuietly(() => {
-      if (!fs.existsSync(p) || !fs.readFileSync(p).equals(bytes)) fs.writeFileSync(p, bytes)
+      if (!fs.existsSync(p) || !fs.readFileSync(p).equals(bytes)) atomicWriteBytes(p, bytes)
     })
   }
 }

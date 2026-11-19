@@ -179,6 +179,55 @@ describe('a failed probe puts back every file the install overwrote', () => {
   })
 })
 
+/** True where this process may create a file symlink (win32 needs Developer Mode or an elevated shell). */
+function canSymlink(): boolean {
+  const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-symlink-probe-'))
+  try {
+    fs.writeFileSync(path.join(probe, 'a'), 'x')
+    fs.symlinkSync(path.join(probe, 'a'), path.join(probe, 'b'), 'file')
+    return true
+  } catch {
+    return false
+  } finally {
+    fs.rmSync(probe, { recursive: true, force: true })
+  }
+}
+
+describe('a failed probe puts back a file that is a symlink, and leaves the link itself alone', () => {
+  // Fixture provenance: HAND-DERIVED; the target's earlier bytes and the link text are written here.
+  const linkTo = (link: string, target: string, text: string): string => {
+    fs.mkdirSync(path.dirname(link), { recursive: true })
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, text)
+    fs.symlinkSync(target, link, 'file')
+    return fs.readlinkSync(link)
+  }
+
+  const NEEDS = '(skipped without the right to create symlinks, as on win32 without Developer Mode)'
+
+  it.skipIf(!canSymlink())(`Kimi: the shim link keeps its text and its target its bytes ${NEEDS}`, () => {
+    const target = path.join(TMP, 'dotfiles', 'kimi-shim.cjs')
+    const linkText = linkTo(kimiHookScriptPath(), target, '// earlier working shim\n')
+    failProbe()
+    expect(() => installKimi()).toThrow(HookSelftestError)
+    expect(fs.lstatSync(kimiHookScriptPath()).isSymbolicLink(), 'the link was replaced by a file').toBe(true)
+    expect(fs.readlinkSync(kimiHookScriptPath()), 'the link text changed').toBe(linkText)
+    expect(fs.readFileSync(target, 'utf8'), 'the target lost its bytes').toBe('// earlier working shim\n')
+  })
+
+  it.skipIf(!canSymlink())(`Copilot: the shim link keeps its text and its target its bytes ${NEEDS}`, () => {
+    const hooksDir = copilotCliUserHooksDir()
+    const shim = path.join(hooksDir, HOOKS_SCRIPT_FILE)
+    const target = path.join(TMP, 'dotfiles', 'copilot-shim.cjs')
+    const linkText = linkTo(shim, target, '// earlier working shim\n')
+    failProbe()
+    expect(() => installCopilotHooksFile(hooksDir, 'copilot')).toThrow(HookSelftestError)
+    expect(fs.lstatSync(shim).isSymbolicLink(), 'the link was replaced by a file').toBe(true)
+    expect(fs.readlinkSync(shim), 'the link text changed').toBe(linkText)
+    expect(fs.readFileSync(target, 'utf8'), 'the target lost its bytes').toBe('// earlier working shim\n')
+  })
+})
+
 describe('install --codex --kimi when the Kimi hooks fail their probe', () => {
   it('installs Codex, names Kimi as not installed, prints no Kimi success line and exits 1', async () => {
     setHookSelftestRunnerForTesting((_shell, command) =>

@@ -103,12 +103,6 @@ const EXEMPT: ReadonlyArray<{ file: string; fn: string; call: string; reason: st
   { file: 'src/bridges/vscode_install.ts', fn: 'writeGuidance', call: 'atomicWriteText(filePath, USER_INSTRUCTIONS_FRONTMATTER)', reason: 'only reached when !fs.existsSync(filePath) immediately above it -- nothing exists yet to lose, and backupFile itself no-ops on a missing path' },
   { file: 'src/bridges/zed_install.ts', fn: 'installZedFiles', call: 'writeIfDifferent(shimPath, buildShimScript())', reason: 'generated hook shim script, same class as installHooks above' },
   { file: 'src/bridges/created_configs.ts', fn: 'writeLedger', call: 'atomicWriteText(ledgerPath(), `${JSON.stringify(entries)}\\n`)', reason: "token-goat's own created-configs/backups ledger; backing up the ledger with the mechanism the ledger itself powers would be circular, and nothing in it is user-authored" },
-  {
-    file: 'src/bridges/created_configs.ts',
-    fn: 'restoreEarlierBytes',
-    call: 'writeFileSync(p, bytes)',
-    reason: 'puts back the bytes captured before this install ran after a failed probe; loses nothing',
-  },
 ]
 
 function scan(): WriteSite[] {
