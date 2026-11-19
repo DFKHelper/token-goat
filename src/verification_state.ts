@@ -126,20 +126,42 @@ function isDocumentOnlyFailure(command: string): boolean {
   return exitStatusIsCheckVerdict(command, isFailureCheckSegment) && command.split(COMMAND_SEPARATOR).some((part, i) => i % 2 === 0 && isDocumentOnlyScriptCheckSegment(part.trim().replace(ENV_ASSIGNMENT_PREFIX, '')))
 }
 
-// A heredoc into `cat` or `tee` (not piped on to a shell) only writes its body to a file.
-const FILE_HEREDOC_OPENER = /^(?!.*\|\s*(?:ba|z|da)?sh\b)(?:.*[;&|(]\s*)?(?:cat|tee)\b.*<<-?\s*(['"]?)(\w+)\1/
+const HEREDOC_WORD = '(?:"[^"`()|;&<>]*"|\'[^\'`]*\'|[^\\s"\'`()|;&<>]+)'
+// Allow-list: one `cat` or `tee` statement whose output goes only to a plain file, ending in its one heredoc.
+const FILE_HEREDOC_OPENER = new RegExp(
+  `(?:^|[;&]\\s*)(?:cat|tee(?:\\s+-a)?)(?:\\s+(?:>>?\\s*)?${HEREDOC_WORD})?` +
+    `\\s+<<-?\\s*(['"]?)(\\w+)\\1(?:\\s*>>?\\s*${HEREDOC_WORD})?\\s*$`,
+)
+// Anything that could run or feed the body: substitution, pipe, a shell word, a `-c` string, `. file`.
+const SHELL_FED_LINE =
+  /[`()|]|<<<|\b(?:eval|source|exec|xargs|ba?sh|zsh|dash|ksh|python3?|node)\b|\s-c\b|(?:^|[;&]\s*)\.\s/
 
-/** The command minus file-writing heredoc bodies: quoting `vitest run` runs no check. Shell-fed ones stay. */
+/** The text up to here is still inside a substitution or a quoted string, or its last line pipes on. */
+function isOpenContext(before: string[]): boolean {
+  const text = before.join('\n')
+  const count = (ch: string): number => text.split(ch).length - 1
+  const oddQuote = count('"') % 2 === 1 || count("'") % 2 === 1
+  return count('(') > count(')') || oddQuote || /[|\\]\s*$/.test(before[before.length - 1] ?? '')
+}
+
+/** The line that opens a heredoc whose body only lands in a file, and its terminator word; else null. */
+function fileHeredocTerminator(line: string, before: string[]): string | null {
+  if (SHELL_FED_LINE.test(line) || line.split('<<').length !== 2 || isOpenContext(before)) return null
+  return FILE_HEREDOC_OPENER.exec(line)?.[2] ?? null
+}
+
+/** The command minus file-writing heredoc bodies: quoting `vitest run` runs no check. Unsure keeps the body. */
 function withoutFileHeredocBodies(command: string): string {
+  const lines = command.split('\n')
   const kept: string[] = []
-  let terminator: string | null = null
-  for (const line of command.split('\n')) {
-    if (terminator !== null) {
-      if (line.trim() === terminator) terminator = null
-      continue
-    }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
     kept.push(line)
-    terminator = FILE_HEREDOC_OPENER.exec(line)?.[2] ?? null
+    const terminator = fileHeredocTerminator(line, kept.slice(0, -1))
+    if (terminator === null) continue
+    const end = lines.findIndex((later, j) => j > i && later.trim() === terminator)
+    if (end < 0) continue
+    i = end
   }
   return kept.join('\n')
 }

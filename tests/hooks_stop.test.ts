@@ -748,6 +748,41 @@ describe('a check named only inside a heredoc body is text, not a run', () => {
     expect(evaluateVerification(sid).failingUnresolved).toBe(true)
   })
 
+  const failedBlocks = (command: string): boolean => {
+    const sid = newSession()
+    inSession(sid, () => noteFailedVerificationRun(command, 'Exit code 1', false))
+    return evaluateVerification(sid).failingUnresolved
+  }
+
+  // HAND-DERIVED from bash heredoc semantics: each body below runs, or follows a line that is not a heredoc.
+  it.each([
+    ['a here-string is not a heredoc', `cat <<< word\n${failingCheck}\necho word\nword`],
+    ['eval of a substituted heredoc', `eval "$(cat <<EOF\n${failingCheck}\nEOF\n)"`],
+    ['bash -c of a substituted heredoc', `bash -c "$(cat <<EOF\n${failingCheck}\nEOF\n)"`],
+    ['source of a process substitution', `source <(cat <<EOF\n${failingCheck}\nEOF\n)`],
+    ['dot of a process substitution', `. <(cat <<EOF\n${failingCheck}\nEOF\n)`],
+    ['two heredocs on one line, the second fed to a shell', `cat <<A; bash <<B\nhello\nA\n${failingCheck}\nB`],
+    ['tee into a process substitution', `tee >(sh) <<EOF\n${failingCheck}\nEOF`],
+    ['a heredoc that never ends keeps the rest', `cat > f.md <<'EOF'\n${failingCheck}`],
+    ['a check after a terminator that never matches', `cat > f.md <<'EOF'\nnotes\n${failingCheck}\nEOFX`],
+    ['a heredoc piped on to a shell', `cat <<EOF | bash\n${failingCheck}\nEOF`],
+    ['a heredoc inside an open double quote', `bash -c "\ncat > f.md <<EOF\n${failingCheck}\nEOF\n"`],
+    ['a check after a plain heredoc write', `cat > f.md <<-EOF\n\tnotes\n\tEOF\n${failingCheck}`],
+  ])('%s still blocks', (_name, command) => {
+    expect(failedBlocks(command)).toBe(true)
+  })
+
+  it.each([
+    ['unquoted delimiter', `cat > f.md <<EOF\nnote: ${failingCheck}\nEOF`],
+    ['double-quoted delimiter, redirect after', `cat <<"EOF" > f.md\nnote: ${failingCheck}\nEOF`],
+    ['indented <<- terminator', `cat > f.md <<-EOF\n\tnote: ${failingCheck}\n\tEOF`],
+    ['append redirect', `cat >> "$S/f.md" <<'EOF'\nnote: ${failingCheck}\nEOF`],
+    ['tee to a file', `tee -a f.md <<EOF\nnote: ${failingCheck}\nEOF`],
+    ['statements before it', `S=x; mkdir -p "$S/d"; cat > "$S/f.md" <<'EOF'\nnote: ${failingCheck}\nEOF`],
+  ])('a plain file write with %s records no failed check', (_name, command) => {
+    expect(failedBlocks(command)).toBe(false)
+  })
+
   it('a passing heredoc write does not clear an earlier failure', () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const sid = newSession()
