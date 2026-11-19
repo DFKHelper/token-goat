@@ -32,6 +32,8 @@ export interface Segment {
   readonly stdin: { text: string; literal: boolean }[]
   /** Scripts run to build a word or heredoc body: the inside of `$(...)` and backticks in double quotes. */
   readonly subs: string[]
+  /** An unquoted `$(` or backtick ended this command: it goes on inside a substitution the scanner cut off. */
+  readonly substituted: boolean
 }
 
 export const MAX_NESTING = 3
@@ -200,6 +202,7 @@ export function scan(command: string, posix: boolean, psEscape: boolean): { segm
     has = false
     quoted = false
   }
+  let cutBySubstitution = false
   const endSegment = (nextPiped: boolean, endOp: '' | '|' | '&' | '||' = ''): void => {
     endWord()
     if (words.length > 0) {
@@ -220,8 +223,10 @@ export function scan(command: string, posix: boolean, psEscape: boolean): { segm
         endOp,
         stdin,
         subs,
+        substituted: cutBySubstitution,
       }
       subs = []
+      cutBySubstitution = false
       segments.push(seg)
       for (const w of words) if (!w.quoted && w.text === '<<H') owners.push(seg)
     }
@@ -337,10 +342,12 @@ export function scan(command: string, posix: boolean, psEscape: boolean): { segm
       continue
     }
     if (ch === ';' || ch === '`') {
+      if (ch === '`') cutBySubstitution = true
       endSegment(false)
       continue
     }
     if (ch === '(' || ch === ')') {
+      if (ch === '(' && has && text.endsWith('$')) cutBySubstitution = true
       endSegment(false)
       if (ch === '(') groups.push(++groupCount)
       else if (groups.length > 1) groups.pop()

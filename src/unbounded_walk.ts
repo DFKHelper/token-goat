@@ -198,6 +198,8 @@ function inspectSegment(
     const open = scan(script, true, ctx.powershell).open && scan(script, false, ctx.powershell).open
     return open ? refuse('unparsed') : null
   }
+  // An xargs command word with a substitution is refused whatever the lister; quoted xargs never gets here.
+  if (name === 'xargs' && (seg.substituted || seg.subs.length > 0)) return refuse('xargs')
   if (name === 'xargs') return inspectXargs(args, seg, ctx, depth, root, prev)
   return inspectWalker(name, dir, args, seg, ctx, root, depth)
 }
@@ -239,13 +241,8 @@ function inspectWalker(
   }
 }
 
-/** An xargs stage holding a backtick or `$(`, refused whatever the lister. */
-const XARGS_SUBSTITUTION = /(?:^|[\s;&|(])xargs(?=\s)[^|;&\n]*(?:`|\$\()/
-
 /** The refusal for a command that starts an unbounded walk of a filesystem root or the home directory, in any pipeline stage, chain or subshell, or null when it does not. A `find` with no path or a `.`-relative one is refused after a `cd` to a root or the home directory; `startsAtRoot` carries that state into a nested `bash -c` script. */
 export function detectUnboundedWalk(command: string, ctx: WalkContext, depth = 0, startsAtRoot = false): WalkRefusal | null {
-  // The scanner cuts a segment at a backtick or `$(`, so a substituted xargs command word is only visible here.
-  if (XARGS_SUBSTITUTION.test(command)) return refuse('xargs')
   // Literal backslashes, POSIX escapes (`f\ind`) and, in PowerShell, backticks are all read; any walk refuses.
   const readings: [boolean, boolean][] = [[false, false], [true, false]]
   if (ctx.powershell) readings.push([false, true], [true, true])
