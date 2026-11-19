@@ -5,8 +5,13 @@ import * as path from 'node:path'
 import { CliError } from './command_error.js'
 import { loadConfig } from './config.js'
 import { emitErr } from './emit.js'
-import { loadPermissionSnapshotOrThrow, ruleToolIs } from './rewrite_permission.js'
-import type { PermissionRule, PermissionSnapshot } from './rewrite_permission.js'
+import {
+  loadPermissionSnapshotOrThrow,
+  recordingSourceStamps,
+  ruleToolIs,
+  stampsCurrent,
+} from './rewrite_permission.js'
+import type { PermissionRule, PermissionSnapshot, SourceStamp } from './rewrite_permission.js'
 
 /** Refusal to print a file the host denies with a `Read(...)` rule: a CliError (exit 1, one stderr line). */
 export class ReadDeniedError extends CliError {
@@ -308,7 +313,9 @@ function realOf(p: string, realpath: (p: string) => string): string | null {
   return null
 }
 
-let cache: { readonly key: string; readonly at: number; readonly compiled: Compiled } | undefined
+let cache:
+  | { readonly key: string; readonly at: number; readonly compiled: Compiled; readonly stamps: SourceStamp[] }
+  | undefined
 
 /** Forget the loaded rules, for a test that changes the settings between checks. */
 export function resetReadDenyCache(): void {
@@ -325,22 +332,30 @@ function load(
 ): Compiled {
   const now = (ctx.now ?? Date.now)()
   const key = JSON.stringify([cwd, projectDir, home, bases, platform, ctx.loadSnapshot === undefined])
-  // limit: rules re-read once a second per process revisit-when: a deny edit must bite sooner
+  // The cache holds while every settings file read keeps its size and mtime; the age bound covers git state.
   const fresh = cache !== undefined && cache.key === key && now - cache.at < CACHE_TTL_MS
-  if (ctx.loadSnapshot === undefined && fresh && cache !== undefined) return cache.compiled
-  let compiled: Compiled
-  try {
+  if (ctx.loadSnapshot === undefined && fresh && cache !== undefined && stampsCurrent(cache.stamps)) {
+    return cache.compiled
+  }
+  const run = recordingSourceStamps((): Compiled => {
     const load =
       ctx.loadSnapshot ??
       ((c: string, p: string | undefined) =>
         loadPermissionSnapshotOrThrow(c, p, { outsideProject: 'project-only', sources: 'host-loaded' }))
-    const snapshot = load(cwd, projectDir)
-    compiled = compileSnapshot(snapshot, bases, home, platform)
-  } catch (err) {
-    compiled = { groups: [], failure: `could not read the host permission settings: ${(err as Error).message}` }
-  }
-  if (ctx.loadSnapshot === undefined) cache = { key, at: now, compiled }
+    return compileSnapshot(load(cwd, projectDir), bases, home, platform)
+  })
+  const compiled: Compiled =
+    run.error === undefined
+      ? (run.value as Compiled)
+      : { groups: [], failure: `could not read the host permission settings: ${(run.error as Error).message}` }
+  if (ctx.loadSnapshot === undefined) cache = { key, at: now, compiled, stamps: run.stamps }
   return compiled
+}
+
+/** `text` on one line for a refusal: control characters become spaces, and past `max` characters it is cut. */
+export function plainText(text: string, max = 200): string {
+  const flat = text.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() // eslint-disable-line no-control-regex
+  return flat.length > max ? `${flat.slice(0, max)}...` : flat
 }
 
 /** Returns unless the host denies `target`, else throws ReadDeniedError; bad settings or rules refuse too. */
@@ -357,16 +372,24 @@ export function assertReadAllowed(target: string, ctx: ReadDenyContext = {}): vo
   const compiled = load(cwd, projectDir, home, bases, ctx, platform)
   if (compiled.failure !== null) {
     throw new ReadDeniedError(
-      `read refused: ${target}: ${compiled.failure}; fix that setting or set reads.honor_host_deny to false`,
+      `read refused: ${target}: ${plainText(compiled.failure, 400)}; ` +
+        'fix that setting or set reads.honor_host_deny to false',
       true,
     )
   }
   if (compiled.groups.length === 0) return
   const abs = path.resolve(cwd, target)
-  const real = realOf(abs, realpath)
-  const hit = firstHit(compiled, real === null || real === abs ? [abs] : [abs, real], platform)
+  // An open follows a link before a `..`, which path.resolve collapsed: judge the raw spelling's file too.
+  const raw = path.isAbsolute(target) ? target : `${cwd}${path.sep}${target}`
+  const candidates = [abs]
+  for (const real of [realOf(abs, realpath), raw === abs ? null : realOf(raw, realpath)]) {
+    if (real !== null && !candidates.includes(real)) candidates.push(real)
+  }
+  const hit = firstHit(compiled, candidates, platform)
   if (hit !== null) {
-    throw new ReadDeniedError(`read refused: ${target} is denied by ${hit.source}: ${hit.rule}`)
+    throw new ReadDeniedError(
+      `read refused: ${target} is denied by ${plainText(hit.source)}: ${plainText(hit.rule)}`,
+    )
   }
 }
 

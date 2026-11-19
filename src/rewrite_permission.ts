@@ -451,11 +451,51 @@ export function sourceAllowed(source: string): boolean {
   return typeof filter !== 'function' || (filter as (source: string) => unknown)(source) === true
 }
 
+/** A source file and its identity (size and mtime, or `missing`) at the moment it was read. */
+export type SourceStamp = readonly [file: string, stamp: string]
+let stampLog: SourceStamp[] | null = null
+
+function stampOf(file: string): string {
+  try {
+    const st = fs.statSync(file)
+    return `${st.size}:${st.mtimeMs}`
+  } catch {
+    return 'missing'
+  }
+}
+
+/** Whether every stamped source still has the identity it was read with; a missing file is its own state. */
+export function stampsCurrent(stamps: readonly SourceStamp[]): boolean {
+  return stamps.every(([file, stamp]) => stampOf(file) === stamp)
+}
+
+/** What {@link recordingSourceStamps} returns: the value or the error `fn` threw, and each source's stamp. */
+export interface StampedRun<T> {
+  readonly value: T | undefined
+  readonly error: unknown
+  readonly stamps: SourceStamp[]
+}
+
+/** Runs `fn` and returns its value with the stamp of each settings source it read, taken before the read. */
+export function recordingSourceStamps<T>(fn: () => T): StampedRun<T> {
+  const prev = stampLog
+  const mine: SourceStamp[] = []
+  stampLog = mine
+  try {
+    return { value: fn(), error: undefined, stamps: mine }
+  } catch (error) {
+    return { value: undefined, error, stamps: mine }
+  } finally {
+    stampLog = prev
+  }
+}
+
 /** A file's text, or the names in a directory: undefined when it does not exist or a test's source filter hides it, throws when it exists but cannot be read. */
 export function readIfExists(file: string, list: true): string[] | undefined
 export function readIfExists(file: string): string | undefined
 export function readIfExists(file: string, list?: true): string | string[] | undefined {
   if (!sourceAllowed(file)) return undefined
+  stampLog?.push([file, stampOf(file)])
   try {
     return list === true ? fs.readdirSync(file) : fs.readFileSync(file, 'utf8')
   } catch (err) {
@@ -473,7 +513,7 @@ function readSettingsFile(file: string): Record<string, unknown> | undefined {
   try {
     parsed = JSON.parse(text)
   } catch (err) {
-    throw new Error(`${file} is not valid JSON: ${(err as Error).message}`, { cause: err })
+    throw new Error(`${file} is not valid JSON`, { cause: err })
   }
   const json = asObject(parsed)
   if (json === null) throw new Error(`${file} is not a JSON object`)
@@ -579,7 +619,19 @@ function managedDocs(registry?: { readonly keys: string[]; readonly values: (Rec
 const MANAGED_CACHE_MS = 30_000
 const MANAGED_REFRESH_MS = 20_000
 const MANAGED_IDLE_MS = 300_000
-let managedCache: { readonly at: number; readonly docs: SettingsDoc[] } | undefined
+interface ManagedCache {
+  readonly at: number
+  readonly docs: SettingsDoc[]
+  readonly stamps: SourceStamp[]
+}
+let managedCache: ManagedCache | undefined
+
+/** The managed sources with the stamp of each file read; a read failure is thrown as managedDocs throws it. */
+function stampedManagedDocs(registry?: Parameters<typeof managedDocs>[0]): ManagedCache {
+  const run = recordingSourceStamps(() => managedDocs(registry))
+  if (run.error !== undefined) throw run.error
+  return { at: Date.now(), docs: run.value as SettingsDoc[], stamps: run.stamps }
+}
 let managedRefresh: ReturnType<typeof setInterval> | undefined
 let managedGeneration = 0
 let managedUsedAt = 0
@@ -596,7 +648,7 @@ export function primeManagedPolicyAhead(): void {
     readRegistrySettingsAsync(keys)
       .then((values) => {
         if (generation !== managedGeneration || (managedCache !== undefined && managedCache.at > at)) return
-        managedCache = { at, docs: managedDocs({ keys, values }) }
+        managedCache = { ...stampedManagedDocs({ keys, values }), at }
       })
       .catch(() => undefined)
   }
@@ -685,19 +737,22 @@ export function loadPermissionSnapshotOrThrow(
   const localDir = samePath(here, start) && localAgrees ? start : undefined
   const now = Date.now()
   managedUsedAt = now
-  if (managedCache === undefined || now - managedCache.at > MANAGED_CACHE_MS) {
-    managedCache = { at: now, docs: managedDocs() }
+  const aged = managedCache === undefined || now - managedCache.at > MANAGED_CACHE_MS
+  if (managedCache === undefined || aged || !stampsCurrent(managedCache.stamps)) {
+    managedCache = { ...stampedManagedDocs(), at: now }
   }
+  stampLog?.push(...managedCache.stamps)
   const docs: SettingsDoc[] = [...managedCache.docs]
   const user = readSettingsFile(path.join(claudeConfigDir(), 'settings.json'))
   if (user !== undefined) {
     docs.push({ role: 'user', json: user, file: path.join(claudeConfigDir(), 'settings.json') })
   }
   const userLocalFile = path.join(claudeConfigDir(), 'settings.local.json')
-  const userLocal = readSettingsFile(userLocalFile)
   // With no known project dir the session may have started in any ancestor, so each one's settings count.
   const hostLoaded = options.sources === 'host-loaded' && project !== undefined
-  if (userLocal !== undefined && !hostLoaded) {
+  // A file the host does not load is not even parsed, so a malformed one cannot refuse a read.
+  const userLocal = hostLoaded ? undefined : readSettingsFile(userLocalFile)
+  if (userLocal !== undefined) {
     docs.push({ role: 'ancestor', json: userLocal, file: userLocalFile })
   }
   // Deny and ask rules count from the cwd, the project and the main checkout, and each of their ancestors.
