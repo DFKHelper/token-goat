@@ -20,6 +20,7 @@ import { typedRefsForDef } from './graph_traversal.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, isTestFile } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { forClient } from './mcp_client_text.js'
+import { dropDeniedRows } from './read_deny.js'
 import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
@@ -164,6 +165,8 @@ function collectRefs(requestedName: string, defFile: string | undefined, opts: R
   if (healStaleResultFiles(scanned.map((r) => r.filePath)).healed) scanned = queryRefs(queryOpts)
   // How full the query window came back, and how big that window was, so a client-side filter drawn from a window that filled can report its count as a floor rather than as a total. See {@link refsTotal}.
   const preScanCount = scanned.length
+  // A call site in a denied file carries stored source text: its row is dropped, the path said once.
+  scanned = dropDeniedRows(scanned, (r) => r.filePath)
   const scanLimit = queryOpts.limit ?? DEFAULT_QUERY_LIMIT
   let results = applyTypedRefsTier(symName, defFileHint, scanned, qualifiedDef)
   // Whether the type-based tier filter itself dropped anything, not merely whether it ran: a query where it dropped nothing is still entitled to the exact-total form. Measured before --exclude-tests/--grep can drop further rows of their own, so this reflects only the typed filter's own effect on the scanned window.

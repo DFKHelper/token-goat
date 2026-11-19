@@ -22,6 +22,7 @@ import {
 import { detectLanguageOfFile } from './parser_types.js'
 import { guardJsonRows, warnIfFilesStale } from './read_commands.js'
 import { formatAmbiguity } from './read_spec.js'
+import { dropDeniedRows } from './read_deny.js'
 import type { RefEntry, SymbolEntry } from './parser_types.js'
 import { unknownSymbolSuggestion } from './read_suggest.js'
 import {
@@ -549,7 +550,11 @@ export function runAsk(opts: AskOptions): number {
   }
   const top = opts.top ?? 8
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const fetched = searchSymbolsFts(opts.question, top + 1, undefined, rootDir)
+  // Hit bodies go to the answer backend, so a file the host denies is dropped first.
+  const fetched = dropDeniedRows(
+    searchSymbolsFts(opts.question, top + 1, undefined, rootDir),
+    (h) => h.filePath,
+  )
   const moreBeyondTop = fetched.length > top
   const hits = fetched.slice(0, top)
   if (moreBeyondTop) {

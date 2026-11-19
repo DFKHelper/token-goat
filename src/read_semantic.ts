@@ -25,7 +25,7 @@ import { resolveProjectRoot } from './project.js'
 import { recordSemanticQuery } from './semantic_distances.js'
 import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from './semantic_relevance.js'
 import { guardJsonRows, guardText, largestFileSize, readFileText, recordReadStat, warnIfFilesStale } from './read_commands.js'
-import { ReadDeniedError } from './read_deny.js'
+import { dropDeniedRows, ReadDeniedError } from './read_deny.js'
 import { previewLines } from './read_meta.js'
 import { resolveProjectConfinement } from './read_spec.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
@@ -293,10 +293,12 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       // Coverage is a diagnostic aid, never a reason to fail a search that otherwise works.
     }
   }
-  const mergedHits = mergeNearbyHits(rawHits)
+  // A hit in a file the host denies is dropped before its stored chunk text can become a preview.
+  const mergedHits = dropDeniedRows(mergeNearbyHits(rawHits), (h) => h.filePath)
   // BM25 full-text search over symbol names/bodies/docstrings, over-fetched for the same reason as the dense side above: searchSymbolsFts caps at the DB level via its own SQL LIMIT, so a post-hoc filter (--grep/--exclude-tests) or a post-hoc fusion rank on an already-`n`-capped result would silently under-represent this list relative to the dense one -- always called now (previously gated behind the dense branch returning zero hits), reusing the same OVER_FETCH_FACTOR/MAX_OVER_FETCH ratio the dense branch already uses.
   const overFetchFts = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
-  const ftsRows = searchSymbolsFts(query, overFetchFts, undefined, rootDir)
+  const ftsFound = searchSymbolsFts(query, overFetchFts, undefined, rootDir)
+  const ftsRows = dropDeniedRows(ftsFound, (s) => s.filePath)
 
   // Fuse both candidate lists with Reciprocal Rank Fusion -- a row is keyed by its enclosing symbol (filePath + name + the symbol's own lineStart) when one is known, since that is the only identity both a dense chunk and a BM25 symbol row can genuinely share; the lineStart component matters because name alone is not unique within a file (e.g. a same-named method on two different classes), and dropping it would silently collapse two distinct symbols into one fused row. A dense hit with no resolvable enclosing symbol falls back to filePath + start line, which an FTS row (always symbol-backed) can never collide with, so it simply stays its own row.
   const fused = new Map<string, FusedSemanticHit>()
@@ -377,7 +379,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   const eligibleCount = filteredHits.length
   const hits = filteredHits.slice(0, n)
   // Both candidate lists are over-fetched to a bound (OVER_FETCH_FACTOR/MAX_OVER_FETCH). When a list came back AT its bound the fused set may itself be clipped, so `eligibleCount` is a floor rather than a total, and the wording below has to say so rather than name a number it cannot stand behind.
-  const candidatesClipped = rawHits.length >= overFetchForMerge || ftsRows.length >= overFetchFts
+  const candidatesClipped = rawHits.length >= overFetchForMerge || ftsFound.length >= overFetchFts
 
   // Which list(s) actually contributed a candidate decides the reported `source` -- 'hybrid' only when both lists had at least one raw hit (even if they didn't fuse into the same row), never 'embeddings' silently standing in for a result that is partly BM25.
   const hadDense = mergedHits.length > 0

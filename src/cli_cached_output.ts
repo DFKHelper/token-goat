@@ -21,6 +21,7 @@ import { extractSection } from './section_reader.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
 import { fenceIfScanMatched, fenceJsonStrings, fenceUntrusted } from './untrusted_fence.js'
 import { countNoun, decodeSource, isWindows } from './util.js'
+import { assertReadAllowed } from './read_deny.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 
 /** The narrowing flags every cached-output recall command shares; the three recall-by-position flags (`--lines`, `-n`, `--context`) are optional so callers that never register them (cli_office.ts) compile unchanged. */
@@ -205,6 +206,8 @@ function readRecallFile(file: string): { text: string; mtimeMs: number } {
   if (!isWindows() && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(file) && process.stdin.isTTY) {
     throw new CliError('--file /dev/stdin requires piped input; redirect a file instead')
   }
+  // A path the host's Read rules deny is refused here too: this reader prints a file named on the command line.
+  assertReadAllowed(file)
   try {
     const st = fs.statSync(file)
     if (st.isFIFO() || st.isSocket()) {

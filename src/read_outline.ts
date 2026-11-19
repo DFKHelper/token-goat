@@ -19,6 +19,7 @@ import { noSymbolsMessage, formatStatsSuffix, hasRealDocstring } from './read_me
 import { firstBodyLine } from './read_suggest.js'
 import { parseMultiFileSpec, fileConfinementRefusal } from './read_spec.js'
 import { extractSignature } from './read_signature.js'
+import { assertReadAllowed, ReadDeniedError } from './read_deny.js'
 import { getOutlineListingCache, setOutlineListingCache, type OutlineListingCacheValue } from './read_outline_cache.js'
 
 export interface SkeletonOptions {
@@ -134,6 +135,8 @@ export function prepareSymbolListing(
   const resolved = resolveSpecPath(file, opts.projectRoot ?? process.cwd())
   const confined = fileConfinementRefusal('This file', file, opts.projectRoot)
   if (confined !== null) return { kind: 'confined', text: confined }
+  // The listing prints stored signature lines, so a denied file is refused before any row is read.
+  assertReadAllowed(resolved)
   if (opts.forceRefresh === true) {
     indexFileSyncPinned(resolved, globalDbPath())
     enqueueDirtyPathSafe(resolved, { alreadyResolved: true })
@@ -214,7 +217,14 @@ export function runPerFileListing(
   const blocks: string[] = []
   let anyOk = false
   for (const file of files) {
-    const r = run(file)
+    let r: { text: string; code: number }
+    try {
+      r = run(file)
+    } catch (e) {
+      // One denied file in a list refuses itself and leaves the other blocks to print.
+      if (!(e instanceof ReadDeniedError)) throw e
+      r = { text: `${e.prefix}${e.message}`, code: 1 }
+    }
     if (r.code === 0) anyOk = true
     blocks.push(r.text)
   }

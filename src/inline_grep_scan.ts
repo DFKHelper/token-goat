@@ -6,6 +6,7 @@ import { isInsideRoot } from './path_containment.js'
 import { resolveIndexPath } from './paths.js'
 import { fileRowByIndexKey } from './sql_path.js'
 import { runGit } from './util.js'
+import { readDenial } from './read_deny.js'
 import type { GitResult, RunGitOptions } from './types.js'
 
 /** The text of `bytes` split into the lines ripgrep searches, or null when ripgrep and this reading could disagree about them, so the caller passes the Grep through. Lines end at `\n` only and keep a trailing `\r`: ripgrep without `--crlf` ends a line at `\n` alone, so `$` does not match before a `\r` (`rg --help` 15.1.0 on `--crlf`; `rg -n 'foo$'` on "foo\r\n" prints nothing and exits 1). A NUL byte (ripgrep's binary detection, and the mark of a UTF-16 file), bytes that are not UTF-8, and a CR that is not part of CRLF (ripgrep sees one long line where the index sees many) all return null. A leading byte-order mark is dropped, as ripgrep drops it. */
@@ -102,6 +103,8 @@ function readScopeFile(abs: string, base: string, used: number): { file: ScopeFi
   }
   if (!st.isFile()) return 'a listed entry is a link, a directory or not a regular file'
   if (used + st.size > SCOPE_MAX_BYTES) return 'the files exceed the byte allowance'
+  // Matching lines are embedded in the answer, so a file the host denies makes the hook pass.
+  if (readDenial(abs) !== null) return 'a listed file is denied by the host Read rules'
   let bytes: Buffer
   try {
     bytes = fs.readFileSync(abs)

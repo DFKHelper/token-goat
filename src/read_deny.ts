@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { CliError } from './command_error.js'
 import { loadConfig } from './config.js'
+import { emitErr } from './emit.js'
 import { loadPermissionSnapshotOrThrow, ruleToolIs } from './rewrite_permission.js'
 import type { PermissionRule, PermissionSnapshot } from './rewrite_permission.js'
 
@@ -326,4 +327,38 @@ export function assertReadAllowed(target: string, ctx: ReadDenyContext = {}): vo
   if (hit !== null) {
     throw new ReadDeniedError(`read refused: ${target} is denied by ${hit.source}: ${hit.rule}`)
   }
+}
+
+/** The refusal line for `target`, or null when it may be shown; never throws, a failure counts as a refusal. */
+export function readDenial(target: string, ctx: ReadDenyContext = {}): string | null {
+  try {
+    assertReadAllowed(target, ctx)
+    return null
+  } catch (err) {
+    if (err instanceof ReadDeniedError) return err.message
+    return `read refused: ${target}: the Read rules could not be checked`
+  }
+}
+
+/** The rows of files the host does not deny; each denied path is said once on stderr, never its text. */
+export function dropDeniedRows<T>(rows: readonly T[], fileOf: (row: T) => string): T[] {
+  const verdicts = new Map<string, boolean>()
+  const kept: T[] = []
+  for (const row of rows) {
+    const file = fileOf(row)
+    let ok = verdicts.get(file)
+    if (ok === undefined) {
+      const refusal = readDenial(file)
+      ok = refusal === null
+      verdicts.set(file, ok)
+      if (refusal !== null) noteOmitted(refusal)
+    }
+    if (ok) kept.push(row)
+  }
+  return kept
+}
+
+/** Says on stderr, in one `[tg]` line, that a denied file's results were left out; names path and rule only. */
+export function noteOmitted(refusal: string): void {
+  emitErr(`[tg] omitted: ${refusal.replace(/^read refused: /, '')}`)
 }

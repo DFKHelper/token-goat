@@ -9,6 +9,7 @@ import { resolveBody, warnIfFilesStale } from './read_commands.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { countNoun, foldPath, requireNonNegativeStrictInt } from './util.js'
 import { filteredSubject } from './filter_notice.js'
+import { assertReadAllowed } from './read_deny.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
 interface TraceFrame {
@@ -29,7 +30,10 @@ interface TraceParseResult {
 }
 
 function readInput(src: string | undefined): string {
-  if (src !== undefined) return fs.readFileSync(src, 'utf8')
+  if (src !== undefined) {
+    assertReadAllowed(src)
+    return fs.readFileSync(src, 'utf8')
+  }
   return fs.readFileSync(0, 'utf8')
 }
 

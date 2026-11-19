@@ -9,6 +9,7 @@ import { searchSymbolsFtsByKind } from './symbol_fts.js';
 import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
 import { fileIsGone, readFileText, sinkGoneRows } from '../read_commands.js';
 import { fuseChannelHits } from './rrf.js';
+import { dropDeniedRows, noteOmitted, ReadDeniedError } from '../read_deny.js';
 import { bodyFromDeclaration } from '../read_suggest.js';
 import { pathPriorityWeight } from './path_weight.js';
 import { loadConfig } from '../config.js';
@@ -155,8 +156,10 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string,
           }
         }
         if (found.count > 0) matched.push(found);
-      } catch {
-        unreadableCount++;
+      } catch (err: unknown) {
+        // A denied file is left out and said so; it is not a read error.
+        if (err instanceof ReadDeniedError) noteOmitted(err.message);
+        else unreadableCount++;
       }
     }
 
@@ -306,7 +309,8 @@ export async function executeParallelSearch(options: SearchOptions, context: Sea
   for (const res of settled) {
     if (res.status === 'fulfilled') {
       const { channel, hits, degradedReason, note, lowConfidence: channelLowConfidence } = res.value;
-      channelHitsMap.set(channel, hits);
+      // Every channel's preview is file text, so one filter here covers all four channels.
+      channelHitsMap.set(channel, dropDeniedRows(hits, (h) => h.filePath));
       if (degradedReason) {
         degradedChannels.push({ channel, reason: degradedReason });
       }

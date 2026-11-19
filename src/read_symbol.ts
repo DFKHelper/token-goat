@@ -18,6 +18,7 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, nearNamesSkippedNote, nearSymbolNames, rankSimilarNames } from './read_suggest.js'
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
+import { dropDeniedRows } from './read_deny.js'
 import { DELETED_TAG, docCommentLines, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
 import { canQuoteArg, echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { forClient } from './mcp_client_text.js'
@@ -215,7 +216,8 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const orderGroup = (rows: SymbolEntry[]): SymbolEntry[] => (opts.name === undefined ? rows : stableSortImportBindsLast(rows))
   const ordered = [...orderGroup(unordered.slice(0, sweep.mineCount)), ...orderGroup(unordered.slice(sweep.mineCount))]
   // An exact-name lookup asks where a thing is defined, and `file_path, line_start` answers it by alphabet: `const { ambigProbeFn } = await import('../src/thing.js')` in scripts/ sorts ahead of the real function in src/ purely because "scripts" precedes "src", so the first block a caller reads is an import statement rather than the body it went looking for. Sink the rows that only re-bind an imported name, keeping the query's own order within each group so the existing tie-breaks and paging behaviour are untouched. Nothing is dropped -- every candidate still prints, so a misjudged row costs one position and never an answer, which is the reason this reorders rather than filters. `--grep` listings are deliberately excluded: those are a browse of many different names, where file order is the useful one.
-  const results = sinkGoneRows(ordered, (s) => s.filePath)
+  // Rows carry the stored body and docstring in JSON and in the blocks, so denied files' rows go here.
+  const results = dropDeniedRows(sinkGoneRows(ordered, (s) => s.filePath), (s) => s.filePath)
   // A named file is judged once by staleWarning below (or the JSON branch); a bare lookup spans many files, so it books the states its own rows carry.
   if (opts.file === undefined) {
     if (results.some((s) => stillStale.has(s.filePath))) recordStaleServed('symbol', 'stale')

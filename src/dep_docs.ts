@@ -16,10 +16,13 @@ import { echoedValue } from './hint_suggestion_guard.js'
 import { redactSecrets } from './secret_redact.js'
 import { fenceFileFieldIfMatched, fenceJsonStrings, fenceWithMatches } from './untrusted_fence.js'
 import { scanForInjectionPatterns, UNTRUSTED_FILE_TAG } from './injection_scan.js'
+import { readDenial } from './read_deny.js'
 
 // ---- filesystem helpers -------------------------------------------------------
 
 function readFileTextOrNull(p: string): string | null {
+  // A dependency file the host's Read rules deny is left out of the answer; the check never throws.
+  if (readDenial(p) !== null) return null
   try {
     return fs.readFileSync(p, 'utf8')
   } catch {
@@ -281,6 +284,8 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
     return { text: `Package ${echoedValue(opts.packageName)} not found under ${displaySafeText(nodeModulesDir)}${hint}`, code: 1 }
   }
 
+  const pkgJsonDenial = readDenial(pkgJsonPath)
+  if (pkgJsonDenial !== null) return { text: `[tg] ${pkgJsonDenial}`, code: 1 }
   const pkgJsonRaw = fs.readFileSync(pkgJsonPath, 'utf8')
   let pkgJson: Record<string, unknown>
   try {
