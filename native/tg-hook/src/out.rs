@@ -68,17 +68,41 @@ fn write_now(data: &[u8]) {
     let _ = out.flush();
 }
 
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Counts a write in flight, then starts `job` with `spawn`; a failed start gives the count back.
+fn start_counted(writing: &AtomicUsize, job: impl FnOnce() + Send + 'static, spawn: impl FnOnce(Job) -> std::io::Result<()>) -> bool {
+    writing.fetch_add(1, Ordering::SeqCst);
+    if spawn(Box::new(job)).is_err() {
+        writing.fetch_sub(1, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+/// Counts one answer write in flight on `writing` until dropped, so an exit waits for it.
+struct InFlight<'a>(&'a AtomicUsize);
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// The one place bytes reach stdout; a write unfinished at the deadline (a host not reading) exits 0.
 fn write_bounded(data: &str) {
     let Some(end) = DEADLINE.lock().ok().and_then(|slot| *slot) else { return write_now(data.as_bytes()) };
     let bytes = data.as_bytes().to_vec();
     let (tx, rx) = std::sync::mpsc::channel();
-    WRITING.fetch_add(1, Ordering::SeqCst);
     // owner: this call; dies when the process exits, which a write still blocked at the deadline ends
-    std::thread::spawn(move || {
+    let job = move || {
         write_now(&bytes);
         let _ = tx.send(());
-    });
+    };
+    // limit: a write whose thread cannot start is dropped; revisit-when: a thread spawn fails on a live host
+    if !start_counted(&WRITING, job, |job| std::thread::Builder::new().spawn(job).map(|_| ())) {
+        return;
+    }
     let wait = end.saturating_duration_since(Instant::now()).max(WRITE_GRACE);
     if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(wait) {
         std::process::exit(0)
@@ -98,9 +122,16 @@ fn emit_claimed(answered: &AtomicU8, by: u8, data: &str, write: impl FnOnce(&str
 
 /// [`emit_claimed`] with the marker lock and the wait's observer given, so a test can hold a marker write open.
 fn emit_claimed_after(answered: &AtomicU8, by: u8, data: &str, write: impl FnOnce(&str), marker: &Mutex<()>, waiting: impl FnMut()) -> bool {
+    emit_claimed_counting(&WRITING, answered, by, data, write, marker, waiting)
+}
+
+/// [`emit_claimed_after`] counting the answer on `writing` from before its claim to its write's end.
+fn emit_claimed_counting(writing: &AtomicUsize, answered: &AtomicU8, by: u8, data: &str, write: impl FnOnce(&str), marker: &Mutex<()>, waiting: impl FnMut()) -> bool {
     if data.is_empty() {
         return false;
     }
+    writing.fetch_add(1, Ordering::SeqCst);
+    let _in_flight = InFlight(writing);
     // A route streams its answer in parts, so it may write again once it holds the claim; the safe answer is a single write.
     let mine = match answered.compare_exchange(UNANSWERED, by, Ordering::SeqCst, Ordering::SeqCst) {
         Ok(_) => true,
@@ -118,8 +149,26 @@ fn emit_claimed_after(answered: &AtomicU8, by: u8, data: &str, write: impl FnOnc
 /// Held from the marker's check to the end of its write, so an answer claimed in between waits for it instead of being written first.
 static MARKER_WRITE: Mutex<()> = Mutex::new(());
 
+thread_local! {
+    /// Whether this thread is inside [`emit_partial_with`], holding the marker lock.
+    static HOLDS_MARKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Clears [`HOLDS_MARKER`] when the marker write ends or unwinds.
+struct MarkerHeld;
+
+impl Drop for MarkerHeld {
+    fn drop(&mut self) {
+        HOLDS_MARKER.with(|holds| holds.set(false));
+    }
+}
+
 /// Waits until no marker write is in flight on `marker`, for at most the call's deadline; `waiting` is told of each wait.
 fn settle_marker(marker: &Mutex<()>, mut waiting: impl FnMut()) {
+    // The panic hook runs on the thread that panicked inside the marker write, which still holds the lock.
+    if HOLDS_MARKER.with(std::cell::Cell::get) {
+        return;
+    }
     let end = bounded_deadline(DEADLINE.lock().ok().and_then(|slot| *slot), Instant::now());
     while matches!(marker.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
         waiting();
@@ -138,6 +187,8 @@ pub fn emit_partial(data: &str) {
 /// Checks and writes the marker under `lock`, so [`settle_marker`] on the answer's side sees the write in flight.
 fn emit_partial_with(answered: &AtomicU8, sent: &AtomicBool, lock: &Mutex<()>, write: impl FnOnce()) {
     let _held = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    HOLDS_MARKER.with(|holds| holds.set(true));
+    let _mark = MarkerHeld;
     if marker_allowed(answered, sent) {
         write();
     }
@@ -205,6 +256,7 @@ pub fn record_bounded(record: impl FnOnce() + Send + 'static, deadline: Option<I
 
 /// How long the process waits for a record once the answer is out; a stalled disk loses the record, not the exit.
 // limit: a record slower than this is dropped when the process exits; revisit-when: notes go missing on healthy disks
+// lost: the hook-broken notice, or a hook-broken.json.<pid>.tmp left behind; accepted, an exit is never delayed
 const RECORD_GRACE: Duration = Duration::from_millis(250);
 
 /// Where a record's wait ends: the deadline [`bounded_deadline`] gives, or `now` plus [`RECORD_GRACE`] if that is sooner.
@@ -429,6 +481,97 @@ mod tests {
             let _ = release_tx.send(());
         });
         assert_eq!(*order.lock().unwrap(), ["marker", "answer"], "the answer was written while the marker write was in flight");
+    }
+
+    #[test]
+    fn an_answer_is_counted_in_flight_from_before_its_claim_to_the_end_of_its_write() {
+        let (answered, writing, lock) = (AtomicU8::new(UNANSWERED), AtomicUsize::new(0), Mutex::new(()));
+        let (inside_tx, inside_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let seen = std::cell::RefCell::new(Vec::<(u8, usize)>::new());
+        std::thread::scope(|scope| {
+            let lock = &lock;
+            scope.spawn(move || {
+                let _held = lock.lock().unwrap();
+                let _ = inside_tx.send(());
+                let _ = release_rx.recv();
+            });
+            inside_rx.recv().expect("the marker holder never started");
+            let mut released = false;
+            let waiting = || {
+                // Claimed, marker not settled, nothing written: an exit here must find the write counted.
+                seen.borrow_mut().push((answered.load(Ordering::SeqCst), writing.load(Ordering::SeqCst)));
+                if !released {
+                    released = true;
+                    let _ = release_tx.send(());
+                }
+            };
+            let wrote = emit_claimed_counting(&writing, &answered, BY_ROUTE, "{}", |_| seen.borrow_mut().push((BY_ROUTE, writing.load(Ordering::SeqCst))), lock, waiting);
+            assert!(wrote);
+        });
+        let seen = seen.into_inner();
+        assert!(seen.len() >= 2, "the answer never waited for the marker and wrote: {seen:?}");
+        assert!(seen.iter().all(|&(_, count)| count == 1), "the answer was not counted in flight between its claim and its write: {seen:?}");
+        assert_eq!(seen[0].0, BY_ROUTE, "the observer ran before the claim, so it did not see the window");
+        assert_eq!(writing.load(Ordering::SeqCst), 0, "the count was not given back after the write");
+    }
+
+    #[test]
+    fn a_lost_claim_and_an_empty_answer_leave_no_write_counted() {
+        let (writing, held) = (AtomicUsize::new(0), AtomicU8::new(BY_SAFE_ANSWER));
+        let marker = Mutex::new(());
+        assert!(!emit_claimed_counting(&writing, &held, BY_ROUTE, "a", |_| {}, &marker, || {}));
+        assert_eq!(writing.load(Ordering::SeqCst), 0, "a lost claim kept its count");
+        let free = AtomicU8::new(UNANSWERED);
+        assert!(!emit_claimed_counting(&writing, &free, BY_ROUTE, "", |_| {}, &marker, || {}));
+        assert_eq!(writing.load(Ordering::SeqCst), 0, "an empty answer kept its count");
+    }
+
+    #[test]
+    fn a_write_whose_thread_cannot_start_gives_its_count_back() {
+        let writing = AtomicUsize::new(0);
+        let started = start_counted(&writing, || {}, |_| Err(std::io::Error::other("no thread")));
+        assert!(!started);
+        assert_eq!(writing.load(Ordering::SeqCst), 0, "a failed start left its count behind, so an exit would wait for it");
+        assert!(start_counted(
+            &writing,
+            || {},
+            |job| {
+                job();
+                Ok(())
+            }
+        ));
+        assert_eq!(writing.load(Ordering::SeqCst), 1, "a started write is counted until its owner gives it back");
+    }
+
+    #[test]
+    fn the_thread_inside_the_marker_write_does_not_wait_for_its_own_lock() {
+        let (sent, answered, lock) = (AtomicBool::new(false), AtomicU8::new(UNANSWERED), Mutex::new(()));
+        let settled = std::cell::Cell::new(false);
+        emit_partial_with(&answered, &sent, &lock, || {
+            // What the panic hook does on this thread, with the lock still held.
+            settle_marker(&lock, || panic!("settle_marker waited for a marker lock this thread itself holds"));
+            settled.set(true);
+        });
+        assert!(settled.get());
+        let after = std::cell::Cell::new(false);
+        settle_marker(&lock, || after.set(true));
+        assert!(!after.get(), "the thread kept claiming the marker lock after its write ended");
+    }
+
+    #[test]
+    fn a_marker_lock_a_panicked_thread_poisoned_counts_as_settled() {
+        let lock = Mutex::new(());
+        let panicked = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _held = lock.lock().unwrap();
+                    std::panic::resume_unwind(Box::new("marker thread gone"));
+                })
+                .join()
+        });
+        assert!(panicked.is_err() && lock.is_poisoned());
+        settle_marker(&lock, || panic!("settle_marker waited on a poisoned marker lock"));
     }
 
     #[test]

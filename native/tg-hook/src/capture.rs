@@ -242,6 +242,60 @@ mod tests {
         std::thread::sleep(Duration::from_secs(120));
     }
 
+    /// Ends the process whose pid `hang_child` wrote to the file, if it is still running, and removes the file.
+    struct ReapRecordedChild(std::path::PathBuf);
+
+    impl Drop for ReapRecordedChild {
+        fn drop(&mut self) {
+            let recorded = std::fs::read_to_string(&self.0).ok().and_then(|t| t.trim().parse::<u32>().ok());
+            let _ = std::fs::remove_file(&self.0);
+            if let Some(pid) = recorded.filter(|&pid| !process_is_gone(pid)) {
+                kill_pid(pid);
+            }
+        }
+    }
+
+    /// Kills `pid` with the platform's own tool, since this crate adds no `unsafe`.
+    fn kill_pid(pid: u32) {
+        #[cfg(unix)]
+        let mut kill = Command::new("kill");
+        #[cfg(unix)]
+        kill.args(["-9", &pid.to_string()]);
+        #[cfg(windows)]
+        let mut kill = Command::new("taskkill");
+        #[cfg(windows)]
+        kill.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        let _ = kill.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+
+    #[test]
+    fn a_red_hung_route_row_leaves_its_child_killed() {
+        let pidfile = std::env::temp_dir().join(format!("tg-cap-reap-{}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&pidfile);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "capture::tests::hang_child"])
+            .arg(format!("pidfile={}", pidfile.display()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let recorded = poll_within(BACKSTOP, || std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse::<u32>().ok()));
+        let reap = ReapRecordedChild(pidfile);
+        let Some(pid) = recorded else {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the child never recorded its pid");
+        };
+        assert_eq!(pid, child.id(), "the recorded pid is the child's");
+        drop(reap);
+        let gone = poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some();
+        // Whatever the guard did, this test ends its own child.
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(gone, "the guard left pid {pid} of the hung child running");
+    }
+
     /// Whether no process, not even an unreaped zombie, answers to `pid`.
     fn process_is_gone(pid: u32) -> bool {
         #[cfg(unix)]
@@ -272,6 +326,8 @@ mod tests {
     #[test]
     fn a_hung_route_is_killed_when_exec_times_out() {
         let pidfile = std::env::temp_dir().join(format!("tg-cap-{}.pid", std::process::id()));
+        // Ends the hung child by its recorded pid however this test ends, so a red row leaves nothing running.
+        let _reap = ReapRecordedChild(pidfile.clone());
         let me = std::env::current_exe().unwrap().into_os_string();
         let argv = vec![me, "--ignored".into(), "--exact".into(), "capture::tests::hang_child".into(), format!("pidfile={}", pidfile.display()).into()];
         // A run that overran its limit before the child wrote its pid recorded none: it says nothing about the kill, so another run follows.
@@ -287,7 +343,6 @@ mod tests {
             assert!(matches!(ended, Err(Failure::Timeout(_))), "the hung route must time out");
             std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse::<u32>().ok())
         });
-        let _ = std::fs::remove_file(&pidfile);
         let pid = pid.expect("no run of the hung route recorded its pid before it was killed");
         // The kill was issued before exec returned; the wait here is on the process ending, not on the production reap bound.
         assert!(poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some(), "pid {pid} of the hung route was still alive after exec returned");
