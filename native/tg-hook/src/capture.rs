@@ -256,6 +256,20 @@ mod tests {
         assert_eq!(third, Some(3));
     }
 
+    /// Every test that runs a hang child owns the pidfile named here; tests share one process id and run in parallel.
+    const PIDFILE_TAGS: [&str; 3] = ["red-row", "production-reap", "exec-row"];
+
+    /// The pidfile for the test tagged `tag`: one per test, so one test never removes or overwrites another's.
+    fn pidfile_for(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("tg-cap-{tag}-{}.pid", std::process::id()))
+    }
+
+    #[test]
+    fn no_two_tests_share_a_pidfile() {
+        let paths: std::collections::HashSet<_> = PIDFILE_TAGS.iter().map(|t| pidfile_for(t)).collect();
+        assert_eq!(paths.len(), PIDFILE_TAGS.len(), "two tests would race on one pidfile");
+    }
+
     /// Hanging child for the next test: `--ignored --exact <this> pidfile=<path>` writes its pid, then hangs.
     #[test]
     #[ignore = "only runs as the hanging child of the kill tests below"]
@@ -294,7 +308,7 @@ mod tests {
 
     #[test]
     fn a_red_hung_route_row_leaves_its_child_killed() {
-        let pidfile = std::env::temp_dir().join(format!("tg-cap-reap-{}.pid", std::process::id()));
+        let pidfile = pidfile_for("red-row");
         let _ = std::fs::remove_file(&pidfile);
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--ignored", "--exact", "capture::tests::hang_child"])
@@ -349,7 +363,7 @@ mod tests {
 
     #[test]
     fn a_hung_route_is_killed_when_exec_times_out() {
-        let pidfile = std::env::temp_dir().join(format!("tg-cap-{}.pid", std::process::id()));
+        let pidfile = pidfile_for("exec-row");
         // Ends the hung child by its recorded pid however this test ends, so a red row leaves nothing running.
         let _reap = ReapRecordedChild(pidfile.clone());
         let me = std::env::current_exe().unwrap().into_os_string();
@@ -399,7 +413,7 @@ mod tests {
 
     #[test]
     fn the_production_reap_leaves_the_child_gone_once_its_pidfile_shows_it_started() {
-        let pidfile = std::env::temp_dir().join(format!("tg-cap-reap-{}.pid", std::process::id()));
+        let pidfile = pidfile_for("production-reap");
         let _ = std::fs::remove_file(&pidfile);
         let me = std::env::current_exe().unwrap();
         let mut child = Command::new(me).args(["--ignored", "--exact", "capture::tests::hang_child"]).arg(format!("pidfile={}", pidfile.display())).stdout(Stdio::null()).spawn().unwrap();
