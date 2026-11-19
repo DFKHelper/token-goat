@@ -62,7 +62,7 @@ fn is_json_stream(bytes: &[u8]) -> bool {
 }
 
 /// Judges a finished route. `held` is stdout past what was already forwarded.
-fn judge(code: Option<i32>, held: &[u8], empty_ok: bool) -> Result<i32, Failure> {
+fn judge(code: Option<i32>, held: &[u8], held_err: &[u8], empty_ok: bool) -> Result<i32, Failure> {
     let Some(code) = code else { return Err(Failure::Signal) };
     if code != 0 && code != 2 {
         return Err(Failure::Exit(code));
@@ -70,6 +70,8 @@ fn judge(code: Option<i32>, held: &[u8], empty_ok: bool) -> Result<i32, Failure>
     if held.iter().all(u8::is_ascii_whitespace) {
         return match (empty_ok, code) {
             (true, 0) => Ok(0),
+            // Node never exits 2 by itself: a block that speaks on stderr alone is a deliberate answer.
+            (_, 2) if !held_err.iter().all(u8::is_ascii_whitespace) => Ok(2),
             _ => Err(Failure::Output("empty")),
         };
     }
@@ -78,6 +80,9 @@ fn judge(code: Option<i32>, held: &[u8], empty_ok: bool) -> Result<i32, Failure>
     }
     Ok(code)
 }
+
+/// The most stderr a route's block message may carry through.
+const STDERR_CAP: u64 = 64 * 1024;
 
 /// The longest a killed route is waited for; one that outlasts it is left to the job object or PDEATHSIG.
 pub const REAP_BOUND: Duration = Duration::from_millis(100);
@@ -137,7 +142,7 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
     let Some((program, args)) = argv.split_first() else { return Err(Failure::NoCommand) };
     let end = Instant::now() + timeout;
     let mut cmd = Command::new(program);
-    cmd.args(args).env(crate::fallback::REASON_ENV, reason).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    cmd.args(args).env(crate::fallback::REASON_ENV, reason).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.stdin(match stdin {
         Stdin::Inherit => Stdio::inherit(),
         Stdin::Bytes(_) => Stdio::piped(),
@@ -153,6 +158,18 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
         std::thread::spawn(move || {
             let _ = pipe.write_all(&payload);
         });
+    }
+    // stderr is held, never inherited: a broken route's loader noise must not reach the host.
+    let (err_tx, err_rx) = mpsc::channel();
+    match child.stderr.take() {
+        Some(pipe) => {
+            std::thread::spawn(move || {
+                let mut all = Vec::new();
+                let _ = pipe.take(STDERR_CAP).read_to_end(&mut all);
+                let _ = err_tx.send(all);
+            });
+        }
+        None => drop(err_tx),
     }
     let (tx, rx) = mpsc::channel();
     match child.stdout.take() {
@@ -184,8 +201,15 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
         }
     };
     let empty_ok = out::safe_answer(harness, event).is_empty();
-    let code = judge(status.code(), &held, empty_ok)?;
+    // Only a served route (exit 0 or a deliberate 2) passes stderr on; the wait ends with the pipe or the deadline.
+    let held_err = if matches!(status.code(), Some(0 | 2)) {
+        err_rx.recv_timeout(left(end)).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let code = judge(status.code(), &held, &held_err, empty_ok)?;
     out::emit(&String::from_utf8_lossy(&held));
+    let _ = std::io::stderr().write_all(&held_err);
     Ok(Outcome { code })
 }
 
@@ -198,21 +222,21 @@ mod tests {
 
     #[test]
     fn only_a_parseable_answer_from_an_ordinary_ending_is_served() {
-        assert_eq!(judge(Some(0), b"{}", false).unwrap(), 0);
-        assert_eq!(judge(Some(0), b"{\"a\":1}\n{\"b\":2}", false).unwrap(), 0);
-        assert_eq!(judge(Some(2), b"{\"decision\":\"deny\"}", false).unwrap(), 2);
-        assert!(matches!(judge(None, b"{}", false), Err(Failure::Signal)));
-        assert!(matches!(judge(Some(7), b"{}", false), Err(Failure::Exit(7))));
-        assert!(matches!(judge(Some(1), b"{}", false), Err(Failure::Exit(1))));
-        assert!(matches!(judge(Some(0), b"hello", false), Err(Failure::Output(_))));
-        assert!(matches!(judge(Some(0), b"{} junk", false), Err(Failure::Output(_))));
-        assert!(matches!(judge(Some(0), b"", false), Err(Failure::Output("empty"))));
-        assert!(matches!(judge(Some(2), b"", true), Err(Failure::Output("empty"))));
+        assert_eq!(judge(Some(0), b"{}", b"", false).unwrap(), 0);
+        assert_eq!(judge(Some(0), b"{\"a\":1}\n{\"b\":2}", b"", false).unwrap(), 0);
+        assert_eq!(judge(Some(2), b"{\"decision\":\"deny\"}", b"", false).unwrap(), 2);
+        assert!(matches!(judge(None, b"{}", b"", false), Err(Failure::Signal)));
+        assert!(matches!(judge(Some(7), b"{}", b"", false), Err(Failure::Exit(7))));
+        assert!(matches!(judge(Some(1), b"{}", b"", false), Err(Failure::Exit(1))));
+        assert!(matches!(judge(Some(0), b"hello", b"", false), Err(Failure::Output(_))));
+        assert!(matches!(judge(Some(0), b"{} junk", b"", false), Err(Failure::Output(_))));
+        assert!(matches!(judge(Some(0), b"", b"", false), Err(Failure::Output("empty"))));
+        assert!(matches!(judge(Some(2), b"", b"", true), Err(Failure::Output("empty"))));
     }
 
     #[test]
     fn an_empty_answer_serves_only_where_the_safe_answer_is_empty() {
-        assert_eq!(judge(Some(0), b"", true).unwrap(), 0);
+        assert_eq!(judge(Some(0), b"", b"", true).unwrap(), 0);
     }
 
     #[test]
@@ -393,4 +417,13 @@ mod tests {
         let _ = child.wait();
         assert!(gone, "kill_and_reap returned with pid {pid} still alive");
     }
+
+    #[test]
+    fn a_block_that_speaks_on_stderr_alone_is_an_answer_but_only_from_exit_2() {
+        assert_eq!(judge(Some(2), b"", b"blocked: use the other command", true).unwrap(), 2);
+        assert!(matches!(judge(Some(2), b"", b"  \n", true), Err(Failure::Output("empty"))));
+        assert!(matches!(judge(Some(1), b"", b"loader noise", true), Err(Failure::Exit(1))));
+        assert!(matches!(judge(Some(13), b"{}", b"loader noise", true), Err(Failure::Exit(13))));
+    }
+
 }

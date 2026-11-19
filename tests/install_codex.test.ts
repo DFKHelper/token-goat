@@ -85,14 +85,15 @@ describe('codexHookCommandFor', () => {
     if (parsed?.kind !== 'v1') return
     expect(parsed.shell).toBe('powershell')
     expect(parsed.native.slice(1, 3)).toEqual(['C:\\path\\to\\shim.js', 'pre_compact'])
-    // HAND-DERIVED: what `powershell -Command` needs to exit with a native program's own code.
-    expect(cmd).toContain('exit (Get-Variable LASTEXITCODE -ValueOnly)')
+    // HAND-DERIVED: what `powershell -Command` needs to exit with a deliberate block's own code (2).
+    expect(cmd).toContain('(Get-Variable LASTEXITCODE -ValueOnly) -eq 2')
+    expect(cmd).toContain('exit 2')
   })
 
-  // Windows only: the real powershell.exe runs the command, as the host does, against a stub that exits 3.
-  it.skipIf(process.platform !== 'win32')('the Windows command exits with its hook status', () => {
-    const stub = path.join(TMP, 'exit-three.js')
-    fs.writeFileSync(stub, 'process.exit(3)\n')
+  // Windows only: the real powershell.exe runs the command, as the host does, against a stub that exits 2.
+  it.skipIf(process.platform !== 'win32')('the Windows command exits with a deliberate block status', () => {
+    const stub = path.join(TMP, 'exit-two.js')
+    fs.writeFileSync(stub, 'process.exit(2)\n')
     const cmd = codexHookCommandFor(stub, 'pre_compact', { sync: false })
     const parsed = parseGuardedCommand(cmd)
     expect(parsed?.kind === 'v1' ? parsed.shell : undefined, cmd).toBe('powershell')
@@ -101,7 +102,7 @@ describe('codexHookCommandFor', () => {
     const res = spawnSync('powershell.exe', argv, { encoding: 'utf8', timeout: 60_000, windowsHide: true })
     try {
       expect(res.error, 'the command did not end on its own').toBeUndefined()
-      expect(res.status, `${res.stdout}${res.stderr}`).toBe(3)
+      expect(res.status, `${res.stdout}${res.stderr}`).toBe(2)
     } finally {
       if (res.error !== undefined && res.pid !== undefined) {
         killIfCommandLine(res.pid, (commandLine) => commandLine.includes(stub), { tree: true })

@@ -65,17 +65,33 @@ function quoteWord(shell: GuardShell, text: string): string {
   return shell === 'sh' ? `'${word.replace(/'/g, "'\\''")}'` : `'${text.replace(PS_QUOTES, (q) => q + q)}'`
 }
 
-const CASE_SH = 'case $? in 126|127) ;; *) exit $?;; esac'
+// A route's outcome is a hook answer only as exit 0 or exit 2 (a deliberate block, stderr replayed from $1).
+// Node's own failures exit 1, 9, 13 or by signal, never 2, so any other status falls through to the next route.
+// No $NAME word: Grok CLI substitutes those itself in a hook command, so the temp file is parameter 1.
+const SH_RM_ERR = '[ ! -f "$1" ] || rm -f "$1"'
+const SH_REPLAY = `cat "$1" >&3; ${SH_RM_ERR}`
+const CASE_SH = `case $? in 0) ${SH_REPLAY}; exit 0;; 2) ${SH_REPLAY}; exit 2;; *) : >"$1";; esac`
+const SH_STDERR = 'set -- "$(mktemp 2>/dev/null)"; [ -n "$1" ] || set -- /dev/null; exec 3>&2 2>>"$1"'
 
 function shRoute(test: string, argv: readonly string[]): string {
   return `if ${test}; then ${argv.map((w) => quoteWord('sh', w)).join(' ')}; ${CASE_SH}; fi`
 }
 
+// The stderr file is named from this PowerShell's pid, with no $NAME word (Grok CLI substitutes those).
+const PS_ERR_FILE = "([IO.Path]::GetTempPath()+'tg-hook-'+[Diagnostics.Process]::GetCurrentProcess().Id+'.err')"
+// The redirect as the statement reader returns it: one word, its quote marks removed.
+const PS_ERR_REDIRECT_WORD = '2>' + PS_ERR_FILE.split("'").join('')
+const PS_RM_ERR = `Remove-Item -LiteralPath ${PS_ERR_FILE} -ErrorAction Ignore`
+const PS_REPLAY = `[Console]::Error.Write([IO.File]::ReadAllText(${PS_ERR_FILE}))`
+
 function psRoute(test: string, argv: readonly string[]): string {
   const call = argv.map((w) => quoteWord('powershell', w)).join(' ')
-  return `if (${test}) { try { & ${call}; ` +
-    `if ((Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore) -notin 126, 127) ` +
-    `{ exit (Get-Variable LASTEXITCODE -ValueOnly) } } catch { } }`
+  const code = '(Get-Variable LASTEXITCODE -ValueOnly)'
+  return `if (${test}) { try { & ${call} 2>${PS_ERR_FILE}; ` +
+    `if (${code} -eq 0) { ${PS_REPLAY}; ${PS_RM_ERR}; exit 0 }; ` +
+    `if (${code} -eq 2) { ${PS_REPLAY}; ` +
+    `${PS_RM_ERR}; exit 2 } ` +
+    `} catch { } }`
 }
 
 /** The part of a native argv after `--`: the Node command the client falls back to. */
@@ -115,12 +131,13 @@ export function buildGuardedCommand(input: GuardInput): string {
   const shim = node[1]
   const notice = guardNoticeJson(bin)
   if (input.shell === 'sh') {
-    const parts = [': tg-guard-v1']
+    const parts = [': tg-guard-v1', SH_STDERR]
     if (!nodeOnly) parts.push(shRoute(`[ -x ${q(bin)} ] && [ -s ${q(bin)} ]`, input.native))
     if (shim !== undefined) {
       parts.push(shRoute(`[ -f ${q(shim)} ] && [ -x ${q(node[0]!)} ]`, node))
       parts.push(shRoute(`[ -f ${q(shim)} ] && command -v node >/dev/null 2>&1`, ['node', ...node.slice(1)]))
     }
+    parts.push(SH_RM_ERR)
     parts.push(`[ -e ${q(input.marker)} ] || printf '%s' ${q(notice)} > ${q(input.marker)} 2>/dev/null`)
     parts.push(`printf '%s' ${q(input.safe)}`, 'exit 0')
     return parts.join('; ')
@@ -136,6 +153,7 @@ export function buildGuardedCommand(input: GuardInput): string {
       psRoute(`(${exists(shim)}) -and (Get-Command node -ErrorAction Ignore)`, ['node', ...node.slice(1)]),
     )
   }
+  parts.push(`try { ${PS_RM_ERR} } catch { }`)
   parts.push(
     `try { if (-not (Test-Path -LiteralPath ${q(input.marker)} )) { ` +
       `Set-Content -LiteralPath ${q(input.marker)} -Value (${q(notice)}) ` +
@@ -254,7 +272,10 @@ export function parseGuardedCommand(command: string): GuardedParse | undefined {
       if (t[0] === '[' && e >= 0 && marker === undefined) marker = t[e + 1]
     } else {
       const call = t.indexOf('&')
-      if (native === undefined && call >= 0) native = t.slice(call + 1)
+      if (native === undefined && call >= 0) {
+        native = t.slice(call + 1)
+        if (native.at(-1) === PS_ERR_REDIRECT_WORD) native.pop()
+      }
       if (t[0] === '[Console]::Out.Write(') safe = t[1]
       if (t.includes('Set-Content')) marker = t[t.indexOf('-LiteralPath') + 1]
     }

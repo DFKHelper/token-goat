@@ -1016,6 +1016,27 @@ describe('one deadline serves every route', () => {
     expect(held, 'stdout must hold exactly one marker and one answer').toBe('{"async":true}\n{"second":true}')
   })
 
+  // HAND-DERIVED: Node's own failure exits are 1, 9 and 13, never 2; a deliberate block is token-goat's exit 2.
+  it('a route that fails keeps its stderr from the host, and a deliberate exit 2 passes its own', async () => {
+    const noisy = (code: number): string[] =>
+      hookArgs([
+        process.execPath,
+        '-e',
+        `process.stderr.write('LOADER-NOISE'); process.exitCode = ${String(code)}`,
+      ])
+    const failed = await runNative(noisy(1), '{}', NO_SERVER, BOUND)
+    expect(failed.stderr, 'a failed route wrote to the host stderr').toBe('')
+    expect(failed.exit).toBe(0)
+    const blockScript = "process.stderr.write('BLOCK-MESSAGE'); process.exitCode = 2"
+    const blocked = await runNative(hookArgs([process.execPath, '-e', blockScript]), '{}', NO_SERVER, BOUND)
+    expect(blocked.exit, 'a deliberate block must exit 2').toBe(2)
+    expect(blocked.stderr).toBe('BLOCK-MESSAGE')
+    const diagnostic = "process.stderr.write('NOTE-LINE'); process.stdout.write('{}')"
+    const served = await runNative(hookArgs([process.execPath, '-e', diagnostic]), '{}', NO_SERVER, BOUND)
+    expect(served.stderr, 'a served route keeps its own diagnostic').toBe('NOTE-LINE')
+    expect(served.exit).toBe(0)
+  })
+
   it('both routes hanging end in the safe answer and exit 0 at the limit, each route run once', async () => {
     writePointer()
     const counter = path.join(sb.base, 'route2-hang')
