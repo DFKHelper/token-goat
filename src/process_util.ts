@@ -99,9 +99,22 @@ export function quotePosixShellWord(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`
 }
 
-/** Double-quotes a word for cmd.exe, or null when cmd.exe cannot carry it (%, line break, NUL, `&|<>^()`). */
-export function quoteCmdWord(value: string): string | null {
-  if (/[%\r\n\0]/.test(value)) return null
+/** True when cmd.exe would expand a `%NAME%` pair of the word, reading it left to right as cmd.exe does. */
+function expandsUnderCmd(value: string, env: NodeJS.ProcessEnv): boolean {
+  const defined = new Set(Object.keys(env).map((k) => k.toLowerCase()))
+  for (let at = value.indexOf('%'); at >= 0; at = value.indexOf('%', at + 1)) {
+    const close = value.indexOf('%', at + 1)
+    if (close < 0) return false
+    const name = value.slice(at + 1, close).toLowerCase()
+    const colon = name.indexOf(':')
+    if (defined.has(name) || (colon > 0 && defined.has(name.slice(0, colon)))) return true
+  }
+  return false
+}
+
+/** Double-quotes a word for cmd.exe, or null when it cannot (a defined %NAME%, line break, NUL, `&|<>^()`). */
+export function quoteCmdWord(value: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (/[\r\n\0]/.test(value) || expandsUnderCmd(value, env)) return null
   const body = value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')
   const quoted = ['"', body, '"'].join('')
   let inside = false

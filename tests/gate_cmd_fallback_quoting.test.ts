@@ -56,6 +56,17 @@ describe.skipIf(process.platform !== 'win32')(
   it.each(CARRIED)('the argument %j reaches the child whole', (arg) => {
     expect(receivedUnderCmd([arg, 'tail']), 'the child saw a different argv').toEqual([arg, 'tail'])
   })
+
+  it.each(['100% done', '50%_off %NOPE_NOT_SET_X%'])('the argument %j with a percent arrives whole', (arg) => {
+    expect(receivedUnderCmd([arg]), 'a percent was expanded or refused').toEqual([arg])
+  })
+
+  it('an argument holding a defined %NAME% pair is refused, with one line and exit 2', async () => {
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const code = await runGateArgv([process.execPath, script(), 'a %PATH% b'], true, 'win32')
+    expect(code, 'a defined variable was expanded, not refused').toBe(GATE_FAIL_EXIT)
+    expect(write.mock.calls.length, 'the refusal is not one line').toBe(1)
+  })
 })
 
 describe('gateCommandLine picks the quoting of the shell it runs under', () => {
@@ -75,10 +86,23 @@ describe('gateCommandLine picks the quoting of the shell it runs under', () => {
     expect(line, 'the cmd.exe line is not double-quoted').toBe('node "a b"')
   })
 
-  it.each([['%PATH%'], ['50%'], ['a"&b'], ['a\nb']])(
+  it.each([['%PATH%'], ['a %Path% b'], ['a"&b'], ['a\nb']])(
     'cmd.exe refuses %j rather than run a re-split line',
     (arg) => {
     expect(() => gateCommandLine(['node', arg], true, 'win32')).toThrow(GateArgumentRefused)
+  })
+
+  it.each([['50%'], ['100% done'], ['%NOPE_NOT_SET_X%'], ['50%_off %NOPE_NOT_SET_X%']])(
+    'cmd.exe carries %j quoted, since no variable of that name is defined',
+    (arg) => {
+    const line = gateCommandLine(['node', arg], true, 'win32', {})
+    expect(line, 'a harmless percent was refused').toBe(`node "${arg}"`)
+  })
+
+  it('a pair is refused only for a name defined in the env it is given, in any case', () => {
+    const words = ['node', 'a %Mine% b']
+    expect(() => gateCommandLine(words, true, 'win32', { MINE: 'x' })).toThrow(GateArgumentRefused)
+    expect(() => gateCommandLine(['node', 'a %Mine% b'], true, 'win32', {})).not.toThrow()
   })
 
   it('a POSIX shell is never refused for the same arguments', () => {

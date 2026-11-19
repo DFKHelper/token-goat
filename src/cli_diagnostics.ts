@@ -282,15 +282,17 @@ export function gateCommandLine(
   words: readonly string[],
   shell: string | boolean = wrappedShell(),
   platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
   if (words.length <= 1) return words[0] ?? ''
   if (platform === 'win32' && shell === true) {
     return words.map((w) => {
       if (CMD_PLAIN_WORD.test(w)) return w
-      const quoted = quoteCmdWord(w)
+      const quoted = quoteCmdWord(w, env)
       if (quoted === null)
         throw new GateArgumentRefused(
-          'gate: no Git Bash was found, and cmd.exe cannot pass an argument with %, a line break or a stray ' +
+          'gate: no Git Bash was found, and cmd.exe cannot pass an argument with a defined %NAME%, a line ' +
+          'break or a stray ' +
           'metacharacter whole; install Git for Windows or give one quoted command line',
         )
       return quoted
