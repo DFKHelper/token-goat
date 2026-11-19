@@ -11,7 +11,10 @@ import { claudeHookScriptPath, installHooks, uninstallHooks } from '../src/insta
 // Side-effect import: registers every hook handler before an install narrows its matchers, as cmdInstall does.
 import '../src/relay.js'
 
-const ENV_KEYS = ['CLAUDE_CONFIG_DIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'TOKEN_GOAT_HOME', 'TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] as const
+const ENV_KEYS = [
+  'CLAUDE_CONFIG_DIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME',
+  'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'TOKEN_GOAT_HOME', 'TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS',
+] as const
 
 let saved: Record<string, string | undefined>
 let base: string
@@ -64,7 +67,7 @@ function namesShim(settingsFile: string): boolean {
 }
 
 describe('uninstall keeps the shared shim while another project config still names it', () => {
-  it('a project whose settings.json the user already had: uninstalling the other project leaves the shim', () => {
+  it('a project with its own settings.json: uninstalling the other project leaves the shim', () => {
     const aFile = path.join(projectA, '.claude', 'settings.json')
     fs.mkdirSync(path.dirname(aFile), { recursive: true })
     fs.writeFileSync(aFile, JSON.stringify({ model: 'opus' }))
@@ -78,7 +81,7 @@ describe('uninstall keeps the shared shim while another project config still nam
     expect(namesShim(aFile), 'premise: project A still names the shim').toBe(true)
 
     expect(inProject(projectA, () => uninstallHooks('project'))).toBe(true)
-    expect(fs.existsSync(claudeHookScriptPath()), 'the shim outlived the last project that named it').toBe(false)
+    expect(fs.existsSync(claudeHookScriptPath()), 'the shim outlived the last project naming it').toBe(false)
     expect(JSON.parse(fs.readFileSync(aFile, 'utf8'))).toEqual({ model: 'opus' })
   })
 
@@ -99,7 +102,7 @@ describe('uninstall keeps the shared shim while another project config still nam
     inProject(projectB, () => installHooks('project'))
     fs.writeFileSync(aFile, '{ "hooks": ')
     inProject(projectB, () => uninstallHooks('project'))
-    expect(fs.existsSync(claudeHookScriptPath()), 'the shim went while a recorded config could not be read').toBe(true)
+    expect(fs.existsSync(claudeHookScriptPath()), 'the shim went while a config was unreadable').toBe(true)
   })
 
   it('a second uninstall of the same project does not forget the other project that names the shim', () => {
@@ -110,6 +113,6 @@ describe('uninstall keeps the shared shim while another project config still nam
     inProject(projectB, () => installHooks('project'))
     inProject(projectB, () => uninstallHooks('project'))
     inProject(projectB, () => uninstallHooks('project'))
-    expect(fs.existsSync(claudeHookScriptPath()), 'a repeated uninstall dropped project A\'s reference').toBe(true)
+    expect(fs.existsSync(claudeHookScriptPath()), 'a repeated uninstall dropped A\'s reference').toBe(true)
   })
 })

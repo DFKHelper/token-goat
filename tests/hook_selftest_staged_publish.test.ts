@@ -12,7 +12,9 @@ let dir: string
 let file: string
 
 const config = (command: string): string => JSON.stringify({ hooks: [command] }, null, 2) + '\n'
-const CURRENT = buildGuardedCommand({ shell: 'sh', native: ['/x/tg-hook', 'hook'], safe: '{}', marker: '/x/marker' })
+const CURRENT = buildGuardedCommand({
+  shell: 'sh', native: ['/x/tg-hook', 'hook'], safe: '{}', marker: '/x/marker',
+})
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-selftest-staged-'))
@@ -35,7 +37,8 @@ describe('verifiedInstall probes the commands before it publishes them', () => {
       seen.push(fs.readFileSync(file, 'utf8'))
       return { status: 3, stdout: '', stderr: 'boom' }
     })
-    expect(() => verifiedInstall([file], () => writeConfigText(file, config(CURRENT)))).toThrow(HookSelftestError)
+    expect(() => verifiedInstall([file], () => writeConfigText(file, config(CURRENT))))
+      .toThrow(HookSelftestError)
     expect(seen.length, 'the probe never ran').toBeGreaterThan(0)
     expect(seen.every((s) => s === before), 'the config was published before it was probed').toBe(true)
     expect(fs.readFileSync(file, 'utf8')).toBe(before)
@@ -46,7 +49,8 @@ describe('verifiedInstall probes the commands before it publishes them', () => {
       expect(fs.existsSync(file), 'the new config was published before it was probed').toBe(false)
       return { status: 3, stdout: '', stderr: 'boom' }
     })
-    expect(() => verifiedInstall([file], () => writeIfDifferent(file, config(CURRENT)))).toThrow(HookSelftestError)
+    expect(() => verifiedInstall([file], () => writeIfDifferent(file, config(CURRENT))))
+      .toThrow(HookSelftestError)
     expect(fs.existsSync(file)).toBe(false)
   })
 
@@ -57,7 +61,8 @@ describe('verifiedInstall probes the commands before it publishes them', () => {
       fs.writeFileSync(file, other)
       return { status: 3, stdout: '', stderr: 'boom' }
     })
-    expect(() => verifiedInstall([file], () => writeConfigText(file, config(CURRENT)))).toThrow(HookSelftestError)
+    expect(() => verifiedInstall([file], () => writeConfigText(file, config(CURRENT))))
+      .toThrow(HookSelftestError)
     expect(fs.readFileSync(file, 'utf8')).toBe(other)
   })
 

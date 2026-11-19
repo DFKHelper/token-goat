@@ -51,7 +51,7 @@ describe('doctor auto-repair and embedding model checks', () => {
     fs.writeFileSync(path.join(userHome, '.claude', 'CLAUDE.md'), `${INSTRUCTION_GATE_BEGIN}\nGate body\n${INSTRUCTION_GATE_END}\n`)
     // Step 7 reads the update check from the cache, so no test asks a registry and none changes its result the day npm serves a newer version.
     seedUpdateCheck()
-    // These rows prove what a repair rewrites; the real probe per host is in install_selftest_registered_command.
+    // These rows prove what a repair rewrites; the real probe per host is in the registered-command selftest.
     setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
   })
 

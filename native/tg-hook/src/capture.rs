@@ -256,18 +256,18 @@ mod tests {
         assert_eq!(third, Some(3));
     }
 
-    /// Every test that runs a hang child owns the pidfile named here; tests share one process id and run in parallel.
-    const PIDFILE_TAGS: [&str; 3] = ["red-row", "production-reap", "exec-row"];
-
-    /// The pidfile for the test tagged `tag`: one per test, so one test never removes or overwrites another's.
-    fn pidfile_for(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("tg-cap-{tag}-{}.pid", std::process::id()))
+    /// The pidfile of the calling test, named after its own function path, so no two tests share one.
+    macro_rules! own_pidfile {
+        () => {{
+            fn marker() {}
+            pidfile_for(std::any::type_name_of_val(&marker))
+        }};
     }
 
-    #[test]
-    fn no_two_tests_share_a_pidfile() {
-        let paths: std::collections::HashSet<_> = PIDFILE_TAGS.iter().map(|t| pidfile_for(t)).collect();
-        assert_eq!(paths.len(), PIDFILE_TAGS.len(), "two tests would race on one pidfile");
+    /// Maps a function path to a pidfile name; tests share one process id, so the path is the key.
+    fn pidfile_for(path: &str) -> std::path::PathBuf {
+        let name: String = path.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+        std::env::temp_dir().join(format!("tg-cap-{name}-{}.pid", std::process::id()))
     }
 
     /// Hanging child for the next test: `--ignored --exact <this> pidfile=<path>` writes its pid, then hangs.
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn a_red_hung_route_row_leaves_its_child_killed() {
-        let pidfile = pidfile_for("red-row");
+        let pidfile = own_pidfile!();
         let _ = std::fs::remove_file(&pidfile);
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--ignored", "--exact", "capture::tests::hang_child"])
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn a_hung_route_is_killed_when_exec_times_out() {
-        let pidfile = pidfile_for("exec-row");
+        let pidfile = own_pidfile!();
         // Ends the hung child by its recorded pid however this test ends, so a red row leaves nothing running.
         let _reap = ReapRecordedChild(pidfile.clone());
         let me = std::env::current_exe().unwrap().into_os_string();
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn the_production_reap_leaves_the_child_gone_once_its_pidfile_shows_it_started() {
-        let pidfile = pidfile_for("production-reap");
+        let pidfile = own_pidfile!();
         let _ = std::fs::remove_file(&pidfile);
         let me = std::env::current_exe().unwrap();
         let mut child = Command::new(me).args(["--ignored", "--exact", "capture::tests::hang_child"]).arg(format!("pidfile={}", pidfile.display())).stdout(Stdio::null()).spawn().unwrap();

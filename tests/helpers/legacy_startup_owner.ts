@@ -19,7 +19,7 @@ export function buildLegacyStartupOwner(root: string): string {
   const dispatch = '        #[cfg(windows)]\n        Some("--session-start-owner-v1") => startup_owner::run(&raw[1..]),\n'
   const route = '    if let Some(call) = hook.call.as_ref().filter(|c| startup_entry::is_startup(c)) {\n'
     + '        return startup_entry::run(hook.fallback.clone(), main_start, call, hook.limit);\n    }\n'
-  // The anchors are main.rs text: a main.rs edit that moves one fails here, naming it, not later as a missing binary.
+  // The anchors are main.rs text: an edit that moves one fails here, naming it, not later as a missing binary.
   const missing = (anchor: string): string => `legacy_startup_owner anchor missing from main.rs: ${anchor}`
   expect(text, missing(dispatch)).toContain(dispatch)
   expect(text, missing(route)).toContain(route)
