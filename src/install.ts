@@ -26,7 +26,16 @@ import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 import type { HookEventName } from './types.js'
-import { ensureDirRecordingCreation, recordCreatedBy, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, removeCreatedTree } from './bridges/created_configs.js'
+import {
+  ensureDirRecordingCreation,
+  recordCreatedBy,
+  recordCreatedConfig,
+  recordHookConfig,
+  removeCreatedBackups,
+  removeCreatedIfEmpty,
+  removeCreatedTree,
+  takeHookConfig,
+} from './bridges/created_configs.js'
 import { isReferenced, removeHookTargetFile } from './purge.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
 import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
@@ -489,6 +498,8 @@ function installHooksScoped(scope: HookScope): InstallResult {
     process.stderr.write(`token-goat: left ${p} untouched under hooks.${skippedEvents.join(', hooks.')}: not a list of hook groups, so no token-goat hook was added there. Fix the value and run install again.\n`)
   }
 
+  // Recorded on every run, a created file or not: the shared shim stays while any recorded config names it.
+  recordHookConfig(p)
   if (!settingsChanged && !scriptChanged) {
     return { scope, settingsPath: p, alreadyInstalled: true, ...(skippedEvents.length > 0 ? { skippedEvents } : {}) }
   }
@@ -529,6 +540,7 @@ function uninstallHooksScoped(scope: HookScope): boolean {
   }
 
   const result = finishHookUninstall(p, settings, removed) || removedScript
+  takeHookConfig(p)
   // A settings file left holding `{}`, and the `.claude` directory above it, go only when the ledger says this install created them.
   removeCreatedTree([p])
   return result

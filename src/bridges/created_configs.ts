@@ -121,6 +121,19 @@ export function takeCreatedRootKey(filePath: string, rootKey: string): boolean {
   return takeCreatedConfig(rootKeyMarker(filePath, rootKey))
 }
 
+/** Ledger suffix of the entry naming a settings file that holds token-goat hooks, whoever created the file. */
+export const HOOK_CONFIG_SUFFIX = '#hook-config'
+
+/** Remember that `filePath` holds token-goat hooks, so another project's uninstall keeps their shim. */
+export function recordHookConfig(filePath: string): void {
+  recordCreatedConfig(`${filePath}${HOOK_CONFIG_SUFFIX}`)
+}
+
+/** Forget that `filePath` holds token-goat hook commands; true when it was recorded. */
+export function takeHookConfig(filePath: string): boolean {
+  return takeCreatedConfig(`${filePath}${HOOK_CONFIG_SUFFIX}`)
+}
+
 /** The ledger key for "token-goat changed the setting `key` in `filePath` from a literal `true` to `false`", built like {@link rootKeyMarker}. The prior value is part of the key because it is the only one ever turned off, so uninstall knows what to put back. */
 function turnedOffMarker(filePath: string, key: string): string {
   return `${filePath}#turned-off=${key}:true`

@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { fileIsAbsent } from './fingerprint.js'
-import { readCreatedLedgerStrict } from './bridges/created_configs.js'
+import { HOOK_CONFIG_SUFFIX, readCreatedLedgerStrict } from './bridges/created_configs.js'
 import { HOOKS_CONFIG_FILE } from './bridges/copilot_hooks_owners.js'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { copilotCliUserRoot } from './copilot_home.js'
@@ -291,15 +291,19 @@ export function scanReferences(opts: ScanOptions = {}): ReferenceScan {
     for (const entry of ledger.entries) {
       // A backup is a copy of a config, never a registration, and a directory holds no hook command itself.
       if (entry.includes('.bak.')) continue
+      // A hook-config entry names the settings file it marks, which may be one the user created.
+      const config = entry.endsWith(HOOK_CONFIG_SUFFIX) ? entry.slice(0, -HOOK_CONFIG_SUFFIX.length) : entry
       let isFile: boolean
       try {
-        isFile = fs.statSync(entry).isFile()
+        isFile = fs.statSync(config).isFile()
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code
-        if (code !== 'ENOENT' && code !== 'ENOTDIR') out.ambiguous.push(`${entry} could not be examined (${code ?? 'unknown error'})`)
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+          out.ambiguous.push(`${config} could not be examined (${code ?? 'unknown error'})`)
+        }
         continue
       }
-      if (isFile) visit(entry)
+      if (isFile) visit(config)
     }
   } catch (e) {
     out.ambiguous.push(`the scan failed (${e instanceof Error ? e.message : String(e)})`)
