@@ -69,8 +69,6 @@ beforeEach(() => {
   // Project-scope install resolves against process.cwd() (mirrors install_pi.test.ts's handling of --local); chdir into an isolated project dir so `{ local: true }` writes under {TMP}/project/.github/hooks, never this repo's own .github/.
   fs.mkdirSync(path.join(TMP, 'project'), { recursive: true })
   process.chdir(path.join(TMP, 'project'))
-  // These rows prove what an install writes; the real-shell and failing-self-test rows cover the shells.
-  setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
 })
 
 afterEach(() => {

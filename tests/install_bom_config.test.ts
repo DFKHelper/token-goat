@@ -17,7 +17,6 @@ import { geminiSettingsPath, installGemini, uninstallGemini } from '../src/bridg
 import { installKimi, kimiConfigPath, uninstallKimi } from '../src/bridges/kimi_install.js'
 import { claudeMdPath, installClaudeMd, installHooks, isInstalled, settingsPath, uninstallClaudeMd, uninstallHooks } from '../src/install.js'
 import { checkGlobalMcpConfig } from '../src/cli_doctor_platforms.js'
-import { setHookSelftestRunnerForTesting } from '../src/hook_selftest.js'
 import { hasManagedServer } from '../src/bridges/mcp_servers_json.js'
 import { parseJsonOrJsonc, stripBom } from '../src/jsonc_text.js'
 
@@ -38,12 +37,9 @@ beforeEach(() => {
   process.env['XDG_CONFIG_HOME'] = path.join(fakeHome, '.config')
   process.env['XDG_DATA_HOME'] = path.join(fakeHome, '.local', 'share')
   delete process.env['KIMI_CODE_HOME']
-  // These rows prove how a BOM is read and kept; a real probe of the Copilot shim warns about the runner entry.
-  setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
 })
 
 afterEach(() => {
-  setHookSelftestRunnerForTesting(undefined)
   for (const k of ENV_KEYS) {
     const v = saved[k]
     if (v === undefined) delete process.env[k]

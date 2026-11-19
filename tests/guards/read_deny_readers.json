@@ -65,7 +65,7 @@
     "reason": "own state: host and editor config files the installer or doctor edits, never project files"
   },
   "bridges/created_configs.ts": {
-    "reads": 3,
+    "reads": 5,
     "accessors": 0,
     "reason": "own state: host and editor config files the installer or doctor edits, never project files"
   },

@@ -12,6 +12,8 @@ import { powerShellCommandArgs, resolvePowerShell, resolveWindowsBash } from '..
 // Provenance: HAND-DERIVED. Node's own failure exits are 1 (uncaught error, syntax error), 9, 13 and signals.
 const WIN = process.platform === 'win32'
 const SAFE = '{"safe":true}'
+const NON_ASCII = 'café 日本 \u{1F600}'
+const NON_ASCII_LINES = 'über\n日本\n\u{1F600}'
 
 interface Prog {
   program: string
@@ -44,6 +46,14 @@ const SHIMS: Record<string, string> = {
     "require('fs').writeSync(1, 'stdout noise'); process.kill(process.pid, 'SIGKILL')\n",
   'silent exit 2': 'process.exit(2)\n',
   'exit 2 message only': "process.stderr.write('blocked: message only\\n'); process.exit(2)\n",
+  'exit 2 whitespace stderr': "process.stderr.write(' \\r\\n\\n'); process.exit(2)\n",
+  'exit 2 whitespace stdout': "process.stdout.write('\\n \\r\\n'); process.exit(2)\n",
+  // Provenance: HAND-DERIVED. e-acute, CJK and an emoji; LF-joined lines, no final newline.
+  'non-ascii answer, exit 0':
+    `process.stdout.write(Buffer.from(${JSON.stringify(NON_ASCII)}, 'utf8'))\n`,
+  'non-ascii multi-line answer, exit 2':
+    `process.stdout.write(Buffer.from(${JSON.stringify(NON_ASCII_LINES)}, 'utf8')); ` +
+    "process.stderr.write('blocked\\n'); process.exit(2)\n",
   'exit 2 decision only': "process.stdout.write('{\"d\":\"decision only\"}'); process.exit(2)\n",
   'signal': "process.kill(process.pid, 'SIGKILL')\n",
   'exit 2 block':
@@ -62,7 +72,7 @@ afterAll(() => {
   if (root !== '') fs.rmSync(root, { recursive: true, force: true })
 })
 
-function run(shell: GuardShell, shimText: string | undefined, exeText?: string) {
+function run(shell: GuardShell, shimText: string | undefined, exeText?: string, psPrefix = '') {
   const dir = path.join(root, `c${String(n++)}`)
   fs.mkdirSync(dir)
   const shim = path.join(dir, 'shim.cjs')
@@ -84,24 +94,27 @@ function run(shell: GuardShell, shimText: string | undefined, exeText?: string) 
   const p = prog(shell)!
   const psDir = path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0')
   const shellDirs = [path.dirname(p.program), psDir]
-  const r = spawnSync(p.program, p.args(command), {
+  const r = spawnSync(p.program, p.args(shell === 'powershell' ? psPrefix + command : command), {
     env: { ...process.env, PATH: shellDirs.join(path.delimiter) },
-    encoding: 'utf8',
+    encoding: 'buffer',
     timeout: 60_000,
     windowsHide: true,
     cwd: dir,
-    input: '{}',
+    input: Buffer.from('{}'),
     windowsVerbatimArguments: p.verbatim === true,
   })
-  return { status: r.status, stdout: r.stdout, stderr: r.stderr, marker }
+  const [stdout, stderr] = [r.stdout.toString('utf8'), r.stderr.toString('utf8')]
+  return { status: r.status, stdout, stderr, bytes: r.stdout, marker }
 }
 
 describe('a broken Node shim falls through to the safe answer', () => {
   for (const shell of SHELLS) {
     const broken = [
       'truncated', 'missing entry module', 'exit 13 and stdout noise', 'stdout noise then a signal', 'signal',
-      'silent exit 2',
+      'silent exit 2', 'exit 2 whitespace stdout',
     ]
+    // limit: PowerShell 5.1 (cmd form) wraps blank stderr in an error record; revisit-when it is read
+    if (shell !== 'cmd') broken.push('exit 2 whitespace stderr')
     for (const name of broken) {
       it(`${name} through ${shell}: safe answer, exit 0, empty stderr`, () => {
         const o = run(shell, SHIMS[name])
@@ -132,6 +145,20 @@ describe('a broken Node shim falls through to the safe answer', () => {
         stderr: '',
       })
     })
+    it(`a non-ascii answer reaches the host byte for byte through ${shell}`, () => {
+      const o = run(shell, SHIMS['non-ascii answer, exit 0'])
+      expect({ status: o.status, hex: o.bytes.toString('hex') }).toEqual({
+        status: 0,
+        hex: Buffer.from(NON_ASCII, 'utf8').toString('hex'),
+      })
+    })
+    it(`a non-ascii multi-line block keeps its bytes and lines through ${shell}`, () => {
+      const o = run(shell, SHIMS['non-ascii multi-line answer, exit 2'])
+      expect({ status: o.status, hex: o.bytes.toString('hex') }).toEqual({
+        status: 2,
+        hex: Buffer.from(NON_ASCII_LINES, 'utf8').toString('hex'),
+      })
+    })
     it(`a healthy shim answers through ${shell}`, () => {
       const o = run(shell, SHIMS['healthy'])
       expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
@@ -157,6 +184,15 @@ describe('a broken Node shim falls through to the safe answer', () => {
       })
     })
   }
+  // A console code page that cannot carry the bytes (here 7-bit ASCII) must not alter the route's answer.
+  it.runIf(SHELLS.includes('powershell'))('a non-ascii answer survives a 7-bit console code page', () => {
+    const ascii = '[Console]::OutputEncoding = [Text.Encoding]::ASCII; '
+    const o = run('powershell', SHIMS['non-ascii answer, exit 0'], undefined, ascii)
+    expect({ status: o.status, hex: o.bytes.toString('hex') }).toEqual({
+      status: 0,
+      hex: Buffer.from(NON_ASCII, 'utf8').toString('hex'),
+    })
+  })
   it('runs on at least the sh form', () => {
     expect(SHELLS).toContain('sh')
   })

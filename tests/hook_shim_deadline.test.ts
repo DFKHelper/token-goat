@@ -83,20 +83,53 @@ describe('the Copilot shim answers inside its budget when the resident server ne
   })
 })
 
-/** Starts a shim whose stdin is never written or closed, and resolves with its result once it ends. */
-function runShimWithOpenStdin(script: string, event: string): Promise<Run> {
+// Reports, on fd 3, every setTimeout delay armed by the time the shim starts waiting for the end of stdin.
+const ARMED_REPORT = `const fs = require('node:fs')
+const armed = []
+const realSetTimeout = global.setTimeout
+global.setTimeout = function (fn, ms, ...rest) {
+  armed.push(ms)
+  return realSetTimeout.call(this, fn, ms, ...rest)
+}
+const realOn = process.stdin.on
+process.stdin.on = function (name, ...rest) {
+  if (name === 'end') fs.writeSync(3, JSON.stringify(armed))
+  return realOn.call(this, name, ...rest)
+}
+`
+
+/**
+ * Starts a shim whose stdin is never written or closed. `armed`: the timer delays set before the shim waited
+ * on stdin (empty if it ended first); `ended`: its result, or a rejection on abort.
+ */
+function startShimWithOpenStdin(script: string, event: string, signal: AbortSignal) {
   const shim = path.join(dir, 'shim.cjs')
+  const report = path.join(dir, 'armed-report.cjs')
   fs.writeFileSync(shim, script)
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [shim, event, stalledDist()], { stdio: ['pipe', 'pipe', 'pipe'] })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+  fs.writeFileSync(report, ARMED_REPORT)
+  const child = spawn(process.execPath, ['--require', report, shim, event, stalledDist()], {
+    stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+  })
+  openChildren.push(child)
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+  const closed = new Promise<Run>((resolve, reject) => {
     child.on('error', reject)
     child.on('close', (status) => resolve({ status, stdout, stderr }))
-    openChildren.push(child)
   })
+  const reported = new Promise<number[]>((resolve) => {
+    child.stdio[3]!.once('data', (chunk: Buffer) => { resolve(JSON.parse(chunk.toString('utf8')) as number[]) })
+  })
+  // The framework's own per-test bound aborts `signal`: no clock of this test's is involved.
+  const unbounded = new Promise<never>((_resolve, reject) => {
+    signal.addEventListener('abort', () => {
+      reject(new Error('the shim never ended while its stdin stayed open: its stdin read is unbounded'))
+    }, { once: true })
+  })
+  const armed = Promise.race([reported, closed.then((): number[] => [])])
+  return { child, armed, ended: Promise.race([closed, unbounded]) }
 }
 
 const openChildren: ChildProcess[] = []
@@ -106,13 +139,18 @@ afterEach(() => {
 })
 
 describe('the shim answers inside its budget when the host never closes stdin', () => {
-  it.each([
+  it.for([
     ['claudecode', CLAUDECODE_HOOK_SCRIPT, '{}'],
     ['codex', CODEX_HOOK_SCRIPT, '{}'],
     ['grok', GROK_HOOK_SCRIPT, '{"decision":"allow"}'],
     ['kimi', KIMI_HOOK_SCRIPT, ''],
-  ])('%s: the safe answer, exit 0, nothing on stderr', async (_name, script, safe) => {
-    const run = await runShimWithOpenStdin(withBudget(script, 400), 'pre_tool_use')
+  ])('%s: the safe answer, exit 0, nothing on stderr', async ([, script, safe], { signal }) => {
+    const { child, armed, ended } = startShimWithOpenStdin(withBudget(script, 400), 'pre_tool_use', signal)
+    const delays = await armed
+    const bounded = delays.some((ms) => ms <= 400)
+    expect(bounded, `its stdin read is unbounded: timers armed ${JSON.stringify(delays)}`).toBe(true)
+    const run = await ended
+    expect(child.stdin.writableEnded, 'the shim ended on its own bound, not on a closed stdin').toBe(false)
     expect(run).toEqual({ status: 0, stdout: safe, stderr: '' })
   })
 })

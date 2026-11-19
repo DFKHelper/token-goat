@@ -53,6 +53,21 @@ describe('a launcher-carried check', () => {
     ).toBe(false)
   })
 
+  // Ruling: a switch directly followed by a check is launcher-carried; a switch value between them is not.
+  it('a switch directly followed by a check, passing, clears the failure', () => {
+    expect(
+      failureStandsAfter(() => noteVerificationRun('python notes.py --note npm test', 0, false)),
+      'a switch directly before the check did not carry it',
+    ).toBe(false)
+  })
+
+  it('a switch value between the switch and the check, passing, does not clear the failure', () => {
+    expect(
+      failureStandsAfter(() => noteVerificationRun('python x.py --timeout 5 npm test', 0, false)),
+      'a switch value was guessed away and the check taken as carried',
+    ).toBe(true)
+  })
+
   it('the same line failing records nothing, from the failure event', () => {
     const sid = key()
     inSession(sid, () => noteFailedVerificationRun(LAUNCHED, 'Exit code 1', false))

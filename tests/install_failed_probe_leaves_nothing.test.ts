@@ -17,9 +17,13 @@ vi.mock('node:os', async (importOriginal) => {
 
 import * as os from 'node:os'
 
-import { copilotCliUserHooksDir, installCopilotHooksFile } from '../src/bridges/copilot_cli_install.js'
+import {
+  copilotCliUserHooksDir, copilotHooksOwnersPath, HOOKS_SCRIPT_FILE, installCopilotHooksFile,
+} from '../src/bridges/copilot_cli_install.js'
 import { recordCreatedConfig } from '../src/bridges/created_configs.js'
-import { installKimi, kimiConfigPath, kimiHookScriptPath } from '../src/bridges/kimi_install.js'
+import {
+  installKimi, kimiAgentsPath, kimiConfigPath, kimiHookScriptPath, kimiSkillPath,
+} from '../src/bridges/kimi_install.js'
 import { cmdInstall } from '../src/cli_install.js'
 import { dataDir } from '../src/constants.js'
 import { HookSelftestError, setHookSelftestRunnerForTesting } from '../src/hook_selftest.js'
@@ -138,6 +142,40 @@ describe('a Copilot hooks file whose hooks fail their probe', () => {
     expect(() => installCopilotHooksFile(copilotCliUserHooksDir(), 'copilot')).toThrow(HookSelftestError)
     expect(tree(TMP)).toEqual(before)
     expect(ledger()).toEqual(ledgerBefore)
+  })
+})
+
+describe('a failed probe puts back every file the install overwrote', () => {
+  // Fixture provenance: HAND-DERIVED; the earlier bytes are written here, so equality proves the restore.
+  const seed = (file: string, text: string): void => {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, text)
+  }
+
+  it('Kimi: shim, skill and AGENTS.md hold their earlier bytes, and what it created is gone', () => {
+    const earlier = new Map([
+      [kimiHookScriptPath(), '// earlier working shim\n'],
+      [kimiSkillPath(), 'earlier skill\n'],
+      [kimiAgentsPath(), 'my notes\n<!-- token-goat-kimi-begin -->\nold block\n<!-- token-goat-kimi-end -->\n'],
+    ])
+    for (const [file, text] of earlier) seed(file, text)
+    failProbe()
+    expect(() => installKimi()).toThrow(HookSelftestError)
+    for (const [file, text] of earlier) expect(fs.readFileSync(file, 'utf8'), file).toBe(text)
+    expect(fs.existsSync(kimiConfigPath()), 'the config this install would create').toBe(false)
+  })
+
+  it('Copilot: shim and owners file hold their earlier bytes, and the config it created is gone', () => {
+    const hooksDir = copilotCliUserHooksDir()
+    const earlier = new Map([
+      [path.join(hooksDir, HOOKS_SCRIPT_FILE), '// earlier working shim\n'],
+      [copilotHooksOwnersPath(hooksDir), 'vscode\n'],
+    ])
+    for (const [file, text] of earlier) seed(file, text)
+    failProbe()
+    expect(() => installCopilotHooksFile(hooksDir, 'copilot')).toThrow(HookSelftestError)
+    for (const [file, text] of earlier) expect(fs.readFileSync(file, 'utf8'), file).toBe(text)
+    expect(fs.existsSync(path.join(hooksDir, 'token-goat.json')), 'the config it would create').toBe(false)
   })
 })
 

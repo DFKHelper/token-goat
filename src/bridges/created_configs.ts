@@ -231,7 +231,7 @@ export function recordCreatedBy<T>(targets: readonly string[], work: () => T): T
 }
 
 /** On a throw, undo what `work` alone made (absent targets and parent dirs, new backups, ledger entries). */
-// A file that was already there stays with its entry, and the error is rethrown as it was.
+// A file already there stays with its entry and earlier bytes; the error is rethrown as it was.
 // limit: a file a concurrent install creates meanwhile is undone too; revisit-when: installs overlap by design
 export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => T): T {
   const absent = new Set<string>()
@@ -240,9 +240,11 @@ export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => 
   }
   const recordedBefore = new Set([...absent, ...targets.map((t) => path.resolve(t))].filter(hasCreatedConfig))
   const backupsBefore = new Set(targets.flatMap(createdBackupsFor))
+  const earlier = earlierBytes(targets)
   try {
     return work()
   } catch (error) {
+    undoQuietly(() => restoreEarlierBytes(earlier))
     undoQuietly(() => {
       for (const p of [...absent].sort((a, b) => b.length - a.length)) {
         if (!fs.existsSync(p)) continue
@@ -260,6 +262,29 @@ export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => 
       if (!recordedBefore.has(p)) undoQuietly(() => void takeCreatedConfig(p))
     }
     throw error
+  }
+}
+
+/** The bytes of each of `targets` that is a plain file now, so a failed install can put them back. */
+function earlierBytes(targets: readonly string[]): Map<string, Buffer> {
+  const earlier = new Map<string, Buffer>()
+  for (const target of targets) {
+    const p = path.resolve(target)
+    try {
+      if (fs.lstatSync(p).isFile()) earlier.set(p, fs.readFileSync(p))
+    } catch {
+      // Absent or unreadable: nothing to put back, and an absent target is removed by the caller.
+    }
+  }
+  return earlier
+}
+
+/** Write back each file in `earlier` whose bytes changed; a failure on one leaves the rest to try. */
+function restoreEarlierBytes(earlier: ReadonlyMap<string, Buffer>): void {
+  for (const [p, bytes] of earlier) {
+    undoQuietly(() => {
+      if (!fs.existsSync(p) || !fs.readFileSync(p).equals(bytes)) fs.writeFileSync(p, bytes)
+    })
   }
 }
 

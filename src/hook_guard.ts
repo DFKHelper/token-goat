@@ -73,7 +73,10 @@ function quoteWord(shell: GuardShell, text: string): string {
 // itself in a hook command, so the temp files are parameters 1 and 2.
 const SH_RM_ERR = '[ ! -f "$1" ] || rm -f "$1"; [ ! -f "$2" ] || rm -f "$2"'
 const SH_REPLAY = `cat "$1" >&3; [ -z "$2" ] || cat "$2" >&4; ${SH_RM_ERR}`
-const SH_SPOKE = '[ -s "$1" ] || [ -s "$2" ] || [ "$1" = /dev/null ]'
+const SH_WORDS = `[ -n "$(tr -d '[:space:]' <"$1" 2>/dev/null)" ] || ` +
+  `{ [ -n "$2" ] && [ -n "$(tr -d '[:space:]' <"$2" 2>/dev/null)" ]; }`
+// Whitespace-only output is no message (Rust judge and PS_SPOKE trim too); `tr` runs on the exit-2 path only.
+const SH_SPOKE = `{ ${SH_WORDS}; } || [ "$1" = /dev/null ]`
 const SH_CLEAR = ': >"$1"; [ -z "$2" ] || : >"$2"'
 const CASE_SH =
   `case $? in 0) ${SH_REPLAY}; exit 0;; 2) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ${SH_CLEAR};; ` +
@@ -95,7 +98,10 @@ const PS_REPLAY = `[Console]::Error.Write([IO.File]::ReadAllText(${PS_ERR_FILE})
 
 // A route's stdout lines are held in a variable (no $NAME word) and written only once its exit is accepted.
 const PS_OUT_SINK = ['|', 'Tee-Object', '-Variable', 'tgo', '|', 'Out-Null']
-const PS_OUT_CLEAR = 'Remove-Variable tgo -ErrorAction Ignore'
+// Latin-1 maps every byte to one char and back, so the route's stdout bytes are replayed as they were written.
+const PS_BYTE_ENCODING = '[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(28591)'
+const PS_OUT_CLEAR = `Remove-Variable tgo -ErrorAction Ignore; ${PS_BYTE_ENCODING}`
+// limit: PowerShell splits stdout into lines, so CR and a final newline are lost; revisit-when one is needed
 const PS_OUT = '((Get-Variable tgo -ValueOnly -ErrorAction Ignore) -join [char]10)'
 const PS_REPLAY_OUT = `[Console]::Out.Write(${PS_OUT})`
 // Exit 2 counts as a block only when it speaks: a message on stderr or a decision on stdout.
