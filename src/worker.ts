@@ -23,7 +23,7 @@ import { configProjectRootFor, loadConfig, withConfigProjectRoot } from './confi
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex, pruneDeletedFiles, sweepKnownRoots } from './index_prune.js'
-import { readDenial } from './read_deny.js'
+import { indexVerdict } from './read_deny.js'
 import { recordKnownRootThrottled, sweepExpiredKnownRootMarkers } from './known_roots.js'
 import { reclaimIndex, walCheckpointBusyNoWait } from './index_reclaim.js'
 import { applyIndexingPriority } from './process_priority.js'
@@ -459,13 +459,16 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string, stam
         removeFileFromIndex(getDb(dbPath), absPath)
         return true
       }
-      // Ruling 78: a host-denied file is never indexed (a failed check counts as denied).
+      // Ruling 78: a host-denied file is never indexed and its rows are purged.
       const deniedRoot = embedPolicy(absPath).configRoot
       const honor = loadedCfg.reads?.honor_host_deny !== false
-      if (readDenial(absPath, { cwd: deniedRoot, projectDir: deniedRoot, enabled: honor }) !== null) {
+      const verdict = indexVerdict(absPath, { cwd: deniedRoot, projectDir: deniedRoot, enabled: honor })
+      if (verdict === 'denied') {
         removeFileFromIndex(getDb(dbPath), absPath)
         return true
       }
+      // A check that could not run says nothing about the file: keep its rows and retry through the requeue.
+      if (verdict === 'unknown') return INDEX_FAILED
       // Same reason as the identical call in cli.ts's cmdIndex: files.embed_sha encodes the content but not the embedding stack that produced the vectors, so the gate below reads a file embedded by a previous model or inference runtime as fresh and returns "nothing to do". ensureEmbeddingProvenance owns that input and is the only thing that can re-open the decision. It has to run before getFileEntry below, not beside the gate that consults the result: the reset clears each affected file's embed_sha, and once `entry` holds a row that clearing can no longer be seen. Memoized per database per process, so this costs one Set lookup per drained file after the first. embeddingsEnabled/depsAvailable are hoisted here from beside the gate for the same ordering reason; see their comments there. The file's own project decides whether it is embedded, by the rule `token-goat index` uses too (see embedPolicyResolver), never the daemon's working directory, which is the temp directory (see runDetachedWorkerDaemon). The other indexing keys this function reads through loadConfig() with no root, `max_chunks_per_file` just below among them, are right from any root only because each is in PROJECT_LOCKED_KEYS, so no project file can set one; a key a project may set has to be read from `configRoot`.
       const { configRoot, embeddingsEnabled } = embedPolicy(absPath)
       const depsAvailable = embeddingsEnabled && embeddingsDepsAvailable(getDb(dbPath))

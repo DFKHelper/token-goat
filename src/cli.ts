@@ -5,7 +5,7 @@ import { spawnSync } from 'child_process'
 import * as fs from 'fs'
 // Type-only imports: erased at compile time, so referencing them here does not eagerly load mcp_server.js (and transitively the whole MCP protocol layer and zod) at CLI startup. The runtime values are lazy-imported only inside cmdMcpServe.
 import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
-import { assertReadAllowed, readDenial } from './read_deny.js'
+import { assertReadAllowed, indexVerdict } from './read_deny.js'
 import type { StdioServerTransport as StdioServerTransportClass } from './mcp_stdio.js'
 
 import { buildProjectMap, formatProjectMap, mapLookupBytesSaved, MAX_FILES_SCANNED } from './baseline.js'
@@ -379,12 +379,15 @@ export async function cmdIndex(
       removeFileFromIndex(getDb(dbPath), key)
       continue
     }
-    // Ruling 78: a host-denied file is never indexed (a failed check counts as denied); its rows are purged.
+    // Ruling 78: a host-denied file is never indexed and its rows are purged.
     const deniedRoot = embedPolicy(key).configRoot
-    if (readDenial(key, { cwd: deniedRoot, projectDir: deniedRoot }) !== null) {
+    const verdict = indexVerdict(key, { cwd: deniedRoot, projectDir: deniedRoot })
+    if (verdict === 'denied') {
       removeFileFromIndex(getDb(dbPath), key)
       continue
     }
+    // A check that could not run says nothing about the file: skip it this round, keep its rows.
+    if (verdict === 'unknown') continue
     // Stat and clock before the hash, so a clean proof below is recorded under the mtime the hashed bytes carried and an index time no later than the hash (see readPreHashStamp).
     const stamp = readPreHashStamp(key)
     // Mirror worker.ts's makeIndexer sha gate here: a bulk `token-goat index` run previously called indexFileSync (and re-chunked/re-embedded via indexFileEmbeddings) unconditionally for every tracked file on every invocation, even ones byte-identical to what was already indexed. fingerprintFile returning null (a transient read failure/race) is treated as "not unchanged" so the file still gets a normal reindex attempt below. Parse and embed freshness are gated independently (embed_sha vs sha), matching makeIndexer, so a file whose embedding previously failed still gets re-embedded even when its parse is current. --force bypasses both freshness checks unconditionally -- e.g. after a parser.ts extraction-logic change, every already-indexed file's SHA is untouched and stale symbols/refs would otherwise never get recomputed until each file happens to be edited.

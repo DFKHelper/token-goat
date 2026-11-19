@@ -246,7 +246,6 @@ describe('N12: skill-diff checks the stored source path at print time', () => {
       const sourcePath = join(proj, dir, 'SKILL.md')
       writeFileSync(sourcePath, 'x')
       await storeOutput('s1', `${dir}skill`, `# D\nold ${marker}\n`, { sourcePath })
-      await new Promise((resolve) => setTimeout(resolve, 5))
       await storeOutput('s1', `${dir}skill`, `# D\nnew ${marker}\n`, { sourcePath })
     }
     const denied = await runCli(['skill-diff', 'lockedskill'])

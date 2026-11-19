@@ -4,7 +4,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
-import { assertReadAllowed, ReadDeniedError } from './read_deny.js'
+import { assertReadAllowed, indexVerdict, ReadDeniedError } from './read_deny.js'
+import { removeFileFromIndex } from './index_prune.js'
 import { querySymbols, queryRefCounts, getFileEntry } from './index_reader.js'
 import { indexedSourceText, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
 import { sourceLines } from './source_lines.js'
@@ -18,7 +19,7 @@ import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { dataDir, globalDbPath } from './constants.js'
 import { recordKnownRootThrottled } from './known_roots.js'
 import { LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
-import { isReadOnlyDb } from './db.js'
+import { getDb, isReadOnlyDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { decodeSource, runGit, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, countNoun, requirePositiveStrictInt } from './util.js'
 import { renderContextWindow } from './util_context.js'
@@ -206,10 +207,26 @@ function verifyPin(p: string, pinned: string): void {
   verifyPinnedIdentity(p, pinned)
 }
 
+/** Refuses a denied file with no index rows (else a lookup says not-found); rows are filtered at print. */
+export function refuseDeniedUnindexed(resolvedPath: string): void {
+  try {
+    assertReadAllowed(resolvedPath)
+  } catch (err) {
+    if (err instanceof ReadDeniedError && getFileEntry(resolvedPath) === null) throw err
+  }
+}
+
 /** Pin-aware wrapper around `indexFileSync`, used by every read-command call site that can trigger a mid-request reindex (healStaleIndex's self-heal, and each command's `--force-refresh`). Without this wrapper, `indexFileSync` opens `resolvedPath` with its own independent `fs.readFileSync`, which never consults `activePins` -- an MCP caller's confinement pin, validated once against the path before the read command runs, is silently bypassed the moment a stale-index heal or forced reindex kicks in, so a path swapped (e.g. an in-root symlink repointed) between validation and that reindex is never caught. When a pin exists for `resolvedPath`, this verifies it via the same fstat-identity check `readFileBytes` uses (a ConfinementIdentityError propagates up exactly like every other pinned read), then hands the already-verified bytes straight into `indexFileSync` so it never reopens the path itself. With no active pin (every CLI caller, and every MCP call with confinement disabled), this is byte-for-byte the pre-existing behavior: indexFileSync does its own read. */
 export function indexFileSyncPinned(resolvedPath: string, dbPath: string): void {
   // A read-only index cannot take the reparse, whether a heal or `--force-refresh` asked for it; the caller's staleWarning says the rows are old instead.
   if (isReadOnlyDb(dbPath)) return
+  // Ruling 78: a host-denied file is never indexed, and its stored rows go; unknown touches nothing.
+  const verdict = indexVerdict(resolvedPath)
+  if (verdict === 'denied') {
+    removeFileFromIndex(getDb(dbPath), resolvedPath)
+    return
+  }
+  if (verdict === 'unknown') return
   // A heal triggered by a read can be the only thing that ever indexes a project, so register its root here too rather than relying on a later edit or bulk walk. See recordKnownRootThrottled.
   recordKnownRootThrottled(resolvedPath, dataDir(), dbPath)
   const pinned = activePins?.get(pinKey(path.resolve(resolvedPath)))

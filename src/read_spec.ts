@@ -12,6 +12,7 @@ import { redactReadJson, redactReadText } from './fence_cap.js'
 import { expandSpecPath, resolveSpecPath } from './spec_path.js'
 import { findProject, getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, indexFreshness, readFileText, readRedactedFileText, recordStaleServed, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
+import { refuseDeniedUnindexed } from './read_commands.js'
 import { emitErr } from './emit.js'
 import { assertReadAllowed, ReadDeniedError } from './read_deny.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
@@ -493,6 +494,8 @@ export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectR
   const symbol = stripHtmlIdSpelling(anchorSymbol, resolved)
   const confined = fileConfinementRefusal('This file', file, projectRoot)
   if (confined !== null) return { kind: 'confined', message: confined }
+  // A denied file is never indexed (Ruling 78), so refuse here rather than report its symbol as missing.
+  refuseDeniedUnindexed(resolved)
   if (forceRefresh === true) {
     indexFileSyncPinned(resolved, globalDbPath())
     enqueueDirtyPathSafe(resolved, { alreadyResolved: true })

@@ -12,9 +12,12 @@ import type { PermissionRule, PermissionSnapshot } from './rewrite_permission.js
 export class ReadDeniedError extends CliError {
   override readonly prefix = '[tg] '
   override readonly jsonEnvelope = true
-  constructor(message: string) {
+  /** True when the refusal is a failed check (unreadable or malformed settings), not a rule that matched. */
+  readonly couldNotCheck: boolean
+  constructor(message: string, couldNotCheck = false) {
     super(message)
     this.name = 'ReadDeniedError'
+    this.couldNotCheck = couldNotCheck
   }
 }
 
@@ -355,6 +358,7 @@ export function assertReadAllowed(target: string, ctx: ReadDenyContext = {}): vo
   if (compiled.failure !== null) {
     throw new ReadDeniedError(
       `read refused: ${target}: ${compiled.failure}; fix that setting or set reads.honor_host_deny to false`,
+      true,
     )
   }
   if (compiled.groups.length === 0) return
@@ -374,6 +378,20 @@ export function readDenial(target: string, ctx: ReadDenyContext = {}): string | 
   } catch (err) {
     if (err instanceof ReadDeniedError) return err.message
     return `read refused: ${target}: the Read rules could not be checked`
+  }
+}
+
+/** What an indexer may do with `target`: index it, drop its rows (denied), or skip it (unknown). */
+export type IndexVerdict = 'allowed' | 'denied' | 'unknown'
+
+/** Splits readDenial's refusal in two: a matched rule is `denied`, a check that could not run is `unknown`. */
+export function indexVerdict(target: string, ctx: ReadDenyContext = {}): IndexVerdict {
+  try {
+    assertReadAllowed(target, ctx)
+    return 'allowed'
+  } catch (err) {
+    if (err instanceof ReadDeniedError && !err.couldNotCheck) return 'denied'
+    return 'unknown'
   }
 }
 
