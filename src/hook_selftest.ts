@@ -250,6 +250,19 @@ function flagValue(argv: readonly string[], flag: string): string | undefined {
   return i < 0 ? undefined : argv[i + 1]
 }
 
+// CAPTURE: both forms printed by Node 22 on a run of this suite; the hint names whichever --trace-* flag fits.
+const NODE_WARNING_LINE = /^\(node:\d+\) (?:\[[A-Z0-9_]+\] )?\w*Warning: .+$/
+const NODE_WARNING_HINT = /^\(Use `node --trace-[a-z-]+ \.\.\.` to show where the warning was created\)$/
+
+/** Stderr without Node's own process-warning lines, which the host's NODE_OPTIONS can add to a healthy hook. */
+function withoutNodeWarnings(stderr: string): string {
+  return stderr
+    .split(/\r?\n/)
+    .filter((line) => !NODE_WARNING_LINE.test(line.trim()) && !NODE_WARNING_HINT.test(line.trim()))
+    .join('\n')
+    .trim()
+}
+
 /** Host-accepted `stdout`: JSON objects per line (async events send `{"async":true}` first), or empty. */
 function validAnswer(harness: string | undefined, event: string, stdout: string, safe: string): boolean {
   const lines = stdout.split(/\r?\n/).filter((l) => l.trim() !== '')
@@ -347,8 +360,8 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
       const problem = (run: ShellRun, route: string): string | undefined =>
         run.status !== 0
           ? `${label} (${route}): exit ${String(run.status)}: ${run.stderr.trim().slice(0, 300)}`
-          : run.stderr.trim() !== ''
-            ? `${label} (${route}): wrote to stderr: ${run.stderr.trim().slice(0, 300)}`
+          : withoutNodeWarnings(run.stderr) !== ''
+            ? `${label} (${route}): wrote to stderr: ${withoutNodeWarnings(run.stderr).slice(0, 300)}`
             : validAnswer(harness, event, run.stdout, parsed.safe)
               ? undefined
               : `${label} (${route}): not a valid answer: ${run.stdout.trim().slice(0, 200)}`
