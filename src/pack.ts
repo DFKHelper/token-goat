@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as minimatch from 'minimatch'
 import { redactIfDotenv } from './dotenv_redact.js'
+import { noteOmitted, readDenial } from './read_deny.js'
 import { statThroughHandle } from './handle_stat.js'
 import { decodeSource, countContentLines, countNoun } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
@@ -362,6 +363,13 @@ export function collectFiles(
 
   for (const { p, rel, fd, stat } of resolveOpenCandidates(projectRoot, patterns, rootReal, opts.ignore_patterns, seen, result.skipped)) {
     try {
+      // A denied file is skipped before its bytes are read; one omitted line names path and rule, never text.
+      const denial = readDenial(p)
+      if (denial !== null) {
+        noteOmitted(denial)
+        result.skipped.push(`${rel} (denied by the host Read rules)`)
+        continue
+      }
       const size = stat.size
       if (size > maxFileBytes) {
         result.skipped.push(`${rel} (too large: ${Math.floor(size / 1024)}KB)`)

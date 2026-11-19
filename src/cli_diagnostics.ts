@@ -22,6 +22,9 @@ import {
 import { findProject } from './project.js'
 import { sourceLines } from './source_lines.js'
 import { DEFAULT_FAILURES_STATE_KEY, loadFailureSnapshot, saveFailureSnapshot } from './failures_state.js'
+import { DEFAULT_TIMEOUT_SECONDS, run } from './bash_runner.js'
+import { redactSecrets } from './secret_redact.js'
+import { assertReadAllowed } from './read_deny.js'
 
 export function cmdCoverageReportGaps(file: string, opts: { file?: string; json?: boolean }): void {
   process.exitCode = runCoverageReportGaps({
@@ -141,6 +144,7 @@ export function cmdPack(
   }
   let instruction: string | undefined
   if (opts.instructionFile !== undefined) {
+    assertReadAllowed(opts.instructionFile)
     instruction = fs.readFileSync(opts.instructionFile, 'utf8')
   }
   const formatted = formatPack(result, style, {
@@ -229,6 +233,7 @@ export function cmdFailures(
   src: string | undefined,
   opts: { runner?: string; json?: boolean; delta?: boolean; key?: string },
 ): void {
+  if (src !== undefined) assertReadAllowed(src)
   const text = src !== undefined ? fs.readFileSync(src, 'utf8') : fs.readFileSync(0, 'utf8')
   const result = extractFailures(text, opts.runner !== undefined ? { runner: opts.runner } : {})
 
@@ -248,4 +253,111 @@ export function cmdFailures(
   const delta = computeFailureDelta(prior?.signatures ?? null, signatures)
   saveFailureSnapshot(project.hash, key, { signatures, runner: result.runner, storedAt: Date.now() })
   out(opts.json === true ? formatFailureDeltaJson(delta, result.runner) : formatFailureDeltaText(delta, result.runner))
+}
+
+/** Exit status for every outcome that is not a pass: a failing, timed-out, killed or unstartable command. */
+export const GATE_FAIL_EXIT = 2
+
+/** Lines of wrapped output printed when no test-runner failure format parses. */
+export const GATE_TAIL_LINES = 20
+
+/** Named filter that leaves the output unchanged, so the failure parser reads what the command printed. */
+const GATE_FILTER = 'passthrough'
+
+export interface GateOptions {
+  /** Wall-clock limit for the wrapped command, in seconds; the runner kills the whole tree on expiry. */
+  timeout?: number
+}
+
+/** Run `command` and return the gate verdict: 0 when it exits 0, GATE_FAIL_EXIT for any other outcome. */
+export async function runGate(command: string, options: GateOptions = {}): Promise<number> {
+  if (command.trim() === '') {
+    process.stderr.write('usage: token-goat gate -- <command>\n')
+    return GATE_FAIL_EXIT
+  }
+  const captured: string[] = []
+  const capture = (chunk: string): void => {
+    captured.push(chunk)
+  }
+  let code: number
+  try {
+    code = await run(command, {
+      filterName: GATE_FILTER,
+      timeout: options.timeout ?? DEFAULT_TIMEOUT_SECONDS,
+      writeStdout: capture,
+      writeStderr: capture,
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    process.stderr.write(`gate: could not run the command (${displaySafeText(redactSecrets(message).text)})\n`)
+    return GATE_FAIL_EXIT
+  }
+  if (code === 0) return 0
+  // One redaction feeds both the failing test name and the output tail.
+  process.stderr.write(failureReport(code, redactSecrets(captured.join('')).text))
+  return GATE_FAIL_EXIT
+}
+
+/** Stderr lines for a failed run: the first failing test if the output parses, else exit code and tail. */
+function failureReport(code: number, output: string): string {
+  const [first] = extractFailures(output).blocks
+  if (first !== undefined) {
+    return `gate: failed (exit ${code}); first failing test: ${displaySafeText(first.name)}\n`
+  }
+  const tail = output.trimEnd().split('\n').slice(-GATE_TAIL_LINES)
+  return `gate: failed (exit ${code}); last ${tail.length} lines of output:\n${tail.join('\n')}\n`
+}
+
+/** Read-only: edits no file, runs no program, changes no config, note, memory or index. Unsure: not listed. */
+export const READ_ONLY_COMMANDS: readonly string[] = [
+  'csv-profile', 'csv-query', 'html-outline', 'html-query', 'json-outline', 'json-query', 'permissions suggest',
+  'version', 'xml-outline', 'xml-query', 'yaml-outline', 'yaml-query', 'zip-list', 'zip-read',
+]
+
+/** Not read-only: a write, a program run, a network fetch, a config or note change, or an unverified read. */
+export const NOT_READ_ONLY_COMMANDS: readonly string[] = [
+  'arch', 'baseline', 'bash-history', 'bash-output', 'bridges-status', 'brief', 'budget', 'call-chain',
+  'callers', 'capabilities', 'commands', 'compact-hint', 'context-for', 'cost', 'coverage-gaps',
+  'coverage-report-gaps', 'dead', 'deps', 'describe', 'docx-outline', 'docx-tables', 'docx-text', 'exports',
+  'failures', 'find', 'grep', 'history', 'hot', 'ignores', 'image-diff', 'image-meta', 'impact', 'imports',
+  'listing-size', 'locate', 'lockdeps', 'logfold',
+  'manifest-sweep', 'map', 'mcp-history', 'mcp-output', 'mcp-status', 'note-get', 'note-list', 'openapi-op',
+  'openapi-outline', 'outline', 'peek', 'pdf-meta', 'pdf-outline', 'permissions', 'pptx-notes', 'pptx-outline',
+  'pptx-slide', 'pptx-text', 'read', 'recall', 'recent', 'refs', 'resume', 'scope', 'search', 'section',
+  'semantic', 'session-outline', 'session-schema', 'session-slice', 'session-summary', 'similar', 'skeleton',
+  'skill-body', 'skill-diff', 'skill-history', 'skill-list', 'skill-section', 'stats', 'statusline', 'symbol',
+  'test-for', 'todo', 'trace', 'transcript', 'transcript-outline', 'types', 'web-history', 'web-output',
+  'xlsx-columns', 'xlsx-head',
+  'xlsx-query', 'xlsx-range', 'xlsx-sheets', 'tokens',
+  'affected', 'answer', 'ask', 'audit', 'blame', 'bench', 'bootstrap-audit', 'cache-audit', 'changed',
+  'clean-cache', 'compact-doc', 'compress', 'compress-text', 'config', 'context-stats', 'diff',
+  'dep-docs', 'doctor',
+  'fetch-image', 'gate', 'gdrive-sections', 'handoff-create', 'handoff-resolve', 'hint-stats',
+  'hook', 'hook-server', 'image-slice', 'image-text', 'importers', 'index', 'insert-section', 'install', 'log',
+  'mcp-audit', 'mcp-serve', 'memory', 'note', 'note-add', 'pack', 'pdf-extract', 'pdf-locate', 'php-lint',
+  'pr-slice', 'project', 'prune-cache', 'reclaim-index', 'reconcile', 'replace', 'retrieve', 'screenshot',
+  'session-audit', 'sharepoint-resolve', 'skill-compact', 'skill-size', 'sqlite-query', 'sqlite-schema',
+  'sqlite-tables', 'uninstall', 'upgrade', 'video-chapters', 'waste', 'worker', 'write-file',
+  'conflicts', 'html-lint',
+  'worker start', 'worker stop', 'worker status', 'hook-server run', 'hook-server status', 'hook-server stop',
+  'config-get',
+]
+
+/** Never listed: each writes, runs a program or changes settings, whatever the tables above say. */
+export const WRITE_CAPABLE_COMMANDS: readonly string[] = [
+  'index', 'install', 'uninstall', 'upgrade', 'doctor', 'gate', 'compress', 'pack', 'memory', 'config',
+  'note', 'project', 'write-file', 'replace', 'insert-section', 'clean-cache', 'prune-cache',
+  'reclaim-index', 'hook',
+]
+
+/** Names among `registered` in neither table: each is a command added without a read-only decision. */
+export function unclassifiedCommands(registered: readonly string[]): string[] {
+  const known = new Set([...READ_ONLY_COMMANDS, ...NOT_READ_ONLY_COMMANDS])
+  return registered.filter((name) => !known.has(name))
+}
+
+/** Settings fragment: one space-wildcard Bash allow rule per read-only command. */
+export function permissionSuggestionJson(): string {
+  const allow = [...READ_ONLY_COMMANDS].sort().map((name) => `Bash(token-goat ${name} *)`)
+  return `${JSON.stringify({ permissions: { allow } }, null, 2)}\n`
 }

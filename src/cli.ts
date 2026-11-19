@@ -58,6 +58,7 @@ import { registerIntegrationCommands } from './cli_cmd_integrations.js'
 import { registerDiagnosticCommands } from './cli_cmd_diagnostics.js'
 import { registerFormatCommands } from './cli_cmd_formats.js'
 import { registerAnalysisCommands } from './cli_cmd_analysis.js'
+import { registerCheckCommands } from './cli_cmd_diagnostics.js'
 import { registerSessionCommands } from './cli_cmd_session.js'
 import { registerDocumentCommands } from './cli_cmd_documents.js'
 import { registerSystemCommands } from './cli_cmd_system.js'
@@ -1027,6 +1028,7 @@ export function buildProgram(): Command {
 
   registerFormatCommands(program, guard)
   registerAnalysisCommands(program, guard)
+  registerCheckCommands(program, guard)
   registerSessionCommands(program, guard)
   registerDocumentCommands(program, guard, cmdGdriveSections)
 

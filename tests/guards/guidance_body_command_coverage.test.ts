@@ -189,6 +189,19 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'affected', reason: ANALYSIS_REASON },
   // `reconcile` reads nothing on the agent's behalf -- it repairs the index the gate's own commands query, and its ordinary trigger is the session-start hook rather than a decision made mid-task.
   { command: 'reconcile', reason: LIFECYCLE_REASON },
+  // `gate` and `permissions` replace no read or search, so the injected text does not name them.
+  {
+    command: 'gate',
+    reason: "runs a shell command under token-goat's output filters; not a replacement for a read or a search",
+  },
+  {
+    command: 'permissions',
+    reason: 'suggests host permission rules from observed usage; not a replacement for a read or a search',
+  },
+  {
+    command: 'permissions suggest',
+    reason: 'suggests host permission rules from observed usage; not a replacement for a read or a search',
+  },
   // `bench` scores the shell-output compressors against a fixed fixture corpus. It answers "did this change help?" for someone editing token-goat, and no agent read can be routed to it.
   { command: 'bench', reason: "measures token-goat's own compression against a fixture corpus -- a development instrument, never an alternative to reading a file" },
 ]

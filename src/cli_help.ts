@@ -51,6 +51,8 @@ export function generateCompactHelp(): string {
     '  baseline, cost, coverage-report-gaps, clean-cache,',
     '  cache-audit, reclaim-index, project',
     '',
+    'Checks: gate, permissions',
+    '',
     'Session: stats, waste, session-outline, session-audit, session-slice,',
     '  session-summary, context-stats, bootstrap-audit, memory, hint-stats,',
     '  session-schema, mcp-audit, audit',

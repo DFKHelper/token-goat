@@ -12,6 +12,36 @@ interface DiagnosticCommandHandlers {
   cmdPrSlice: GuardedAction
 }
 
+/** Registers `gate` and `permissions suggest`; their logic loads lazily from cli_diagnostics. */
+export function registerCheckCommands(program: Command, guard: GuardFn): void {
+  program
+    .command('gate [command...]')
+    .description('run one check and exit 2 on any failure, naming the first failing test ' +
+      '(exit 0 only when the command exits 0)')
+    .allowUnknownOption(true)
+    .action(
+      guard(async (commandArgs: string[] | undefined) => {
+        const { runGate } = await import('./cli_diagnostics.js')
+        process.exitCode = await runGate((commandArgs ?? []).join(' '))
+      }),
+    )
+  const permissions = program
+    .command('permissions')
+    .description(
+      'print a Claude Code allow list for the read-only token-goat commands (prints only; writes no file)',
+    )
+  permissions
+    .command('suggest')
+    .description('print a JSON allow list (Bash rules) for the read-only token-goat commands, ' +
+      'to paste into host settings')
+    .action(
+      guard(async () => {
+        const { permissionSuggestionJson } = await import('./cli_diagnostics.js')
+        process.stdout.write(permissionSuggestionJson())
+      }),
+    )
+}
+
 export function registerDiagnosticCommands(
   program: Command,
   guard: GuardFn,

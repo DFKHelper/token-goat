@@ -33,11 +33,11 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
         'transcript-outline', 'video-chapters', 'logfold', 'trace', 'todo', 'lockdeps', 'manifest-sweep',
         'gdrive-sections', 'dep-docs', 'compress', 'compress-text', 'pack', 'bench', 'xlsx-columns'],
     'parent command with no output of its own -- every leaf is a subcommand classified separately':
-      ['note'],
+      ['note', 'permissions'],
     'emits a single scalar/report payload (status, counts, one number), not a listing that can be filtered to empty':
       ['doctor', 'tokens', 'budget', 'bridges-status', 'commands', 'project', 'version', 'config',
         'config-get', 'statusline', 'hint-stats', 'mcp-audit', 'mcp-status', 'waste', 'audit', 'session-audit', 'bootstrap-audit',
-        'context-stats', 'baseline', 'cache-audit', 'memory', 'capabilities'],
+        'context-stats', 'baseline', 'cache-audit', 'memory', 'capabilities', 'gate', 'permissions suggest'],
     'write/mutation command, not a listing': ['note-add', 'note-get', 'insert-section', 'replace',
       'install', 'uninstall', 'worker', 'worker start', 'worker status', 'worker stop', 'hook',
       'hook-server', 'hook-server run', 'hook-server status', 'hook-server stop',

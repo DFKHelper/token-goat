@@ -2182,6 +2182,28 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['worker', '--help'])
     expect(r.stdout + r.stderr).toMatch(/start[\s\S]*?stop[\s\S]*?status/)
   },
+  gate: () => {
+    // A wrapped command that exits 0 passes silently; exit 1 with no test report fails with exit 2, code named.
+    const pass = run(['gate', '--', 'node', '-e', '0'])
+    expect(pass.status, pass.stderr).toBe(0)
+    expect(pass.stderr).toBe('')
+    const fail = run(['gate', '--', 'node', '-e', 'throw 1'])
+    expect(fail.status, fail.stderr).toBe(2)
+    expect(fail.stderr).toMatch(/gate: failed \(exit 1\)/)
+  },
+  permissions: () => {
+    // Parent command with one subcommand and no own action: usage lists suggest.
+    const r = run(['permissions', '--help'])
+    expect(r.stdout + r.stderr).toMatch(/suggest/)
+  },
+  'permissions suggest': () => {
+    // Prints a JSON allow list of Bash rules; a write-capable command such as index is never listed.
+    const r = run(['permissions', 'suggest'])
+    expect(r.status, r.stderr).toBe(0)
+    const allow = (JSON.parse(r.stdout) as { permissions: { allow: string[] } }).permissions.allow
+    expect(allow).toContain('Bash(token-goat version *)')
+    expect(allow).not.toContain('Bash(token-goat index *)')
+  },
   'worker status': () => {
     const env = tgEnv(mkIsolated('tg-matrix-wstatus-'))
     const r = run(['worker', 'status'], { env })
