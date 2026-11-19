@@ -280,7 +280,7 @@ function withoutHeredocFraming(command: string): string {
 
 const PLAIN_CD = /^cd\s+(?:--\s+)?[^\s;&|<>$`()]+$/
 
-/** A chain with `&&` blames its check only if it ends the chain and each earlier operand is a check, `cd` or pipefail. */
+/** A `&&` chain blames its check only if the check ends it and earlier operands are checks, `cd` or pipefail. */
 function andChainEndsInCheck(command: string, isCheck: (segment: string) => boolean): boolean {
   const parts = command.replace(/[;\s]+$/, '').split(COMMAND_SEPARATOR)
   if (!parts.includes('&&')) return true
