@@ -40,7 +40,7 @@ import { emit, emitErr } from './emit.js'
 import { formatCommandError } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 import { couldNotReadError } from './could_not_read.js'
-import { readDenial } from './read_deny.js'
+import { dropDeniedRows, readDenial } from './read_deny.js'
 
 // ---- dead -------------------------------------------------------------------
 
@@ -95,7 +95,10 @@ export function runDead(opts: DeadOptions): number {
     : undefined
   if (blindKindNote !== undefined && opts.json !== true) emitErr(blindKindNote)
 
-  const syms = assessableKinds.flatMap((k) => querySymbols({ kind: k, limit: UNBOUNDED_REF_LIMIT, rootDir }))
+  const syms = dropDeniedRows(
+    assessableKinds.flatMap((k) => querySymbols({ kind: k, limit: UNBOUNDED_REF_LIMIT, rootDir })),
+    (s) => s.filePath,
+  )
   const getSyms = buildFileSymCache()
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []
@@ -349,6 +352,14 @@ export function runTypes(opts: TypesOptions): number {
     return 1
   }
 
+  if (opts.file !== undefined) {
+    const denial = readDenial(opts.file)
+    if (denial !== null) {
+      emitErr(formatCommandError(denial))
+      return 1
+    }
+  }
+
   const limit = opts.limit ?? 500
   const excludeTests = opts.excludeTests === true
   const filePath = opts.file !== undefined ? resolveSpecPath(opts.file) : undefined
@@ -359,7 +370,8 @@ export function runTypes(opts: TypesOptions): number {
   let suppressed = 0
 
   for (const k of TYPE_KINDS) {
-    const syms = querySymbols({ kind: k, ...fpOpt, limit: TYPES_SCAN_LIMIT, rootDir })
+    const rows = querySymbols({ kind: k, ...fpOpt, limit: TYPES_SCAN_LIMIT, rootDir })
+    const syms = dropDeniedRows(rows, (r) => r.filePath)
     for (const sym of syms) {
       if (excludeTests && isTestFile(sym.filePath)) {
         suppressed += 1
@@ -369,7 +381,8 @@ export function runTypes(opts: TypesOptions): number {
     }
   }
 
-  const classes = querySymbols({ kind: 'class', ...fpOpt, limit: TYPES_SCAN_LIMIT, rootDir })
+  const classRows = querySymbols({ kind: 'class', ...fpOpt, limit: TYPES_SCAN_LIMIT, rootDir })
+  const classes = dropDeniedRows(classRows, (r) => r.filePath)
   for (const cls of classes) {
     if (!looksLikeTypeClass(cls.body)) continue
     if (excludeTests && isTestFile(cls.filePath)) {
@@ -486,6 +499,11 @@ export function runScope(opts: ScopeOptions): number {
   }
 
   const filePath = resolveSpecPath(file, opts.projectRoot ?? process.cwd())
+  const denial = readDenial(filePath)
+  if (denial !== null) {
+    emitErr(formatCommandError(denial))
+    return 1
+  }
   const enclosing = querySymbols({ filePath, enclosingLine: line, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
     .sort((a, b) => b.lineStart - a.lineStart || a.lineEnd - b.lineEnd || a.name.localeCompare(b.name, 'en'))
 

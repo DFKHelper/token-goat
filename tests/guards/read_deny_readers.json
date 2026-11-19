@@ -402,7 +402,7 @@
   "graph_inspection.ts": {
     "reads": 1,
     "accessors": 7,
-    "reason": "guarded at graph_inspection.ts:runDeps: readDenial runs before the read of the named file"
+    "reason": "guarded at graph_inspection.ts:runTypes, graph_inspection.ts:runScope: the deny check runs first"
   },
   "graph_traversal.ts": {
     "reads": 0,
