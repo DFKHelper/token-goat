@@ -143,9 +143,10 @@ impl Child {
         let (input, child_input) = pipe(false)?;
         let (output, child_output) = pipe(true)?;
         let (errors, child_errors) = pipe(true)?;
-        let attributes = Attributes::new()?;
+        // The arrays come first so the list, declared after them, drops before the arrays it points at.
         let mut jobs = [job.0.0];
         let mut inherited = [child_input.0, child_output.0, child_errors.0];
+        let attributes = Attributes::new()?;
         attributes.set(PROC_THREAD_ATTRIBUTE_JOB_LIST, &mut jobs)?;
         attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &mut inherited)?;
         let mut startup = STARTUPINFOEXW::default();
