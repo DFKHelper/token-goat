@@ -215,6 +215,94 @@ describe.each(BRIDGES)('$name: a failed entry spawn falls back to the PATH spawn
   })
 })
 
+/** Writes the sibling hook library the bridge imports in process, beside an entry the sidecar names. */
+function writeHookLib(dir: string, source: string): void {
+  writeEntry(dir, '')
+  writeFileSync(join(dir, 'token-goat-hook.mjs'), `globalThis.__tgEntered?.()\n${source}`, 'utf8')
+}
+
+function onEntered(): Promise<void> {
+  return new Promise((resolve) => {
+    slot['__tgEntered'] = resolve
+  })
+}
+
+describe.each(BRIDGES)('$name: the in-process route is bounded by the call budget', ({ load, cap }) => {
+  const fakeClock = (): void => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+  }
+
+  afterEach(() => {
+    delete slot['__tgEntered']
+  })
+
+  async function expectBounded(dir: string, entered: Promise<void>): Promise<void> {
+    const failedSpawn = useFakeSpawn(() => ({ status: 1, stdout: '' }))
+    let settled = false
+    const pending = (await load(dir))('pre_tool_use').then((answer) => {
+      settled = true
+      return answer
+    })
+    await entered
+    expect(vi.getTimerCount(), 'one bound timer is armed').toBe(1)
+    await vi.advanceTimersByTimeAsync(cap - 1)
+    expect(settled, 'still pending just before the bound').toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await pending, 'null once the bound passes').toBeNull()
+    expect(vi.getTimerCount(), 'no timer left behind').toBe(0)
+    expect(failedSpawn.length, 'no spawn after the budget is spent').toBe(0)
+  }
+
+  it('a relayInProcess that never settles gives null once the bound passes', async () => {
+    const dir = mkDir()
+    writeHookLib(dir, 'export const relayInProcess = () => new Promise(() => {})\n')
+    const entered = onEntered()
+    fakeClock()
+    await expectBounded(dir, entered)
+  })
+
+  it('an import() that never settles gives null once the bound passes', async () => {
+    const dir = mkDir()
+    writeHookLib(dir, 'await new Promise(() => {})\nexport const relayInProcess = () => ""\n')
+    const entered = onEntered()
+    fakeClock()
+    await expectBounded(dir, entered)
+  })
+
+  it('a run that settles in time returns its answer and leaves no pending timer', async () => {
+    const dir = mkDir()
+    const answer = { decision: 'block', reason: 'in process' }
+    writeHookLib(dir, `export const relayInProcess = async () => ${JSON.stringify(JSON.stringify(answer))}\n`)
+    const calls = useFakeSpawn(() => ({ status: 1, stdout: '' }))
+    fakeClock()
+    expect(await (await load(dir))('pre_tool_use'), 'the in-process answer').toEqual(answer)
+    expect(vi.getTimerCount(), 'no timer left behind').toBe(0)
+    expect(calls.length, 'no spawn').toBe(0)
+  })
+
+  it.each([
+    ['a rejected relayInProcess', 'export const relayInProcess = () => Promise.reject(new Error("boom"))\n'],
+    ['a rejected import()', 'throw new Error("boom")\n'],
+  ])('%s gives null with no unhandled rejection', async (_label, source) => {
+    const dir = mkDir()
+    writeHookLib(dir, source)
+    useFakeSpawn(() => ({ status: 1, stdout: '' }))
+    const unhandled: unknown[] = []
+    const record = (reason: unknown): void => { unhandled.push(reason) }
+    process.on('unhandledRejection', record)
+    try {
+      fakeClock()
+      expect(await (await load(dir))('pre_tool_use'), 'null after the rejection').toBeNull()
+      expect(vi.getTimerCount(), 'no timer left behind').toBe(0)
+      vi.useRealTimers()
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(unhandled, 'no unhandled rejection').toEqual([])
+    } finally {
+      process.off('unhandledRejection', record)
+    }
+  })
+})
+
 describe.each(BRIDGES)('$name: a block is accepted only from a clean run', ({ load }) => {
   const blockWith = (reason: unknown): string => JSON.stringify({ decision: 'block', reason })
 

@@ -99,6 +99,19 @@ function budgetSpent(start) {
   return Math.max(0, Math.floor(performance.now() - start));
 }
 
+// What a bound wins with; a hook answer is never this.
+const HOOK_TIMED_OUT = Symbol("hook-timed-out");
+
+// Races a promise against what is left of the call's budget; the timer is cleared on every path.
+function raceBudget(promise, start) {
+  let timer;
+  const bound = new Promise((resolve) => {
+    const left = Math.max(0, SHIM_FALLBACK_TIMEOUT_MS - budgetSpent(start));
+    timer = setTimeout(() => resolve(HOOK_TIMED_OUT), left);
+  });
+  return Promise.race([promise, bound]).finally(() => clearTimeout(timer));
+}
+
 // The baked entry runs first via process.execPath; PATH needs shell: true so a Windows .cmd shim resolves.
 // A failed or silent entry run (a directory, a broken bundle) falls back to PATH inside the same budget.
 function callHookViaSpawn(event, payload, start) {
@@ -123,10 +136,13 @@ function callHookViaSpawn(event, payload, start) {
 async function callHook(event, payload) {
   // Timed from here, not from process start: this host lives far longer than one call, so the hook library's default clock (process age) would record the host's uptime as this call's duration.
   const start = performance.now();
-  const relay = await resolveRelayInProcess();
+  const relay = await raceBudget(resolveRelayInProcess(), start);
+  if (relay === HOOK_TIMED_OUT) return null;
   if (relay) {
     try {
-      const out = await relay(event, payload, undefined, { elapsedMs: () => performance.now() - start });
+      const ran = relay(event, payload, undefined, { elapsedMs: () => performance.now() - start });
+      const out = await raceBudget(ran, start);
+      if (out === HOOK_TIMED_OUT) return null;
       if (!out || !out.trim()) return null;
       const answer = hookAnswer(out);
       if (answer) return answer;
