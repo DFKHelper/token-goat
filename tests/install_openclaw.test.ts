@@ -350,8 +350,8 @@ describe('OPENCLAW_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     // The routing lives in callHookViaSpawn: entry first, then PATH, each through runHookSpawn.
     const route = /function callHookViaSpawn\([\s\S]*?\n\}/.exec(OPENCLAW_PLUGIN_SCRIPT)?.[0] ?? ''
     expect(route).toMatch(/resolveEntryPath\(\)/)
-    expect(route).toMatch(/runHookSpawn\(entryPath, event, payload, spent\)/)
-    expect(route).toMatch(/runHookSpawn\(undefined, event, payload, spentNow\)/)
+    expect(route).toMatch(/runHookSpawn\(entryPath, event, payload, spent, deadlineAt\)/)
+    expect(route).toMatch(/runHookSpawn\(undefined, event, payload, spentNow, deadlineAt\)/)
     expect(body).toMatch(/spawnSync\(process\.execPath, \[entryPath, "hook", event\]/)
     expect(body).toMatch(/spawnSync\("token-goat hook "/)
   })

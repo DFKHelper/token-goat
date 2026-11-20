@@ -8,10 +8,10 @@ import { delimiter, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { transformSync } from 'esbuild'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PI_EXTENSION_SCRIPT } from '../../src/bridges/pi.js'
-import { BRIDGE_RELAY_JS } from '../../src/bridges/relay_block.js'
+import { BRIDGE_RELAY_JS, bridgeRelayJs } from '../../src/bridges/relay_block.js'
 import { SHIM_FALLBACK_TIMEOUT_MS } from '../../src/bridges/shim_common.js'
 import { expandShortPath } from '../../src/paths.js'
 
@@ -19,7 +19,8 @@ type Answer = Record<string, unknown> | null
 type Opts = Record<string, unknown>
 type SpawnCall = { command: string; args: unknown; options: Opts }
 type SpawnResult = { status: number | null; stdout: string }
-type Bridge = { name: string; cap: number; load: (dir: string) => Promise<(event: string) => Promise<Answer>> }
+type Load = (dir: string) => Promise<(event: string) => Promise<Answer>>
+type Bridge = { name: string; harness: string; cap: number; load: Load }
 
 const SPAWN_SLOT = '__tgSpawnImpl'
 const slot = globalThis as Record<string, unknown>
@@ -47,17 +48,19 @@ function optionsOf(args: unknown, options: Opts | undefined): Opts {
 }
 
 /** Imports the generated relay block as a module, with spawnSync routed through the spawn slot. */
-async function loadRelayBlock(dir: string): Promise<(event: string) => Promise<Answer>> {
-  const header = `import fs from "node:fs"
+function relayLoader(source: string): Load {
+  return async (dir) => {
+    const header = `import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 const spawnSync = (...a) => globalThis.${SPAWN_SLOT}(...a)
 `
-  const file = join(dir, 'relay_block.mjs')
-  writeFileSync(file, `${header}${BRIDGE_RELAY_JS}\nexport { callHook }\n`, 'utf8')
-  type Mod = { callHook: (e: string, p: unknown) => Promise<Answer> }
-  const mod = (await import(pathToFileURL(file).href)) as Mod
-  return (event) => mod.callHook(event, { session_id: 's' })
+    const file = join(dir, 'relay_block.mjs')
+    writeFileSync(file, `${header}${source}\nexport { callHook }\n`, 'utf8')
+    type Mod = { callHook: (e: string, p: unknown) => Promise<Answer> }
+    const mod = (await import(pathToFileURL(file).href)) as Mod
+    return (event) => mod.callHook(event, { session_id: 's' })
+  }
 }
 
 type PiHandler = (...a: unknown[]) => unknown
@@ -83,9 +86,11 @@ async function loadPi(dir: string): Promise<(event: string) => Promise<Answer>> 
   }
 }
 
+const RELAY_CAP = SHIM_FALLBACK_TIMEOUT_MS.relay
 const BRIDGES: Bridge[] = [
-  { name: 'relay_block', cap: SHIM_FALLBACK_TIMEOUT_MS.relay, load: loadRelayBlock },
-  { name: 'pi', cap: SHIM_FALLBACK_TIMEOUT_MS.pi, load: loadPi },
+  { name: 'opencode relay', harness: 'opencode', cap: RELAY_CAP, load: relayLoader(bridgeRelayJs('opencode')) },
+  { name: 'openclaw relay', harness: 'openclaw', cap: RELAY_CAP, load: relayLoader(BRIDGE_RELAY_JS) },
+  { name: 'pi', harness: 'pi', cap: SHIM_FALLBACK_TIMEOUT_MS.pi, load: loadPi },
 ]
 
 const ROUTE_ANSWER = { decision: 'block', reason: 'from the route' }
@@ -117,12 +122,12 @@ function useFakeSpawn(fake: (calls: SpawnCall[]) => SpawnResult): SpawnCall[] {
 }
 
 /** Writes a `token-goat` stub (cmd on Windows, sh elsewhere) that records it ran and prints `stdout`. */
-function writePathStub(dir: string, stdout: string): { stubDir: string; marker: string } {
+function writePathStub(dir: string, stdout: string, source?: string): { stubDir: string; marker: string } {
   const stubDir = join(dir, 'stub-bin')
   mkdirSync(stubDir)
   const marker = join(dir, 'path-stub-ran.txt')
   const js = join(stubDir, 'stub.cjs')
-  writeFileSync(js, printerScript(stdout, marker), 'utf8')
+  writeFileSync(js, source ?? printerScript(stdout, marker), 'utf8')
   if (process.platform === 'win32') {
     writeFileSync(join(stubDir, 'token-goat.cmd'), `@echo off\r\n"${process.execPath}" "${js}" %*\r\n`, 'utf8')
   } else {
@@ -335,5 +340,165 @@ describe.each(BRIDGES)('$name: a block is accepted only from a clean run', ({ lo
     useRealSpawn(writePathStub(dir, '').stubDir)
     const answer = await (await load(dir))('pre_tool_use')
     expect(answer, 'the clean block').toEqual({ decision: 'block', reason: 'already read this file' })
+  })
+})
+
+const HARNESS_ENV = 'TOKEN_GOAT_HARNESS_OVERRIDE'
+const DEADLINE_ENV = 'TOKEN_GOAT_HOOK_DEADLINE_AT'
+const USER_HARNESS = 'a-value-the-user-set'
+const USER_DEADLINE = '12345'
+
+/** The block's reason is `<override>|<deadline>` as the process the stub runs in sees them. */
+const ENV_ECHO_PARTS = [
+  'String(process.env.TOKEN_GOAT_HARNESS_OVERRIDE)',
+  "'|'",
+  'String(process.env.TOKEN_GOAT_HOOK_DEADLINE_AT)',
+].join(' + ')
+const ENV_ECHO_BLOCK = `JSON.stringify({ decision: 'block', reason: ${ENV_ECHO_PARTS} })`
+const envEchoScript = `process.stdin.resume()
+process.stdin.on('end', () => process.stdout.write(${ENV_ECHO_BLOCK}, () => process.exit(0)))
+`
+const envEchoHookLib = `export const relayInProcess = async () => ${ENV_ECHO_BLOCK}\n`
+
+/** The `[override, deadline]` pair an answer from the env-echo stubs carries. */
+function echoed(answer: Answer): [string, number] {
+  const [harness = '', deadline = ''] = String(answer?.['reason']).split('|')
+  return [harness, Number(deadline)]
+}
+
+/** Pins both host variables to user values for each row, and puts the host's own state back after it. */
+function pinHostEnv(): void {
+  const saved = { harness: process.env[HARNESS_ENV], deadline: process.env[DEADLINE_ENV] }
+  const put = (key: string, value: string | undefined): void => {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  beforeEach(() => {
+    process.env[HARNESS_ENV] = USER_HARNESS
+    process.env[DEADLINE_ENV] = USER_DEADLINE
+  })
+  afterEach(() => {
+    put(HARNESS_ENV, saved.harness)
+    put(DEADLINE_ENV, saved.deadline)
+  })
+}
+
+describe.each(BRIDGES)('$name: the hook runs under its own harness name', ({ load, harness, cap }) => {
+  pinHostEnv()
+
+  it('the entry spawn is told the harness name', async () => {
+    const dir = mkDir()
+    writeEntry(dir, envEchoScript)
+    useRealSpawn(writePathStub(dir, '').stubDir)
+    expect(echoed(await (await load(dir))('pre_tool_use'))[0], 'override seen by the entry spawn').toBe(harness)
+  })
+
+  it('the PATH spawn is told the harness name', async () => {
+    const dir = mkDir()
+    writeEntry(dir, 'process.exit(1)\n')
+    useRealSpawn(writePathStub(dir, '', envEchoScript).stubDir)
+    expect(echoed(await (await load(dir))('pre_tool_use'))[0], 'override seen by the PATH spawn').toBe(harness)
+  })
+
+  it('the in-process run sees the harness name and the host environment is unchanged after it', async () => {
+    const dir = mkDir()
+    writeHookLib(dir, envEchoHookLib)
+    useFakeSpawn(() => ({ status: 1, stdout: '' }))
+    expect(echoed(await (await load(dir))('pre_tool_use'))[0], 'override seen in process').toBe(harness)
+    expect(process.env[HARNESS_ENV], 'the user value survives the call').toBe(USER_HARNESS)
+    expect(process.env[DEADLINE_ENV], 'the user deadline survives the call').toBe(USER_DEADLINE)
+  })
+
+  it('a host with neither variable set has neither after the call', async () => {
+    const dir = mkDir()
+    writeHookLib(dir, envEchoHookLib)
+    useFakeSpawn(() => ({ status: 1, stdout: '' }))
+    delete process.env[HARNESS_ENV]
+    delete process.env[DEADLINE_ENV]
+    await (await load(dir))('pre_tool_use')
+    expect(HARNESS_ENV in process.env, 'no override left behind').toBe(false)
+    expect(DEADLINE_ENV in process.env, 'no deadline left behind').toBe(false)
+  })
+
+  it.each([
+    ['a relayInProcess that throws', 'export const relayInProcess = () => { throw new Error("boom") }\n'],
+    ['a relayInProcess that rejects', 'export const relayInProcess = async () => { throw new Error("x") }\n'],
+  ])('%s leaves the host environment unchanged', async (_label, source) => {
+    const dir = mkDir()
+    writeHookLib(dir, source)
+    useFakeSpawn(() => ({ status: 1, stdout: '' }))
+    expect(await (await load(dir))('pre_tool_use'), 'null after the failure').toBeNull()
+    expect(process.env[HARNESS_ENV], 'the user value survives the failure').toBe(USER_HARNESS)
+    expect(process.env[DEADLINE_ENV], 'the user deadline survives the failure').toBe(USER_DEADLINE)
+  })
+
+  it('a call that outlasts the budget leaves the host environment unchanged', async () => {
+    const dir = mkDir()
+    writeHookLib(dir, 'export const relayInProcess = () => new Promise(() => {})\n')
+    useFakeSpawn(() => ({ status: 1, stdout: '' }))
+    const entered = onEntered()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    const pending = (await load(dir))('pre_tool_use')
+    await entered
+    await vi.advanceTimersByTimeAsync(cap)
+    expect(await pending, 'null once the bound passes').toBeNull()
+    expect(process.env[HARNESS_ENV], 'the user value survives the timeout').toBe(USER_HARNESS)
+    expect(process.env[DEADLINE_ENV], 'the user deadline survives the timeout').toBe(USER_DEADLINE)
+  })
+})
+
+describe.each(BRIDGES)('$name: the deadline is struck per call', ({ load, cap }) => {
+  pinHostEnv()
+  const T0 = 1_700_000_000_000
+
+  /** One clock for Date and performance, so a row moves time without waiting. */
+  function useClock(): { advance: (ms: number) => void } {
+    let now = T0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    return { advance: (ms) => { now += ms } }
+  }
+
+  const spawnDeadlines = (calls: SpawnCall[]): Array<string | undefined> =>
+    calls.map((c) => (c.options['env'] as NodeJS.ProcessEnv | undefined)?.[DEADLINE_ENV])
+
+  it('a second in-process call made long after load gets a full budget', async () => {
+    const dir = mkDir()
+    writeHookLib(dir, envEchoHookLib)
+    const clock = useClock()
+    const call = await load(dir)
+    expect(echoed(await call('pre_tool_use'))[1], 'first call deadline').toBe(T0 + cap)
+    clock.advance(600_000)
+    const second = echoed(await call('pre_tool_use'))[1]
+    expect(second, 'second call deadline, a full budget after it began').toBe(T0 + 600_000 + cap)
+  })
+
+  it('a second spawned call made long after load gets a full budget', async () => {
+    const dir = mkDir()
+    writeEntry(dir, '')
+    const clock = useClock()
+    const calls = useFakeSpawn(() => ({ status: 1, stdout: '' }))
+    const call = await load(dir)
+    await call('pre_tool_use')
+    clock.advance(600_000)
+    await call('pre_tool_use')
+    const first = String(T0 + cap)
+    const later = String(T0 + 600_000 + cap)
+    const seen = spawnDeadlines(calls)
+    expect(seen, 'each call hands its own deadline to both its spawns').toEqual([first, first, later, later])
+  })
+
+  it('a child spawned late in a call gets only what is left of that call', async () => {
+    const dir = mkDir()
+    writeEntry(dir, '')
+    const clock = useClock()
+    const calls = useFakeSpawn((made) => {
+      if (made.length === 1) clock.advance(4_000)
+      return { status: 1, stdout: '' }
+    })
+    await (await load(dir))('pre_tool_use')
+    expect(calls[1]!.options['timeout'], 'the PATH spawn timeout is what is left').toBe(cap - 4_000)
+    const inherited = spawnDeadlines(calls)[1]
+    expect(inherited, 'the PATH child inherits the call deadline, not a new one').toBe(String(T0 + cap))
   })
 })

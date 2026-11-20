@@ -108,7 +108,14 @@ export const SESSION_START_TEST_BUDGET_MIN_MS = 1_000
 export const SESSION_START_TEST_BUDGET_MAX_MS = 600_000
 
 /** The `const` line each shim declares for {@link SHIM_FALLBACK_TIMEOUT_MS}, so every spawn site in the script reads one name and the number lives only above. */
-export function shimFallbackTimeoutConst(harness: keyof typeof SHIM_FALLBACK_TIMEOUT_MS): string {
+export function shimFallbackTimeoutConst(
+  harness: keyof typeof SHIM_FALLBACK_TIMEOUT_MS,
+  scope: 'process' | 'call' = 'process',
+): string {
+  if (scope === 'call') {
+    return `const SHIM_FALLBACK_TIMEOUT_MS = ${SHIM_FALLBACK_TIMEOUT_MS[harness]}
+// A host that stays loaded strikes its deadline per call (callHook), never when this module loads.`
+  }
   return `const SHIM_FALLBACK_TIMEOUT_MS = ${SHIM_FALLBACK_TIMEOUT_MS[harness]}
 // One end-to-end deadline for the whole call: resident server, in-process hook and spawn all draw on it.
 const SHIM_DEADLINE_AT = Date.now() + SHIM_FALLBACK_TIMEOUT_MS
