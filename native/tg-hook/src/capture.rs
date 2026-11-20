@@ -49,11 +49,12 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// Whether `bytes` is one or more JSON values and nothing else (the shim's marker line precedes its answer).
+/// Whether `bytes` is one or more JSON objects and nothing else (the shim's marker line precedes its answer).
 fn is_json_stream(bytes: &[u8]) -> bool {
     let mut seen = false;
     for item in serde_json::Deserializer::from_slice(bytes).into_iter::<serde_json::Value>() {
-        if item.is_err() {
+        // No host accepts a bare null, number, string or array as a hook answer.
+        if !matches!(item, Ok(serde_json::Value::Object(_))) {
             return false;
         }
         seen = true;
@@ -248,6 +249,17 @@ mod tests {
         assert!(matches!(judge(Some(0), b"hello", b"", false), Err(Failure::Output(_))));
         assert!(matches!(judge(Some(0), b"{} junk", b"", false), Err(Failure::Output(_))));
         assert!(matches!(judge(Some(0), b"", b"", false), Err(Failure::Output("empty"))));
+        assert_eq!(judge(Some(0), b"{\"decision\":\"deny\"}", b"", false).unwrap(), 0);
+        assert_eq!(judge(Some(0), b"", b"", true).unwrap(), 0);
+    }
+
+    #[test]
+    fn an_answer_that_is_not_a_json_object_is_a_failed_route() {
+        for bad in [&b"null"[..], b"3", b"\"text\"", b"[]", b"true", b"{}\nnull", b"[{}]"] {
+            let verdict = judge(Some(0), bad, b"", false);
+            assert!(matches!(verdict, Err(Failure::Output("not JSON"))), "{bad:?}: {verdict:?}");
+            assert!(matches!(judge(Some(2), bad, b"", false), Err(Failure::Output("not JSON"))));
+        }
         assert!(matches!(judge(Some(2), b"", b"", true), Err(Failure::Output("empty"))));
     }
 
