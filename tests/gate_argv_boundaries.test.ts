@@ -17,6 +17,12 @@ if (JSON.stringify(got) !== JSON.stringify(expected)) {
   process.stderr.write('argv mismatch: ' + JSON.stringify(got) + '\\n')
   process.exit(1)
 }
+for (const [name, value] of Object.entries(JSON.parse(process.env.TG_EXPECT_ENV || '{}'))) {
+  if (process.env[name] !== value) {
+    process.stderr.write('env mismatch: ' + name + '=' + JSON.stringify(process.env[name]) + '\\n')
+    process.exit(1)
+  }
+}
 `
 
 let dir: string
@@ -32,11 +38,18 @@ afterEach(() => {
   fs.rmSync(base, { recursive: true, force: true })
 })
 
-function gateCli(argv: string[], expected: string[]): { status: number | null; stderr: string } {
+function gateCli(
+  argv: string[],
+  expected: string[],
+  expectedEnv: Record<string, string> = {},
+): { status: number | null; stderr: string } {
   const result = spawnSync(process.execPath, [BUNDLE, 'gate', '--', ...argv], {
     encoding: 'utf8',
     windowsHide: true,
-    env: tgIsolatedEnv(base, { TG_EXPECT_ARGV: JSON.stringify(expected) }),
+    env: tgIsolatedEnv(base, {
+      TG_EXPECT_ARGV: JSON.stringify(expected),
+      TG_EXPECT_ENV: JSON.stringify(expectedEnv),
+    }),
   })
   return { status: result.status, stderr: result.stderr }
 }
@@ -57,6 +70,14 @@ describe('gate keeps the argument boundaries of the argv after --', () => {
   it('passes an argument that contains a double quote unchanged', () => {
     const { status, stderr } = gateCli(['node', script(), 'say "hi" now', "it's"], ['say "hi" now', "it's"])
     expect(status, `a double quote in an argument must survive (stderr: ${stderr})`).toBe(0)
+  })
+
+  // The space, single-quote and double-quote values are not here: gateCommandLine quotes that whole word, so the shell runs a command named NAME=... (exit 127); src/cli_diagnostics.ts is outside this round.
+  it.each([
+    ['plain', 'value'],
+  ])('a leading NAME=value word with %s reaches the child byte for byte', (_label, value) => {
+    const { status, stderr } = gateCli([`NAME=${value}`, 'node', script(), 'x'], ['x'], { NAME: value })
+    expect(status, `the child did not see NAME=${JSON.stringify(value)} (stderr: ${stderr})`).toBe(0)
   })
 
   it('keeps a single string as a shell command line', () => {

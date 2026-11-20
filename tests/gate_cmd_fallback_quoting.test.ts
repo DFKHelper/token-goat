@@ -1,5 +1,6 @@
 // `gate -- <argv>` quoting for cmd.exe (no Git Bash). HAND-DERIVED; CAPTURE; FORMAT: MS C++ argv rules.
 import { spawnSync } from 'node:child_process'
+import type * as BashRunner from '../src/bash_runner.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -8,6 +9,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { GATE_FAIL_EXIT, GateArgumentRefused, gateCommandLine, runGateArgv } from '../src/cli_diagnostics.js'
 
+// Counts the calls the gate makes to the runner and forwards each to the real one.
+const runner = vi.hoisted(() => ({ calls: 0 }))
+vi.mock('../src/bash_runner.js', async (importOriginal) => {
+  const real = await importOriginal<typeof BashRunner>()
+  return {
+    ...real,
+    run: (...args: Parameters<typeof real.run>) => {
+      runner.calls += 1
+      return real.run(...args)
+    },
+  }
+})
+
 // Prints its own arguments as JSON on stdout, so a row reads back exactly what the child received.
 const ARGV_SCRIPT = 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n'
 
@@ -15,6 +29,7 @@ let dir: string
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg gate cmd-'))
+  runner.calls = 0
 })
 
 afterEach(() => {
@@ -66,6 +81,7 @@ describe.skipIf(process.platform !== 'win32')(
     const code = await runGateArgv([process.execPath, script(), 'a %PATH% b'], true, 'win32')
     expect(code, 'a defined variable was expanded, not refused').toBe(GATE_FAIL_EXIT)
     expect(write.mock.calls.length, 'the refusal is not one line').toBe(1)
+    expect(runner.calls, 'the runner was called after the refusal').toBe(0)
   })
 })
 
@@ -125,6 +141,7 @@ describe('runGateArgv refuses with one line and exit 2, running nothing', () => 
     )
     expect(code, 'a refused line did not exit 2').toBe(GATE_FAIL_EXIT)
     expect(fs.existsSync(marker), 'the command ran despite the refusal').toBe(false)
+    expect(runner.calls, 'the runner was called after the refusal').toBe(0)
     const lines = write.mock.calls.map((c) => String(c[0]))
     expect(lines.length, 'the refusal is not one line').toBe(1)
     expect(lines[0], 'the refusal does not name gate').toMatch(/^gate: .*\n$/)

@@ -1,5 +1,4 @@
-// The gate ends a background child its shell left behind; other callers of run keep today's behaviour.
-// Provenance: HAND-DERIVED. The sleeper writes its own pid and liveness is read back from the OS.
+// The gate ends a background child its shell left behind; other callers of run keep today's behaviour. Provenance: HAND-DERIVED. The sleeper writes its own pid and liveness is read back from the OS.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -11,13 +10,15 @@ import { runGate } from '../src/cli_diagnostics.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { processAlive } from './helpers/process_alive.js'
 
-// Ends itself when its directory is deleted, so a test that dies midway cannot leave it running.
+// Ends itself when its directory is deleted or after a hard cap, so a test that dies midway cannot leave it running.
 const SLEEPER_SCRIPT = `
 const fs = require('node:fs')
 const path = require('node:path')
 const dir = process.argv[2]
 fs.writeFileSync(path.join(dir, 'sleeper.tmp'), String(process.pid))
 fs.renameSync(path.join(dir, 'sleeper.tmp'), path.join(dir, 'sleeper.pid'))
+console.log('up')
+setTimeout(() => process.exit(0), 60000)
 setInterval(() => { if (!fs.existsSync(dir)) process.exit(0) }, 200)
 `
 
@@ -30,14 +31,13 @@ function recordedPid(): number | undefined {
   return file !== undefined && fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : undefined
 }
 
-/** Backgrounds the sleeper with all three streams redirected, waits for its pid file, then exits 0. */
+/** Starts the sleeper with stdin and stderr discarded and stdout on a private pipe, then blocks on a read of its first line and exits 0. */
 function backgroundCommand(): string {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-gate-tree-'))
   const script = path.join(dir, 'sleeper.cjs')
   fs.writeFileSync(script, SLEEPER_SCRIPT)
-  const d = slash(dir)
-  const start = `'${slash(process.execPath)}' '${slash(script)}' '${d}' </dev/null >/dev/null 2>&1 &`
-  return `${start} while [ ! -f '${d}/sleeper.pid' ]; do :; done`
+  const start = `'${slash(process.execPath)}' '${slash(script)}' '${slash(dir)}' </dev/null 2>/dev/null`
+  return `exec 3< <(${start}); read -r -u 3 _up`
 }
 
 afterEach(() => {
