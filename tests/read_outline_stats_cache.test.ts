@@ -44,7 +44,8 @@ function seed(): void {
   db.prepare('DELETE FROM symbols').run()
   db.prepare('DELETE FROM refs').run()
   db.prepare(
-    'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?)',
   ).run(`${base}/src/a.ts`, 'Target', 'function', 1, 3, 'function Target() {}', '')
   const ref = db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)')
   ref.run(`${base}/src/b.ts`, 'Target', 1, 0, '')
