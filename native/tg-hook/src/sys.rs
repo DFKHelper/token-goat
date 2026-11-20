@@ -115,12 +115,20 @@ pub fn guard_child(cmd: &mut Command) {
             });
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // The route heads its own process group, so ending that group ends what the route started.
+        cmd.process_group(0);
+    }
+    #[cfg(not(unix))]
     let _ = cmd;
 }
 
 /// Windows half of [`guard_child`]: puts `child` in a job that is killed when this process's handle to it closes, which the exit of this process does. Processes the child starts itself break away from the job silently, so the hook server the Node shim starts in the background outlives this call as it does today. Best effort: a child left outside the job behaves exactly as it would have without one.
-pub fn adopt_child(child: &Child) {
+pub fn adopt_child(child: &Child) -> Group {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut held = 0usize;
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
@@ -131,7 +139,7 @@ pub fn adopt_child(child: &Child) {
         // SAFETY: an unnamed job with default security; the handle is deliberately never closed, so the job lives exactly as long as this process.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if job.is_null() {
-            return;
+            return Group { leader: child.id(), job: 0 };
         }
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
@@ -139,11 +147,39 @@ pub fn adopt_child(child: &Child) {
         let set = unsafe { SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&raw const info).cast(), size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) } != 0;
         if set {
             // SAFETY: both handles are live: the job was just created and `child` has not been waited on.
-            unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) };
+            if unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } != 0 {
+                held = job as usize;
+            }
         }
     }
-    #[cfg(not(windows))]
-    let _ = child;
+    Group { leader: child.id(), job: held }
+}
+
+/// What a route started as the head of: its own process group (POSIX, led by the route's pid) or the job it was put in (Windows, 0 when the job could not be made or joined).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Group {
+    pub leader: u32,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    job: usize,
+}
+
+/// Ends every process of `group` at once. Call it only while the route's direct child is still unreaped, so the leader's pid cannot have been handed to another process. A descendant that left the group (POSIX setsid) or broke away from the job (silently, as the hook server the shim starts does) is not chased.
+pub fn end_group(group: &Group) {
+    #[cfg(unix)]
+    {
+        // A leader pid of 1 or less would signal every process or the caller's own group.
+        if group.leader > 1 {
+            // SAFETY: SIGKILL to the group this client created for its route; the leader is unreaped, so the id is still the route's.
+            unsafe { libc::kill(-(group.leader as libc::pid_t), libc::SIGKILL) };
+        }
+    }
+    #[cfg(windows)]
+    {
+        if group.job != 0 {
+            // SAFETY: the job handle is the one adopt_child made and never closed, so it is live for the life of this process.
+            unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(group.job as _, 1) };
+        }
+    }
 }
 
 /// Whether process `pid` is running: `Some(false)` only when the system says no such process exists, `None` when it cannot tell, which a caller treats as running.

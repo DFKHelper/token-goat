@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::out;
+use crate::sys::Group;
 
 /// The marker line the Claude shim prints to detach the host before the hook's real work.
 const ASYNC_MARKER: &[u8] = b"{\"async\":true}\n";
@@ -149,6 +150,17 @@ fn reap(child: &mut std::process::Child) {
     reap_by(child, kill_and_reap);
 }
 
+/// What a timed-out or failed route gets: its whole group ended, then the one reap of its direct child.
+fn reap_route(child: &mut std::process::Child, group: &Group) {
+    reap_route_by(child, group, crate::sys::end_group);
+}
+
+/// [`reap_route`] with the group's end passed in, so a row can see what the route's end is handed.
+fn reap_route_by(child: &mut std::process::Child, group: &Group, end: impl FnOnce(&Group)) {
+    end(group);
+    reap(child);
+}
+
 /// Hands `how` the child and the bound a reap is allowed, which is [`REAP_BOUND`] and nothing else.
 fn reap_by(child: &mut std::process::Child, how: impl FnOnce(&mut std::process::Child, Duration)) {
     how(child, REAP_BOUND);
@@ -191,7 +203,7 @@ fn exec_traced(
     let spawned = cmd.spawn().map_err(|e| Failure::Spawn(e.to_string()));
     drop(spawning);
     let mut child = spawned?;
-    crate::sys::adopt_child(&child);
+    let group = crate::sys::adopt_child(&child);
     if let (Some(mut pipe), Stdin::Bytes(bytes)) = (child.stdin.take(), &stdin) {
         let payload = bytes.to_vec();
         // A child that exits without reading closes the pipe early; its exit code and answer still stand.
@@ -216,8 +228,8 @@ fn exec_traced(
         }
         None => drop(tx),
     }
-    // Only the direct child is killed and reaped: the hook server it started detached must outlive the call.
-    let kill = reap;
+    // The route's whole group is ended, then its direct child reaped; a descendant that left the group or job on purpose (the detached hook server) is not chased.
+    let kill = |child: &mut std::process::Child| reap_route(child, &group);
     let left = |end: Instant| end.saturating_duration_since(Instant::now());
     let held = match rx.recv_timeout(left(end)) {
         Ok(Ok(bytes)) => {
@@ -549,6 +561,75 @@ mod tests {
         let pid = pid.expect("no run of the hung route recorded its pid before it was killed");
         // The kill was issued before exec returned; the wait here is on the process ending, not on the production reap bound.
         assert!(poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some(), "pid {pid} of the hung route was still alive after exec returned");
+    }
+
+    /// Hanging route that starts a hanging child of its own: `parentfile=<path>` gets its pid, `childfile=<path>` the child's.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "only runs as the route of the grandchild kill test below"]
+    fn hang_parent() {
+        let arg = |key: &str| std::env::args().find_map(|a| a.strip_prefix(key).map(String::from));
+        let (Some(parentfile), Some(childfile)) = (arg("parentfile="), arg("childfile=")) else { return };
+        std::fs::write(parentfile, std::process::id().to_string()).unwrap();
+        let grandchild = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "capture::tests::hang_child"])
+            .arg(format!("pidfile={childfile}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        drop(grandchild);
+        std::thread::sleep(Duration::from_secs(120));
+    }
+
+    #[test]
+    fn the_end_of_a_route_is_handed_its_group_and_not_only_its_child() {
+        let me = std::env::current_exe().unwrap();
+        let mut child = Command::new(me).args(["--list"]).stdout(Stdio::null()).spawn().unwrap();
+        let group = crate::sys::adopt_child(&child);
+        let mut handed = None;
+        reap_route_by(&mut child, &group, |g| handed = Some(g.clone()));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(handed, Some(group.clone()), "the route's end must be handed its group");
+        assert_eq!(group.leader, child.id(), "the group must be the one the route heads");
+    }
+
+    // Not run on Windows: the job is made with silent breakaway, so no descendant of the route is ever in it.
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_route_takes_the_child_it_started_with_it_on_posix() {
+        let pidfile = own_pidfile!();
+        let parentfile = pidfile.with_extension("parent");
+        // Each recorded pid is ended however this test ends, so a red row leaves nothing running.
+        let _reap_child = ReapRecordedChild(pidfile.clone());
+        let _reap_parent = ReapRecordedChild(parentfile.clone());
+        let me = std::env::current_exe().unwrap().into_os_string();
+        let argv = vec![
+            me,
+            "--ignored".into(),
+            "--exact".into(),
+            "capture::tests::hang_parent".into(),
+            format!("parentfile={}", parentfile.display()).into(),
+            format!("childfile={}", pidfile.display()).into(),
+        ];
+        // A run that overran its limit before the grandchild wrote its pid says nothing about the kill, so another run follows.
+        let pid = poll_within(BACKSTOP, || {
+            let _ = std::fs::remove_file(&pidfile);
+            let (done, ended) = mpsc::channel();
+            let route = argv.clone();
+            // owner: this test; exec ends the route at its limit, and the thread ends with exec
+            std::thread::spawn(move || {
+                let limit = Duration::from_millis(2500);
+                let _ = done.send(exec(&route, Stdin::Null, "t", limit, "grok", "pre_tool_use"));
+            });
+            let ended = ended.recv_timeout(BACKSTOP).expect("exec did not return");
+            assert!(matches!(ended, Err(Failure::Timeout(_))), "the hung route must time out");
+            std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse::<u32>().ok())
+        });
+        let pid = pid.expect("no run of the route recorded its grandchild's pid before it was killed");
+        let gone = poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some();
+        assert!(gone, "grandchild pid {pid} outlived its route");
     }
 
     #[test]
