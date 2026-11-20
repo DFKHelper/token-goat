@@ -13,7 +13,8 @@ import { killIfCommandLine, tiedToHandles } from './helpers/kill_if_command_line
 // Provenance: HAND-DERIVED. Node's own failure exits are 1 (uncaught error, syntax error), 9, 13 and signals.
 const WIN = process.platform === 'win32'
 const SAFE = '{"safe":true}'
-const NON_ASCII = 'café 日本 \u{1F600}'
+// An exit-0 answer must be an object now (the guard serves no bare text), so the bytes sit in a JSON string.
+const NON_ASCII = '{"say":"café 日本 \u{1F600}"}'
 const NON_ASCII_LINES = 'über\n日本\n\u{1F600}'
 
 interface Prog {
@@ -64,7 +65,20 @@ const SHIMS: Record<string, string> = {
     "process.stderr.write('blocked: use the other command\\n'); " +
     "process.stdout.write('{\"d\":\"block\"}'); process.exit(2)\n",
   healthy: "process.stdout.write('{\"route\":\"node\"}')\n",
-  'multi-line answer': "process.stdout.write('line one\\nline two\\nline three')\n",
+  'multi-line answer': "process.stdout.write('{\"lines\":[\\n\"one\",\\n\"two\"\\n]}')\n",
+  // Provenance: HAND-DERIVED. Exit-0 and exit-2 outputs the guard must not serve as a hook answer.
+  'exit 0 null': "process.stdout.write('null')\n",
+  'exit 0 number': "process.stdout.write('3')\n",
+  'exit 0 bare word': "process.stdout.write('ok')\n",
+  'exit 0 broken object': "process.stdout.write('{broken')\n",
+  'exit 0 empty object': "process.stdout.write('{}')\n",
+  'exit 0 decision object': "process.stdout.write('{\"decision\":\"approve\"}')\n",
+  'exit 0 no output': 'process.exit(0)\n',
+  'exit 2 null': "process.stdout.write('null'); process.exit(2)\n",
+  'exit 2 number': "process.stdout.write('3'); process.exit(2)\n",
+  'exit 2 bare word': "process.stdout.write('ok'); process.exit(2)\n",
+  'exit 2 broken object': "process.stdout.write('{broken'); process.exit(2)\n",
+  'exit 2 empty object': "process.stdout.write('{}'); process.exit(2)\n",
   // Provenance: HAND-DERIVED. Echoes the stdin it read; no input is treated as a failed route.
   'echo the payload it read':
     "let d = ''; process.stdin.on('data', (c) => { d += c }); " +
@@ -133,6 +147,8 @@ describe('a broken Node shim falls through to the safe answer', () => {
       'silent exit 2', 'exit 2 whitespace stdout',
     ]
     broken.push('exit 2 whitespace stderr', 'exit 2 stdout not json')
+    broken.push('exit 0 null', 'exit 0 number', 'exit 0 bare word', 'exit 0 broken object')
+    broken.push('exit 2 null', 'exit 2 number', 'exit 2 bare word', 'exit 2 broken object')
     for (const name of broken) {
       it(`${name} through ${shell}: safe answer, exit 0, empty stderr`, () => {
         const o = run(shell, SHIMS[name])
@@ -171,6 +187,21 @@ describe('a broken Node shim falls through to the safe answer', () => {
         stderr: '',
       })
     })
+    for (const [name, status, stdout] of [
+      ['exit 0 empty object', 0, '{}'],
+      ['exit 0 decision object', 0, '{"decision":"approve"}'],
+      ['exit 2 empty object', 2, '{}'],
+    ] as const) {
+      it(`${name} is served as it came through ${shell}`, () => {
+        const o = run(shell, SHIMS[name])
+        expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({ status, stdout, stderr: '' })
+      })
+    }
+    it(`an exit 0 with no output is served as an empty answer through ${shell}`, () => {
+      const o = run(shell, SHIMS['exit 0 no output'])
+      expect({ status: o.status, stdout: o.stdout, stderr: o.stderr })
+        .toEqual({ status: 0, stdout: '', stderr: '' })
+    })
     it(`a non-ascii answer reaches the host byte for byte through ${shell}`, () => {
       const o = run(shell, SHIMS['non-ascii answer, exit 0'])
       expect({ status: o.status, hex: o.bytes.toString('hex') }).toEqual({
@@ -197,7 +228,7 @@ describe('a broken Node shim falls through to the safe answer', () => {
       const o = run(shell, SHIMS['multi-line answer'])
       expect({ status: o.status, stdout: o.stdout, stderr: o.stderr }).toEqual({
         status: 0,
-        stdout: 'line one\nline two\nline three',
+        stdout: '{"lines":[\n"one",\n"two"\n]}',
         stderr: '',
       })
     })
@@ -296,6 +327,38 @@ describe('a broken Node shim falls through to the safe answer', () => {
         codePage: '850',
       })
     })
+  }
+  // Provenance: FORMAT-DERIVED from src/hook_selftest.ts validAnswer: Claude Code reads pre_compact stdout as text.
+  for (const shell of SHELLS.filter((s) => s !== 'cmd')) {
+    for (const [event, harness, served] of [
+      ['pre_compact', undefined, true],
+      ['pre_compact', 'claudecode', true],
+      ['pre_compact', 'codex', false],
+      ['pre_tool_use', undefined, false],
+    ] as const) {
+      const who = harness ?? 'a Node-only command'
+      it(`${shell}: plain text on ${event} for ${who} is ${served ? '' : 'not '}served`, () => {
+        const dir = path.join(root, `pc${String(n++)}`)
+        fs.mkdirSync(dir)
+        const shim = path.join(dir, 'shim.cjs')
+        fs.writeFileSync(shim, "process.stdout.write('summarize the session')\n")
+        const exe = path.join(dir, WIN ? 'tg-hook.exe' : 'tg-hook')
+        fs.copyFileSync(process.execPath, exe)
+        fs.chmodSync(exe, 0o755)
+        const nodeArgv = [process.execPath, shim, event, 'entry.js']
+        const native = harness === undefined ? nodeArgv : [exe, '--harness', harness, '--', ...nodeArgv]
+        const marker = path.join(dir, 'hook-broken.json')
+        const command = buildGuardedCommand({ shell, native, safe: SAFE, marker })
+        const p = prog(shell)!
+        const r = spawnSync(p.program, p.args(command), {
+          encoding: 'utf8', cwd: dir, input: '{}', windowsHide: true,
+        })
+        expect({ status: r.status, stdout: r.stdout }).toEqual({
+          status: 0,
+          stdout: served ? 'summarize the session' : SAFE,
+        })
+      })
+    }
   }
   it('runs on at least the sh form', () => {
     expect(SHELLS).toContain('sh')

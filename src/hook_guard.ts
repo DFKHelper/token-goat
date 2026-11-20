@@ -14,7 +14,7 @@ export class HookCommandRewriteError extends Error {
 }
 
 /** Version token every guarded command starts with: a no-op, so a later build recognises both forms. */
-export const GUARD_VERSION = 3
+export const GUARD_VERSION = 4
 const SH_PREFIX = /^:\s+tg-guard-v(\d+)\s*;/
 const PS_PREFIX = /^'tg-guard-v(\d+)'\s*\|\s*Out-Null\s*;/
 // Built from parts so the version is not an interpolation between hand-written quotes (hint_templates guard).
@@ -76,14 +76,20 @@ function quoteWord(shell: GuardShell, text: string): string {
 // limit: no writable temp directory gives the safe answer and no hook work; revisit-when: a machine reports it
 const SH_RM_ERR = '[ ! -f "$1" ] || rm -f "$1"; [ ! -f "$2" ] || rm -f "$2"'
 const SH_REPLAY = `cat "$1" >&3; [ -z "$2" ] || cat "$2" >&4; ${SH_RM_ERR}`
+// Stdout with its whitespace removed is an answer when empty, or opening with `{` and ending with `}`.
+const SH_OUT_SQUEEZED = `case "$(tr -d '[:space:]' <"$2" 2>/dev/null)" in`
+const SH_OUT_OBJECT = `${SH_OUT_SQUEEZED} ''|'{'*'}') true;; *) false;; esac`
+/** What an exit-0 stdout must be: `object` (blank, or `{...}`), or `any` (a host that reads plain text). */
+type AnswerRule = 'object' | 'any'
+const shOutOk = (rule: AnswerRule): string => (rule === 'any' ? 'true' : SH_OUT_OBJECT)
 const SH_WORDS = `[ -n "$(tr -d '[:space:]' <"$1" 2>/dev/null)" ] || ` +
-  `{ [ -n "$2" ] && [ "$(tr -d '[:space:]' <"$2" 2>/dev/null | cut -c1)" = '{' ]; }`
-// Exit 2 speaks as non-blank stderr or stdout opening with `{` (a decision); `tr` runs on the exit-2 path only.
+  `{ [ -n "$2" ] && ${SH_OUT_SQUEEZED} '{'*'}') true;; *) false;; esac; }`
+// Exit 2 speaks as non-blank stderr or stdout shaped as an object (a decision); `tr` runs on exits 0 and 2 only.
 const SH_SPOKE = `{ ${SH_WORDS}; }`
 const SH_CLEAR = ': >"$1"; [ -z "$2" ] || : >"$2"'
-const CASE_SH =
-  `case $? in 0) ${SH_REPLAY}; exit 0;; 2) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ${SH_CLEAR};; ` +
-  `*) ${SH_CLEAR};; esac`
+const caseSh = (rule: AnswerRule): string =>
+  `case $? in 0) if ${shOutOk(rule)}; then ${SH_REPLAY}; exit 0; fi; ${SH_CLEAR};; ` +
+  `2) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ${SH_CLEAR};; *) ${SH_CLEAR};; esac`
 // The line a route prints first to detach the host (ASYNC_DETACH_LINE in hook_adapters.ts, pinned by a test).
 const ASYNC_QUOTED = `'{"async":true}'`
 // Events whose payloads isAsyncDetachEligible can accept: only their guards carry the early-forwarding stage.
@@ -95,8 +101,9 @@ const SH_LEAD =
   `if [ "$(cat "$2" 2>/dev/null; echo .)" = ${ASYNC_QUOTED}"$(echo; echo .)" ]; then ` +
   `: >"$2"; echo ${ASYNC_QUOTED} >&4; echo m; fi; cat >>"$2"`
 // Accepted outcomes are judged as in CASE_SH; after a forwarded marker a failed run prints nothing and exits 0.
-const CASE_SH_LEAD =
-  `case "$3" in *x0x*) ${SH_REPLAY}; exit 0;; *x2x*) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ` +
+const caseShLead = (rule: AnswerRule): string =>
+  `case "$3" in *x0x*) if ${shOutOk(rule)}; then ${SH_REPLAY}; exit 0; fi; ${SH_CLEAR};; ` +
+  `*x2x*) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ` +
   `${SH_CLEAR};; *) ${SH_CLEAR};; esac; case "$3" in *m*) ${SH_RM_ERR}; exit 0;; esac`
 const SH_HOLD_OK = '[ -f "$1" ] && [ -f "$2" ]'
 const SH_MKTEMP_TMP = '"$(mktemp /tmp/tg-guard.XXXXXX 2>/dev/null)"'
@@ -106,12 +113,12 @@ const SH_STDERR =
   `${SH_HOLD_OK} || { ${SH_RM_ERR}; ${SH_TMP_IN_TMP}; }; ` +
   `${SH_HOLD_OK} || { ${SH_RM_ERR}; set -- "" ""; }; exec 3>&2 4>&1; [ -z "$1" ] || exec 2>>"$1" >>"$2"`
 
-function shRoute(test: string, argv: readonly string[], forward: boolean): string {
+function shRoute(test: string, argv: readonly string[], forward: boolean, rule: AnswerRule): string {
   const call = argv.map((w) => quoteWord('sh', w)).join(' ')
-  if (!forward) return `if [ -n "$1" ] && ${test}; then ${call}; ${CASE_SH}; fi`
+  if (!forward) return `if [ -n "$1" ] && ${test}; then ${call}; ${caseSh(rule)}; fi`
   // The `then` statement ends at the first `;`, so the argv stays the quoted words of that statement.
   return `if [ -n "$1" ] && ${test}; then set -- "$1" "$2" "$( { { ${call} 6>&-; echo "x$?x" >&6; } | ` +
-    `{ ${SH_LEAD}; }; } 6>&1 )"; ${CASE_SH_LEAD}; fi`
+    `{ ${SH_LEAD}; }; } 6>&1 )"; ${caseShLead(rule)}; fi`
 }
 
 // The merge of stderr into the held output, as the statement reader returns it.
@@ -156,16 +163,20 @@ const PS_OUT_CLEAR = `Remove-Variable tgo, tge, tgn -ErrorAction Ignore; ${PS_BY
 const PS_OUT_DEF = `function tgt { (${PS_HELD} -Contains ${PS_TEXT}) -join [char]10 }`
 const PS_OUT = '(tgt)'
 const PS_REPLAY_OUT = `[Console]::Out.Write(${PS_OUT})`
-// Exit 2 counts as a block only when it speaks: non-blank stderr, or stdout whose first non-blank char is `{`.
-const PS_SPOKE = `(${PS_ERR}.Trim().Length -gt 0) -or (${PS_OUT}.TrimStart() -like '{*')`
+// Stdout is an answer only when blank, or opening with `{` and ending with `}` once trimmed (no JSON parser here).
+const PS_OUT_OBJECT = `(${PS_OUT}.Trim().Length -eq 0) -or (${PS_OUT}.Trim() -like '{*}')`
+const psOutOk = (rule: AnswerRule): string => (rule === 'any' ? '1 -eq 1' : PS_OUT_OBJECT)
+// Exit 2 counts as a block only when it speaks: non-blank stderr, or stdout shaped as an object.
+const PS_SPOKE = `(${PS_ERR}.Trim().Length -gt 0) -or (${PS_OUT}.Trim() -like '{*}')`
 
-function psRoute(test: string, argv: readonly string[], forward: boolean): string {
+function psRoute(test: string, argv: readonly string[], forward: boolean, rule: AnswerRule): string {
   const call = argv.map((w) => quoteWord('powershell', w)).join(' ')
   const code = '(Get-Variable LASTEXITCODE -ValueOnly)'
   const sink = (forward ? [...PS_STAGE_WORDS, ...PS_OUT_SINK] : PS_OUT_SINK).join(' ')
   const after = forward ? `; ${PS_FORWARDED_EXIT}` : ''
   return `if (${test}) { try { ${PS_OUT_CLEAR}; & ${call} ${PS_ERR_REDIRECT_WORD} ${sink}; ` +
-    `if (${code} -eq 0) { ${PS_REPLAY}; ${PS_REPLAY_OUT}; ${PS_ENCODING_BACK}; exit 0 }; ` +
+    `if (${code} -eq 0) { if (${psOutOk(rule)}) { ` +
+    `${PS_REPLAY}; ${PS_REPLAY_OUT}; ${PS_ENCODING_BACK}; exit 0 } }; ` +
     `if (${code} -eq 2) { if (${PS_SPOKE}) { ${PS_REPLAY}; ${PS_REPLAY_OUT}; ` +
     `${PS_ENCODING_BACK}; exit 2 } } ` +
     `} catch { }; ${PS_ENCODING_BACK}${after} }`
@@ -207,15 +218,19 @@ export function buildGuardedCommand(input: GuardInput): string {
   const node = nodeOnly ? input.native : wrappedNodeArgv(input.native)
   const shim = node[1]
   const forward = ASYNC_EVENTS.has(node[2] ?? '')
+  // Claude Code reads a pre_compact hook's stdout as plain summarizer instructions (see validAnswer).
+  const harness = input.native[input.native.indexOf('--harness') + 1]
+  const plainHost = input.native.includes('--harness') ? harness === 'claudecode' : true
+  const rule: AnswerRule = node[2] === 'pre_compact' && plainHost ? 'any' : 'object'
   const notice = guardNoticeJson(bin)
   if (input.shell === 'sh') {
     const parts = [`: tg-guard-v${String(GUARD_VERSION)}`, SH_STDERR]
-    if (!nodeOnly) parts.push(shRoute(`[ -x ${q(bin)} ] && [ -s ${q(bin)} ]`, input.native, forward))
+    if (!nodeOnly) parts.push(shRoute(`[ -x ${q(bin)} ] && [ -s ${q(bin)} ]`, input.native, forward, rule))
     // limit: a native route reads stdin then fails: no payload, safe answer. revisit-when: a native client does
     if (shim !== undefined) {
-      parts.push(shRoute(`[ -f ${q(shim)} ] && [ -x ${q(node[0]!)} ]`, node, forward))
+      parts.push(shRoute(`[ -f ${q(shim)} ] && [ -x ${q(node[0]!)} ]`, node, forward, rule))
       const viaPath = ['node', ...node.slice(1)]
-      parts.push(shRoute(`[ -f ${q(shim)} ] && command -v node >/dev/null 2>&1`, viaPath, forward))
+      parts.push(shRoute(`[ -f ${q(shim)} ] && command -v node >/dev/null 2>&1`, viaPath, forward, rule))
     }
     parts.push(SH_RM_ERR)
     parts.push(`[ -e ${q(input.marker)} ] || printf '%s' ${q(notice)} > ${q(input.marker)} 2>/dev/null`)
@@ -227,12 +242,12 @@ export function buildGuardedCommand(input: GuardInput): string {
   if (forward) parts.push(PS_STAGE_DEF)
   if (!nodeOnly) {
     const test = `(${exists(bin)}) -and ((Get-Item -LiteralPath ${q(bin)}).Length -gt 0)`
-    parts.push(psRoute(test, input.native, forward))
+    parts.push(psRoute(test, input.native, forward, rule))
   }
   if (shim !== undefined) {
-    parts.push(psRoute(`${exists(shim)}`, node, forward))
+    parts.push(psRoute(`${exists(shim)}`, node, forward, rule))
     const viaPath = `(${exists(shim)}) -and (Get-Command node -ErrorAction Ignore)`
-    parts.push(psRoute(viaPath, ['node', ...node.slice(1)], forward))
+    parts.push(psRoute(viaPath, ['node', ...node.slice(1)], forward, rule))
 
   }
   parts.push(

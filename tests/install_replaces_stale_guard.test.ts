@@ -143,6 +143,14 @@ describe('a reinstall replaces a stale guard of its own entry', () => {
     expect(stderr.mock.calls.map((c) => String(c[0])).join(''), 'no newer-guard notice').not.toContain('newer')
   })
 
+  it('replaces an installed version-3 guard, from before the answer-shape rule', () => {
+    const p = installThenRewrite((c) => c.replace(`tg-guard-v${String(GUARD_VERSION)}`, 'tg-guard-v3'))
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    installHooks('project')
+    const commands = readSettings(p).hooks['PreToolUse']!.flatMap((g) => g.hooks.map((h) => h.command))
+    expect(commands, 'the version-3 guard was replaced').toEqual([expectedCommand('pre_tool_use')])
+  })
+
   it('leaves a guard of a higher version than this build alone', () => {
     const from = `tg-guard-v${String(GUARD_VERSION)}`
     const newer = (c: string): string => c.replace(from, `tg-guard-v${String(GUARD_VERSION + 1)}`)
