@@ -35,7 +35,7 @@ function command(event: string): string {
     shell: 'sh',
     native: [process.execPath.split(path.sep).join('/'), script.split(path.sep).join('/'), event],
     safe: '{}',
-    marker: path.join(dir, 'marker').split(path.sep).join('/'),
+    marker: path.join(dir, `marker-${event}`).split(path.sep).join('/'),
   })
 }
 
@@ -57,7 +57,8 @@ describe.runIf(HAS_SH)('the self-test runs several registered commands at once i
     const out = selftestRegisteredCommands([command('preToolUse'), command('garbled'), command('postToolUse')])
     expect(out.failures).toHaveLength(1)
     expect(out.failures[0]).toContain('garbled')
-    expect(out.failures[0]).toContain('not a valid answer')
+    // Guard version 4 serves only a blank or object answer, so the text falls through to the safe answer.
+    expect(out.failures[0]).toContain('nothing could run')
     expect(out.tested).toBe(3)
     expect(out.skipped).toEqual([])
   })
