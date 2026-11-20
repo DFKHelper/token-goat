@@ -18,7 +18,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 // vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine property"), so simulating a writeSync failure needs a module mock with a hoisted flag -- same pattern as tests/index_prune.test.ts. Every other fs call passes straight through to the real module untouched; only writeSync is ever intercepted, and only for the one call after the flag is set.
-const mockState = vi.hoisted(() => ({ failNextWrite: false, writeMode: '' as '' | 'half' | 'zero', writeCalls: 0, fakeOwnerOf: '', chownThrows: false, events: [] as string[], failNextMkdir: '', lockCreateEperm: '', lockCreateEpermPersist: false, lockStatEperm: '', lockStolenAfterRead: '' }))
+const mockState = vi.hoisted(() => ({ failNextWrite: false, writeMode: '' as '' | 'half' | 'zero', writeCalls: 0, fakeOwnerOf: '', chownThrows: false, unlinkFailures: 0, events: [] as string[], failNextMkdir: '', lockCreateEperm: '', lockCreateEpermPersist: false, lockStatEperm: '', lockStolenAfterRead: '' }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   const guardedWriteSync = ((...args: Parameters<typeof fs.writeSync>) => {
@@ -51,6 +51,14 @@ vi.mock('node:fs', async (importOriginal) => {
     mockState.events.push('rename')
     return actual.renameSync(...args)
   }) as typeof fs.renameSync
+  // The temp unlink is refused this many times (a scanner holding the file), then really runs.
+  const guardedUnlinkSync = ((file: Parameters<typeof fs.unlinkSync>[0]) => {
+    if (mockState.unlinkFailures > 0 && String(file).endsWith('.tmp')) {
+      mockState.unlinkFailures -= 1
+      throw Object.assign(new Error('EBUSY: resource busy, unlink'), { code: 'EBUSY' })
+    }
+    return actual.unlinkSync(file)
+  }) as typeof fs.unlinkSync
   const guardedMkdirSync = ((...args: Parameters<typeof fs.mkdirSync>) => {
     if (mockState.failNextMkdir) {
       const code = mockState.failNextMkdir
@@ -85,7 +93,7 @@ vi.mock('node:fs', async (importOriginal) => {
     }
     return content
   }) as typeof fs.readFileSync
-  return { ...actual, default: actual, writeSync: guardedWriteSync, lstatSync: guardedLstatSync, chownSync: guardedChownSync, renameSync: guardedRenameSync, mkdirSync: guardedMkdirSync, writeFileSync: guardedWriteFileSync, statSync: guardedStatSync, readFileSync: guardedReadFileSync }
+  return { ...actual, default: actual, writeSync: guardedWriteSync, lstatSync: guardedLstatSync, chownSync: guardedChownSync, renameSync: guardedRenameSync, unlinkSync: guardedUnlinkSync, mkdirSync: guardedMkdirSync, writeFileSync: guardedWriteFileSync, statSync: guardedStatSync, readFileSync: guardedReadFileSync }
 })
 
 import type * as fs from 'node:fs'
@@ -209,6 +217,31 @@ describe('atomic writes', () => {
     expect(mockState.writeCalls).toBe(1)
     atomicWriteBytes(path.join(dir, 'plain.bin'), Buffer.from([1, 2, 3]))
     expect(mockState.writeCalls).toBe(2)
+  })
+
+  describe('temp cleanup after a failed write', () => {
+    afterEach(() => {
+      mockState.unlinkFailures = 0
+      mockState.failNextWrite = false
+    })
+
+    it('tries the unlink again, so one refusal leaves no temp and the original error is thrown', () => {
+      const target = path.join(dir, 'retry.txt')
+      writeFileSync(target, 'old')
+      mockState.failNextWrite = true
+      mockState.unlinkFailures = 1
+      expect(() => atomicWriteText(target, 'new')).toThrow('ENOSPC')
+      expect(readdirSync(dir)).toEqual(['retry.txt'])
+    })
+
+    it('throws the original error, not the unlink error, when both unlink tries are refused', () => {
+      const target = path.join(dir, 'stuck.txt')
+      writeFileSync(target, 'old')
+      mockState.failNextWrite = true
+      mockState.unlinkFailures = 2
+      expect(() => atomicWriteText(target, 'new')).toThrow('ENOSPC')
+      expect(readFileSync(target, 'utf-8')).toBe('old')
+    })
   })
 
   describe('owner of the destination', () => {
