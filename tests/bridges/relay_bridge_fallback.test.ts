@@ -2,7 +2,7 @@
  * or spawning the baked entry, or spawning `token-goat` from PATH. These rows pin that a failed entry run falls
  * back to PATH inside one budget, and that a block is accepted only from a clean run. */
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -66,8 +66,8 @@ const spawnSync = (...a) => globalThis.${SPAWN_SLOT}(...a)
 type PiHandler = (...a: unknown[]) => unknown
 type PiHost = { on: (e: string, h: PiHandler) => void; sendMessage: () => void }
 
-/** Imports pi's extension and drives its pre-tool hook; a block comes back as the hook answer shape. */
-async function loadPi(dir: string): Promise<(event: string) => Promise<Answer>> {
+/** Imports pi's extension with spawnSync routed through the spawn slot; returns the handlers it registered. */
+async function loadPiHandlers(dir: string): Promise<Record<string, PiHandler>> {
   const { code } = transformSync(PI_EXTENSION_SCRIPT, { loader: 'ts', format: 'esm' })
   const importLine = /import \{ spawnSync \} from "node:child_process";?/
   const patched = code.replace(importLine, `const spawnSync = (...a) => globalThis.${SPAWN_SLOT}(...a);`)
@@ -78,6 +78,12 @@ async function loadPi(dir: string): Promise<(event: string) => Promise<Answer>> 
   const handlers: Record<string, PiHandler> = {}
   mod.default({ on: (e, h) => { handlers[e] = h }, sendMessage: () => undefined })
   handlers['session_start']!({}, { cwd: dir, sessionManager: undefined })
+  return handlers
+}
+
+/** Imports pi's extension and drives its pre-tool hook; a block comes back as the hook answer shape. */
+async function loadPi(dir: string): Promise<(event: string) => Promise<Answer>> {
+  const handlers = await loadPiHandlers(dir)
   return async () => {
     const event = { toolName: 'read', input: { path: join(dir, 'a.txt') } }
     type Res = { block?: boolean; reason?: unknown } | undefined
@@ -500,5 +506,50 @@ describe.each(BRIDGES)('$name: the deadline is struck per call', ({ load, cap })
     expect(calls[1]!.options['timeout'], 'the PATH spawn timeout is what is left').toBe(cap - 4_000)
     const inherited = spawnDeadlines(calls)[1]
     expect(inherited, 'the PATH child inherits the call deadline, not a new one').toBe(String(T0 + cap))
+  })
+})
+
+describe('pi: what the extension sends and does with the answer, run rather than matched', () => {
+  const eventOf = (call: SpawnCall): unknown => (Array.isArray(call.args) ? call.args[2] : call.command)
+
+  it('applies the updatedInput of a hookSpecificOutput answer to the tool arguments', async () => {
+    const dir = mkDir()
+    const answer = { hookSpecificOutput: { updatedInput: { command: 'REWRITTEN' } } }
+    writeEntry(dir, printerScript(JSON.stringify(answer)))
+    const calls = useRealSpawn(writePathStub(dir, '').stubDir)
+    const handlers = await loadPiHandlers(dir)
+    const input = { command: 'ORIGINAL' }
+    const res = await handlers['tool_call']!({ toolName: 'bash', input }, { cwd: dir })
+    expect(res, 'a rewrite is not a block').toBeUndefined()
+    expect(input.command, 'the rewritten command replaced the original').toBe('REWRITTEN')
+    expect(eventOf(calls[0]!), 'the pre-tool event name').toBe('pre_tool_use')
+  })
+
+  it('does not call the hook for find, whose token-goat tool has no pre-tool handler', async () => {
+    const dir = mkDir()
+    writeEntry(dir, printerScript(BLOCK_JSON))
+    const calls = useRealSpawn(writePathStub(dir, BLOCK_JSON).stubDir)
+    const handlers = await loadPiHandlers(dir)
+    const res = await handlers['tool_call']!({ toolName: 'find', input: { pattern: '*.ts' } }, { cwd: dir })
+    expect(res, 'no block for find').toBeUndefined()
+    expect(calls.length, 'no hook spawn for find').toBe(0)
+  })
+
+  it('sends the text of the result as tool_response.output in the post-tool payload', async () => {
+    const dir = mkDir()
+    const seen = join(dir, 'payload.json')
+    const write = `require('fs').writeFileSync(${JSON.stringify(seen)}, s); process.exit(0)`
+    const listen = `process.stdin.on('data', (c) => { s += c })\nprocess.stdin.on('end', () => { ${write} })\n`
+    const record = `let s = ''\n${listen}`
+    writeEntry(dir, record)
+    const calls = useRealSpawn(writePathStub(dir, '').stubDir)
+    const handlers = await loadPiHandlers(dir)
+    const text = (t: string): object => ({ type: 'text', text: t })
+    const content = [text('FIRST'), { type: 'image', data: 'x' }, text('SECOND')]
+    const input = { path: join(dir, 'a.txt') }
+    await handlers['tool_result']!({ toolName: 'read', input, content }, { cwd: dir })
+    expect(eventOf(calls[0]!), 'the post-tool event name').toBe('post_tool_use')
+    const payload = JSON.parse(readFileSync(seen, 'utf8')) as { tool_response?: { output?: unknown } }
+    expect(payload.tool_response?.output, 'the text blocks joined, the image left out').toBe('FIRST\nSECOND')
   })
 })
