@@ -21,6 +21,8 @@ import {
   SOURCE_CONTENT,
   SOURCE_OTHER,
   GLOBAL_SCHEMA_SQL,
+  HARNESS_UNRECORDED,
+  PRICING_VERSION_UNRECORDED,
   rollupAndPruneStats,
   pruneTestIsolationLeakRows,
 } from '../src/stats.js'
@@ -238,6 +240,53 @@ describe('stats', () => {
         expect(todayRow.bytes_saved).toBe(750)
         expect(todayRow.tokens_saved).toBe(150)
       }
+    })
+
+    it('aggregates raw events across reporting dimensions without counting redactions as tokens', () => {
+      const dbPath = path.join(tempDir, 'test.db')
+      const db = openStatsDb(dbPath)
+      const now = Math.floor(Date.now() / 1000)
+      const insert = db.prepare(
+        'INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, harness, tg_version) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+
+      insert.run(now, 'secret_redacted', 2, 100, 'copilot_cli', '2.1')
+      insert.run(now, 'secret_redacted', 3, 200, 'copilot_cli', '2.1')
+      insert.run(now, 'image_shrink', 80, 500, null, null)
+      insert.run(now, 'image_shrink', 20, 200, '', '')
+
+      const summary = summarize(30, db)
+      db.close()
+
+      expect(summary.total_events).toBe(4)
+      expect(summary.total_bytes_saved).toBe(1000)
+      expect(summary.total_tokens_saved).toBe(100)
+      expect(summary.counts['secret_redacted']).toBe(5)
+      expect(summary.by_kind['secret_redacted']).toEqual({
+        events: 2,
+        bytes_saved: 300,
+        tokens_saved: 0,
+      })
+      expect(summary.by_harness['copilot_cli']).toEqual({
+        events: 2,
+        bytes_saved: 300,
+        tokens_saved: 0,
+      })
+      expect(summary.by_harness[HARNESS_UNRECORDED]).toEqual({
+        events: 2,
+        bytes_saved: 700,
+        tokens_saved: 100,
+      })
+      expect(summary.by_pricing_version['2.1']).toEqual({
+        events: 2,
+        bytes_saved: 300,
+        tokens_saved: 0,
+      })
+      expect(summary.by_pricing_version[PRICING_VERSION_UNRECORDED]).toEqual({
+        events: 2,
+        bytes_saved: 700,
+        tokens_saved: 100,
+      })
     })
 
     it('buckets an evening-local timestamp into the local day, not the later UTC day it rolls into', () => {

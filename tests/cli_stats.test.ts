@@ -4,9 +4,8 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import { writeRaw, renderTopSessionFiles, renderTopSessionFilesFromDisk, runStats } from '../src/cli_stats.js'
 
-// Stub stats module so runStats never touches the real on-disk DB
-vi.mock('../src/stats.js', () => ({
-  summarize: (_windowDays?: number, _testDb?: unknown, _homeDir?: string) => ({
+const { summarizeMock } = vi.hoisted(() => {
+  const summary = {
     total_events: 0,
     total_bytes_saved: 0,
     total_tokens_saved: 0,
@@ -15,16 +14,31 @@ vi.mock('../src/stats.js', () => ({
     by_project: {},
     by_command: {},
     by_source: { hook: { events: 3, tokens_saved: 42, bytes_saved: 100 } },
-    window_days: _windowDays ?? 30,
+    window_days: 30,
     totals_unknown_reason: null,
     db_missing: false,
     write_failures: null,
-  }),
+  }
+  return {
+    summarizeMock: vi.fn((windowDays?: number) => ({
+      ...summary,
+      window_days: windowDays ?? 30,
+    })),
+  }
+})
+
+// Stub stats module so runStats never touches the real on-disk DB
+vi.mock('../src/stats.js', () => ({
+  summarize: summarizeMock,
 }))
 
 vi.mock('../src/stats_report.js', () => ({
-  renderStats: () => { process.stdout.write('MOCK_FULL_STATS\n') },
+  renderStats: () => {
+    summarizeMock()
+    process.stdout.write('MOCK_FULL_STATS\n')
+  },
   renderShortStats: (opts?: { force?: boolean }) => {
+    summarizeMock()
     process.stdout.write(opts?.force === true ? 'MOCK_SHORT_STATS_FORCED\n' : 'MOCK_SHORT_STATS\n')
   },
 }))
@@ -77,6 +91,15 @@ describe('cli_stats', () => {
   afterEach(() => {
     fs.rmSync(tempDir, { recursive: true, force: true })
     vi.clearAllMocks()
+  })
+
+  it('summarizes only once for both the short and full text reports', () => {
+    runStats()
+    expect(summarizeMock).toHaveBeenCalledTimes(1)
+
+    summarizeMock.mockClear()
+    runStats({ full: true })
+    expect(summarizeMock).toHaveBeenCalledTimes(1)
   })
 
   // ---- writeRaw -----------------------------------------------------------

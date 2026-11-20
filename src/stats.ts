@@ -392,8 +392,8 @@ function zeroBucket(): StatsBucket {
   return { events: 0, bytes_saved: 0, tokens_saved: 0 }
 }
 
-function incBucket(bucket: StatsBucket, bytesSaved: number, tokensSaved: number): void {
-  bucket.events += 1
+function addBucket(bucket: StatsBucket, events: number, bytesSaved: number, tokensSaved: number): void {
+  bucket.events += events
   bucket.bytes_saved += bytesSaved
   bucket.tokens_saved += tokensSaved
 }
@@ -1051,23 +1051,31 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   // Selected only when the column is actually there: an injected `testDb` may carry a table this module never migrated, and naming a missing column would throw out of summarize() entirely rather than degrading to "harness not recorded".
   const hasHarness = statsHasHarnessColumn(db)
   const hasVersion = statsHasVersionColumn(db)
-  const cols = [
-    'ts',
-    'kind',
-    'bytes_saved',
-    'tokens_saved',
-    ...(hasHarness ? ['harness'] : []),
-    ...(hasVersion ? ['tg_version'] : []),
-  ].join(', ')
-  const query =
-    sinceTs !== null
-      ? `SELECT ${cols} FROM stats WHERE ts >= ? ORDER BY ts DESC`
-      : `SELECT ${cols} FROM stats ORDER BY ts DESC`
+  // Aggregate in SQLite so JavaScript receives only distinct reporting buckets instead of materializing every event.
+  // Local-day grouping matches rollups; ordering by MAX(ts) preserves newest-first map insertion order.
+  const dayExpr = "strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime')"
+  const harnessExpr = hasHarness ? "COALESCE(harness, '')" : "''"
+  const versionExpr = hasVersion ? "COALESCE(tg_version, '')" : "''"
+  const query = `
+    SELECT ${dayExpr} AS day, kind, ${harnessExpr} AS harness, ${versionExpr} AS tg_version,
+           COUNT(*) AS events, COALESCE(SUM(bytes_saved), 0) AS bytes_saved,
+           COALESCE(SUM(tokens_saved), 0) AS tokens_saved
+    FROM stats
+    ${sinceTs !== null ? 'WHERE ts >= ?' : ''}
+    GROUP BY ${dayExpr}, kind, ${harnessExpr}, ${versionExpr}
+    ORDER BY MAX(ts) DESC
+  `
 
   const stmt = db.prepare(query)
-  const rows = sinceTs !== null ? stmt.all(sinceTs) : stmt.all()
-
-  const tsToDateCache: Record<number, string> = {}
+  const rows = (sinceTs !== null ? stmt.all(sinceTs) : stmt.all()) as Array<{
+    day: string
+    kind: string
+    harness: string | null
+    tg_version: string | null
+    events: number
+    bytes_saved: number
+    tokens_saved: number
+  }>
   const counts: Record<string, number> = {}
   const genericHeads: Record<string, number> = {}
   const tallyHead = (kind: string, n: number): boolean => {
@@ -1078,47 +1086,42 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   }
 
   for (const row of rows) {
-    const bytesSaved = (row as { bytes_saved?: number }).bytes_saved ?? 0
-    const recorded = (row as { tokens_saved?: number }).tokens_saved ?? 0
-    const kind = (row as { kind: string }).kind
-    if (tallyHead(kind, 1)) continue
+    const bytesSaved = row.bytes_saved ?? 0
+    const recorded = row.tokens_saved ?? 0
+    const kind = row.kind
+    if (tallyHead(kind, row.events)) continue
     // A count-only kind contributes its number to `counts` and zero tokens to everything else, so no aggregate below has to remember to exclude it. See COUNT_ONLY_KINDS for why.
     const isCount = COUNT_ONLY_KINDS.has(kind)
     if (isCount) counts[kind] = (counts[kind] ?? 0) + recorded
     const tokensSaved = isCount ? 0 : recorded
-    const tsRaw = (row as { ts?: number }).ts
-    if (tsRaw === undefined) continue
-    const ts = tsRaw
 
-    totalEvents += 1
+    totalEvents += row.events
     totalBytes += bytesSaved
     totalTokens += tokensSaved
 
     if (!byKind[kind]) {
       byKind[kind] = zeroBucket()
     }
-    incBucket(byKind[kind], bytesSaved, tokensSaved)
+    addBucket(byKind[kind], row.events, bytesSaved, tokensSaved)
 
-    const dateKey = tsToDateCache[ts] || toLocalDateKey(new Date(ts * 1000))
-    tsToDateCache[ts] = dateKey
-
+    const dateKey = row.day
     if (!byDay[dateKey]) {
       byDay[dateKey] = zeroBucket()
     }
-    incBucket(byDay[dateKey], bytesSaved, tokensSaved)
+    addBucket(byDay[dateKey], row.events, bytesSaved, tokensSaved)
 
     // A NULL harness is a row written before the column existed. It is bucketed as unrecorded rather than dropped (which would make the per-harness events undercount the total) or attributed to the current harness (which would invent a measurement that was never taken).
-    const harness = (row as { harness?: string | null }).harness || HARNESS_UNRECORDED
+    const harness = row.harness || HARNESS_UNRECORDED
     if (!byHarness[harness]) {
       byHarness[harness] = zeroBucket()
     }
-    incBucket(byHarness[harness], bytesSaved, tokensSaved)
+    addBucket(byHarness[harness], row.events, bytesSaved, tokensSaved)
 
-    const pricingVersion = (row as { tg_version?: string | null }).tg_version || PRICING_VERSION_UNRECORDED
+    const pricingVersion = row.tg_version || PRICING_VERSION_UNRECORDED
     if (!byPricingVersion[pricingVersion]) {
       byPricingVersion[pricingVersion] = zeroBucket()
     }
-    incBucket(byPricingVersion[pricingVersion], bytesSaved, tokensSaved)
+    addBucket(byPricingVersion[pricingVersion], row.events, bytesSaved, tokensSaved)
   }
 
   // Fold in stats_daily_rollup for any day this window reaches that rollupAndPruneStats already aggregated-and-deleted out of the raw `stats` table above. The two sources are disjoint by construction (rollup only ever holds rows that were literally deleted from `stats` at the moment they were summed), so adding both into the same buckets can never double-count -- including the one day that can straddle the retention cutoff, where some of that day's rows are still raw (already counted above) and the rest were already rolled up (counted here).
@@ -1141,13 +1144,6 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
         bytes_saved: number
         tokens_saved: number
       }>
-
-      // Adds an already-aggregated rollup row's totals onto a bucket, in contrast to incBucket (which increments events by exactly 1 per raw row).
-      const addBucket = (bucket: StatsBucket, events: number, bytesSaved: number, tokensSaved: number): void => {
-        bucket.events += events
-        bucket.bytes_saved += bytesSaved
-        bucket.tokens_saved += tokensSaved
-      }
 
       for (const r of rollupRows) {
         if (tallyHead(r.kind, r.events)) continue
