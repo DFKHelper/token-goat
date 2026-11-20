@@ -3,6 +3,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { copilotCliMcpToolsDir, copilotCliUserRoot } from './copilot_home.js'
+import {
+  copilotMcpToolCache,
+  mcpSettings,
+} from './copilot_host_config.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
 
 /** Built-in MCP server names bundled with GitHub Copilot CLI that are disabled when `disableBuiltinMcps` is set to true in settings.json. */
@@ -10,41 +14,12 @@ export const COPILOT_BUILTIN_MCP_SERVERS: readonly string[] = ['github-mcp-serve
 
 /** Reads Copilot CLI's settings.json to discover which MCP servers have been disabled by the user (`disabledMcpServers`, `disableBuiltinMcps`, or `--disable-mcp-server`). */
 export function readCopilotDisabledMcpServers(userRoot: string = copilotCliUserRoot()): Set<string> {
-  const disabled = new Set<string>()
-  const settingsPath = path.join(userRoot, 'settings.json')
-  try {
-    if (!fs.existsSync(settingsPath)) return disabled
-    const raw = fs.readFileSync(settingsPath, 'utf8')
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    if (typeof parsed !== 'object' || parsed === null) return disabled
-
-    if (parsed['disableBuiltinMcps'] === true) {
-      for (const builtin of COPILOT_BUILTIN_MCP_SERVERS) {
-        disabled.add(builtin)
-      }
+  const settings = mcpSettings(userRoot)
+  const disabled = settings.disabledServers
+  if (settings.disableBuiltin) {
+    for (const builtin of COPILOT_BUILTIN_MCP_SERVERS) {
+      disabled.add(builtin)
     }
-
-    const disabledList = parsed['disabledMcpServers']
-    if (Array.isArray(disabledList)) {
-      for (const item of disabledList) {
-        if (typeof item === 'string' && item.trim() !== '') {
-          disabled.add(item.trim())
-        }
-      }
-    }
-
-    const singleOrList = parsed['disableMcpServer']
-    if (Array.isArray(singleOrList)) {
-      for (const item of singleOrList) {
-        if (typeof item === 'string' && item.trim() !== '') {
-          disabled.add(item.trim())
-        }
-      }
-    } else if (typeof singleOrList === 'string' && singleOrList.trim() !== '') {
-      disabled.add(singleOrList.trim())
-    }
-  } catch {
-    // If settings.json is unreadable or malformed, return what was parsed so far
   }
   return disabled
 }
@@ -99,7 +74,7 @@ export function readCopilotMcpTools(
   dir: string = copilotCliMcpToolsDir(),
   userRoot: string = copilotCliUserRoot(),
 ): CopilotMcpToolsReport {
-  const cacheSetting = process.env['COPILOT_MCP_TOOL_CACHE']?.trim().toLowerCase()
+  const cacheSetting = copilotMcpToolCache()?.trim().toLowerCase()
   if (cacheSetting === 'false' || cacheSetting === '0' || cacheSetting === 'off' || cacheSetting === 'no') {
     return { cacheFound: false, cacheDisabled: true, servers: [], disabledServers: [], unreadable: 0 }
   }

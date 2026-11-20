@@ -253,6 +253,7 @@
     ["src/conflict_query.ts","Specialized Subsystems"],
     ["src/content_store.ts","Specialized Subsystems"],
     ["src/copilot_home.ts","Specialized Subsystems"],
+    ["src/copilot_host_config.ts","Specialized Subsystems"],
     ["src/copilot_mcp_names.ts","Specialized Subsystems"],
     ["src/copilot_mcp_tools.ts","Specialized Subsystems"],
     ["src/copilot_skill_path.ts","Specialized Subsystems"],

@@ -31,11 +31,12 @@ function srcTypeScriptFiles(): readonly string[] {
   // Moved 575 -> 576 when src/redact_or_withhold.ts was added (measured: 576 modules).
   // Moved 576 -> 579 when the merge of main joined both sides' added modules, among them src/read_deny.ts (measured: 579 modules); none defines or hashes the parser-stamp resolver.
   // Moved 579 -> 583 when src/unbounded_walk.ts was split into unbounded_walk_scan, _words, _tools and _xargs (measured: 583 modules); none defines or hashes the parser stamp.
+  // Moved 583 -> 584 when src/copilot_host_config.ts (the cached Copilot settings.json reader) was added (measured: 584 modules); it neither defines nor hashes the parser stamp.
   return pinnedPopulation({
     what: 'TypeScript modules under src/',
     items: found.sort(),
     floor: 540,
-    ceiling: 583,
+    ceiling: 584,
     mustIncludeExact: ['src/parser_types.ts'],
   })
 }

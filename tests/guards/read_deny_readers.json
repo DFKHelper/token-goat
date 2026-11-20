@@ -289,15 +289,20 @@
     "accessors": 0,
     "reason": "own state: token-goat pid, lock, shim and config files"
   },
+  "copilot_host_config.ts": {
+    "reads": 1,
+    "accessors": 0,
+    "reason": "names only: settings.json skillDirectories and disabled MCP server values, never the text"
+  },
   "copilot_mcp_tools.ts": {
-    "reads": 2,
+    "reads": 1,
     "accessors": 0,
     "reason": "own state: token-goat install, hook and host config files that doctor checks"
   },
   "copilot_skill_path.ts": {
-    "reads": 2,
+    "reads": 1,
     "accessors": 0,
-    "reason": "names only: a SKILL.md frontmatter name and the skillDirectories list; returns only a path"
+    "reason": "names only: a SKILL.md frontmatter name; returns only a path"
   },
   "copilot_waste.ts": {
     "reads": 3,
