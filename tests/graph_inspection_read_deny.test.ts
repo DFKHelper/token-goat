@@ -139,3 +139,26 @@ describe('dead drops denied files, as symbol and search do', () => {
     expect(r.out).not.toContain('secret.ts')
   })
 })
+
+describe('types drops denied class rows that read as a type', () => {
+  beforeEach(() => {
+    addSym('src/ok.ts', 'ShownModel', 'class', 'class ShownModel(BaseModel): fine: str')
+    addSym('vault/secret.ts', 'HiddenModel', 'class', 'class HiddenModel(BaseModel): TOPSECRETCLASS: str')
+  })
+
+  it('lists the allowed class and nothing of the denied one with --json', () => {
+    const r = capture(() => runTypes({ json: true }))
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('ShownModel')
+    expect(r.out).not.toContain('HiddenModel')
+    expect(r.out).not.toContain('TOPSECRETCLASS')
+    expect(r.out).not.toContain('secret.ts')
+  })
+
+  it('agrees in text mode', () => {
+    const r = capture(() => runTypes({}))
+    expect(r.out).toContain('ShownModel')
+    expect(r.out).not.toContain('HiddenModel')
+    expect(r.out).not.toContain('secret.ts')
+  })
+})
