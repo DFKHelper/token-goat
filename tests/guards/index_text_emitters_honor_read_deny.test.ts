@@ -103,9 +103,25 @@ export function countAll(files: ReadonlyMap<string, string>): Map<string, SiteCo
   return out
 }
 
-function reasonProblem(reason: string, files: ReadonlyMap<string, string>): string | null {
+const QUALIFIED_NAME = /([\w./]+\.ts):([a-z][a-z0-9]*[A-Z]\w*)/g
+
+/** The first camelCase name a prose reason mentions that its file lacks; `other.ts:name` is read in other.ts. */
+function missingNamedFunction(reason: string, file: string, files: ReadonlyMap<string, string>): string | null {
+  const holds = (where: string, name: string): boolean =>
+    new RegExp(String.raw`\b${name}\b`).test(withoutComments(files.get(where) ?? ''))
+  for (const [, where, name] of reason.matchAll(QUALIFIED_NAME)) {
+    if (!holds(where!, name!)) return `${where}:${name}`
+  }
+  const bare = reason.replace(QUALIFIED_NAME, '').match(/\b[a-z][a-z0-9]*[A-Z]\w*\b/g) ?? []
+  return bare.find((n) => !holds(file, n)) ?? null
+}
+
+function reasonProblem(reason: string, file: string, files: ReadonlyMap<string, string>): string | null {
   if (reason.startsWith('unreviewed:')) return REVIEWED ? 'is still unreviewed' : null
-  if (KINDS.some((k) => reason.startsWith(k) && reason.length > k.length + 8)) return null
+  if (KINDS.some((k) => reason.startsWith(k) && reason.length > k.length + 8)) {
+    const missing = missingNamedFunction(reason, file, files)
+    return missing === null ? null : `names ${missing} but that name is not in the file`
+  }
   const m = GUARDED_AT.exec(reason)
   if (m === null) return 'has a reason that starts with no known kind'
   for (const listed of m[1]!.split(', ')) {
@@ -146,7 +162,7 @@ export function violations(
   for (const [file, pin] of Object.entries(table)) {
     if (!files.has(file)) found.push(`${file}: table entry but the file does not exist`)
     else if (!counts.has(file)) found.push(`${file}: table entry but the file no longer reads`)
-    const problem = reasonProblem(pin.reason, files)
+    const problem = reasonProblem(pin.reason, file, files)
     if (problem !== null) found.push(`${file}: reason ${problem}`)
   }
   return found
@@ -279,6 +295,21 @@ describe('index text emitters honor the host Read deny rules', () => {
     const noFile = { ...TABLE, 'text_trace.ts': { ...was, reason: 'guarded at nowhere.ts:x: not true' } }
     expect(violations(files, counts, noFile)).toEqual([
       'text_trace.ts: reason names a guard file that does not exist (nowhere.ts)',
+    ])
+  })
+
+  it('refuses a prose reason that names a function its file, or the file it qualifies, does not hold', () => {
+    const file = 'answer_router.ts'
+    const was = TABLE[file]!
+    expect(was.reason, 'the entry qualifies its helper').toContain('read_deny.ts:dropDeniedRows')
+    const reason = was.reason.replace('dropDeniedRows', 'dropDeniedRowz')
+    const renamed = { ...TABLE, [file]: { ...was, reason } }
+    expect(violations(files, counts, renamed)).toEqual([
+      `${file}: reason names read_deny.ts:dropDeniedRowz but that name is not in the file`,
+    ])
+    const bare = { ...TABLE, [file]: { ...was, reason: 'names only: index rows, filtered by someHelperFn' } }
+    expect(violations(files, counts, bare)).toEqual([
+      `${file}: reason names someHelperFn but that name is not in the file`,
     ])
   })
 

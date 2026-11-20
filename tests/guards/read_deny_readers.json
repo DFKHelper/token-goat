@@ -7,7 +7,7 @@
   "answer_router.ts": {
     "reads": 0,
     "accessors": 3,
-    "reason": "names only: index rows, with printing callers filtered by dropDeniedRows"
+    "reason": "names only: index rows, with printing callers filtered by read_deny.ts:dropDeniedRows"
   },
   "baseline.ts": {
     "reads": 3,
@@ -342,7 +342,7 @@
   "doc_embed_extract.ts": {
     "reads": 2,
     "accessors": 0,
-    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
+    "reason": "in-process: the indexer prints nothing; its callers ask read_deny.ts:indexVerdict before parser.ts:indexFileSync"
   },
   "embed_model.ts": {
     "reads": 1,
@@ -367,7 +367,7 @@
   "embeddings.ts": {
     "reads": 0,
     "accessors": 1,
-    "reason": "names only: index rows, with printing callers filtered by dropDeniedRows"
+    "reason": "names only: index rows, with printing callers filtered by read_deny.ts:dropDeniedRows"
   },
   "evidence_cache.ts": {
     "reads": 4,
@@ -522,12 +522,12 @@
   "import_graph.ts": {
     "reads": 1,
     "accessors": 0,
-    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
+    "reason": "in-process: the indexer prints nothing; its callers ask read_deny.ts:indexVerdict before parser.ts:indexFileSync"
   },
   "index_reader.ts": {
     "reads": 0,
     "accessors": 5,
-    "reason": "names only: index rows, with printing callers filtered by dropDeniedRows"
+    "reason": "names only: index rows, with printing callers filtered by read_deny.ts:dropDeniedRows"
   },
   "inline_grep_scan.ts": {
     "reads": 3,
@@ -582,7 +582,7 @@
   "ooxml_extract.ts": {
     "reads": 1,
     "accessors": 0,
-    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
+    "reason": "in-process: the indexer prints nothing; its callers ask read_deny.ts:indexVerdict before parser.ts:indexFileSync"
   },
   "pack.ts": {
     "reads": 4,
@@ -592,12 +592,12 @@
   "parser.ts": {
     "reads": 4,
     "accessors": 0,
-    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
+    "reason": "in-process: the indexer prints nothing; its callers ask read_deny.ts:indexVerdict before parser.ts:indexFileSync"
   },
   "parser_types.ts": {
     "reads": 2,
     "accessors": 0,
-    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
+    "reason": "in-process: the indexer prints nothing; its callers ask read_deny.ts:indexVerdict before parser.ts:indexFileSync"
   },
   "path_miss.ts": {
     "reads": 1,
@@ -612,7 +612,7 @@
   "pdf_extract.ts": {
     "reads": 4,
     "accessors": 0,
-    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
+    "reason": "in-process: the indexer prints nothing; its callers ask read_deny.ts:indexVerdict before parser.ts:indexFileSync"
   },
   "pending_context.ts": {
     "reads": 1,
@@ -742,7 +742,7 @@
   "search/symbol_fts.ts": {
     "reads": 0,
     "accessors": 1,
-    "reason": "names only: index rows, with printing callers filtered by dropDeniedRows"
+    "reason": "names only: index rows, with printing callers filtered by read_deny.ts:dropDeniedRows"
   },
   "section_reader.ts": {
     "reads": 1,
