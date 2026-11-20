@@ -402,7 +402,7 @@
   "graph_analysis.ts": {
     "reads": 1,
     "accessors": 9,
-    "reason": "names only: line spans, names and locations; the text came from a guarded read"
+    "reason": "names only: names, line spans and locations; runSimilar drops its full-text hits from denied files through deniedFileFilter"
   },
   "graph_commands.ts": {
     "reads": 1,

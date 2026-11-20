@@ -127,3 +127,43 @@ describe.each(callers)('$name resolves its spec through the Read-aware resolver'
     expect(r.out + r.err).not.toContain('vault')
   })
 })
+
+describe('similar lists only hits from files the Read rules allow', () => {
+  it('prints the allowed hit alone and counts one when an allowed and a denied hit match', () => {
+    addSym('src/util.ts', 'Dup')
+    addSym('lib/util.ts', 'Dup')
+    addSym('vault/util.ts', 'Dup')
+    const r = capture(() => runSimilar({ spec: 'src/util.ts::Dup', top: 1 }))
+    expect(r.value).toBe(0)
+    expect(r.out, 'the denied hit was printed').not.toContain('vault')
+    expect(r.err, 'the denied hit was counted or named').not.toContain('vault')
+    expect(r.out, 'the allowed hit was dropped').toContain('lib/util.ts')
+    expect(r.err, 'the denied hit was counted').toBe('')
+    const json = capture(() => runSimilar({ spec: 'src/util.ts::Dup', json: true }))
+    expect(json.out, 'the denied hit reached the json output').not.toContain('vault')
+    expect(JSON.parse(json.out), 'the json lost the allowed hit or kept the denied one').toHaveLength(1)
+  })
+
+  it('counts the allowed hits only in the truncation notice', () => {
+    addSym('src/util.ts', 'Dup')
+    addSym('lib/util.ts', 'Dup')
+    addSym('lib/other.ts', 'Dup')
+    addSym('vault/util.ts', 'Dup')
+    addSym('vault/other.ts', 'Dup')
+    const r = capture(() => runSimilar({ spec: 'src/util.ts::Dup', top: 1 }))
+    expect(r.err, 'the notice counted a denied hit').toContain('Showing top 1 of 2 similar')
+  })
+
+  it('prints the ordinary none-found text when only a denied file matches', () => {
+    addSym('src/util.ts', 'Dup')
+    addSym('vault/util.ts', 'Dup')
+    const denied = capture(() => runSimilar({ spec: 'src/util.ts::Dup' }))
+    expect(denied.out + denied.err).not.toContain('vault')
+    expect(denied.out, 'a denied-only match printed a row').toBe('')
+    const deniedJson = capture(() => runSimilar({ spec: 'src/util.ts::Dup', json: true }))
+    expect(JSON.parse(deniedJson.out), 'a denied-only match listed a row in json').toEqual([])
+    writeRules([])
+    const open = capture(() => runSimilar({ spec: 'src/util.ts::Dup' }))
+    expect(open.out, 'with no rules the hit must still print').toContain('vault/util.ts')
+  })
+})

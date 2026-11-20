@@ -14,7 +14,7 @@ import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { guardJsonRows } from './read_commands.js'
-import { resolveSymbolSpecOrEmitError } from './read_spec.js'
+import { deniedFileFilter, resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'
@@ -64,7 +64,10 @@ export function runSimilar(opts: SimilarOptions): number {
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const hits = searchSymbolsFts(query, UNBOUNDED_REF_LIMIT, undefined, rootDir)
-  const matches = hits.filter((h) => !(h.filePath === anchor.filePath && h.name === anchor.name))
+  const isAllowed = deniedFileFilter()
+  const matches = hits.filter(
+    (h) => isAllowed(h.filePath) && !(h.filePath === anchor.filePath && h.name === anchor.name),
+  )
   const results = matches.slice(0, top)
 
   if (matches.length > results.length) {
