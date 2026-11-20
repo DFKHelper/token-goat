@@ -74,8 +74,10 @@ describe('a fixed sleep followed by a read in the same line', () => {
     },
   )
 
-  it.each([['sleep 5'], ['sleep 5; echo done'], ['cat /tmp/x.log; sleep 5']])('gets no note for %s', (command) => {
-    const out = run(command)
-    expect(out.hookType, command).toBe('pass')
-  })
+  it.each([['sleep 5'], ['sleep 5; echo done'], ['cat /tmp/x.log; sleep 5']])(
+    'gets no note for %s',
+    (command) => {
+      expect(run(command).hookType, command).toBe('pass')
+    },
+  )
 })
