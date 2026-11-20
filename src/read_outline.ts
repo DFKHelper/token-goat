@@ -6,7 +6,13 @@ import { indexedSourceText } from './indexed_source.js'
 import { toDisplayPath, displaySafeText } from './paths.js'
 import { redactReadJson, redactReadText } from './fence_cap.js'
 import { resolveSpecPath } from './spec_path.js'
-import { queryFileSymbolsWithIds, countSymbols, queryRefCounts, queryRefs, getFileEntry } from './index_reader.js'
+import {
+  queryFileSymbolsWithIds,
+  countSymbols,
+  queryRefCounts,
+  queryRefs,
+  getFileEntry,
+} from './index_reader.js'
 import { SKELETON_SYMBOL_CAP, globalDbPath } from './constants.js'
 import { compileGrepMatcher, countContentLines, countNoun } from './util.js'
 import { filtersFilteredToEmptyNotice } from './filter_notice.js'
@@ -19,7 +25,8 @@ import { noSymbolsMessage, formatStatsSuffix, hasRealDocstring } from './read_me
 import { firstBodyLine } from './read_suggest.js'
 import { parseMultiFileSpec, fileConfinementRefusal, deniedFileFilter } from './read_spec.js'
 import { extractSignature } from './read_signature.js'
-import { assertReadAllowed, ReadDeniedError } from './read_deny.js'
+import { assertReadAllowed, hookDeadlineAt, readDenial, ReadDeniedError } from './read_deny.js'
+import { loadPermissionSnapshotOrThrow } from './rewrite_permission.js'
 import { getOutlineListingCache, setOutlineListingCache, type OutlineListingCacheValue } from './read_outline_cache.js'
 
 export interface SkeletonOptions {
@@ -128,9 +135,27 @@ export function filteredToEmptyNotice(preFilterCount: number, minLines: number |
   return filtersFilteredToEmptyNotice(preFilterCount, parts, 'indexed symbol', 'indexed symbols', 'the file is indexed')
 }
 
+/** Whether any deny rule is loaded for this call; a check that cannot run counts as one. */
+function denyRulesInForce(rootDir: string): boolean {
+  let denyCount: number | undefined
+  const refusal = readDenial(rootDir, {
+    loadSnapshot: (cwd, projectDir) => {
+      const snapshot = loadPermissionSnapshotOrThrow(cwd, projectDir, {
+        outsideProject: 'project-only',
+        sources: 'host-loaded',
+        deadlineAt: hookDeadlineAt(),
+      })
+      denyCount = snapshot.deny.length
+      return snapshot
+    },
+  })
+  return refusal !== null || (denyCount ?? 0) > 0
+}
+
 /** The project-wide reference count per name, less the references a file the host denies holds; a count the filter leaves whole is the stored one. */
 function allowedRefCounts(names: string[], rootDir: string): Map<string, number> {
   const counts = queryRefCounts(names, globalDbPath(), rootDir)
+  if (!denyRulesInForce(rootDir)) return counts
   const isAllowed = deniedFileFilter()
   for (const [name, stored] of counts) {
     const denied = queryRefs({ name, rootDir, limit: stored }).filter((r) => !isAllowed(r.filePath)).length
@@ -201,7 +226,10 @@ export function prepareSymbolListing(
 
   const refCounts =
     opts.stats === true
-      ? allowedRefCounts(filtered.map((s) => s.name), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
+      ? allowedRefCounts(
+        filtered.map((s) => s.name),
+        resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }),
+      )
       : undefined
 
   const listing: OutlineListingCacheValue = {

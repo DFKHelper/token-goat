@@ -652,7 +652,7 @@
   "read_outline.ts": {
     "reads": 1,
     "accessors": 2,
-    "reason": "guarded at read_outline.ts:prepareSymbolListing: assertReadAllowed runs first; allowedRefCounts drops references of denied files through deniedFileFilter"
+    "reason": "guarded at read_outline.ts:prepareSymbolListing: assertReadAllowed runs first; allowedRefCounts drops references of denied files through deniedFileFilter once denyRulesInForce finds a loaded rule; stats listings are never cached, so no count outlives a rule change"
   },
   "read_outline_cache.ts": {
     "reads": 0,
