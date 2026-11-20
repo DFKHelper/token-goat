@@ -80,6 +80,7 @@ export function killProcessTree(pid: number | undefined): KillResult {
   const known = new Set(frozen)
   let note: string | undefined
   let settled = false
+  let lastTable: Map<number, number[]> | null = null
   for (let pass = 0; pass < MAX_FREEZE_PASSES && !settled; pass++) {
     const table = childrenByParent()
     if (table === null) {
@@ -87,6 +88,7 @@ export function killProcessTree(pid: number | undefined): KillResult {
       settled = true
       break
     }
+    lastTable = table
     settled = true
     for (const d of descendantsOf(pid, table)) {
       if (known.has(d)) continue
@@ -97,8 +99,10 @@ export function killProcessTree(pid: number | undefined): KillResult {
     }
   }
   if (!settled) note = `the tree was still growing after ${MAX_FREEZE_PASSES} passes, so it was killed as found`
-  // Deepest first, root last; every member is stopped, so the order only matters for tidiness.
+  // Deepest first, root last; every member is stopped, so the order only matters for tidiness. A member is killed only if the last listing, taken just before, still shows it under the root: one that left the table or was reparented is not proven ours.
+  const proven = new Set(lastTable === null ? [] : descendantsOf(pid, lastTable))
   for (const p of frozen.reverse()) {
+    if (p !== pid && !proven.has(p)) continue
     const failure = signalPid(p, 'SIGKILL')
     if (p === pid) rootFailure = failure
   }
@@ -107,12 +111,37 @@ export function killProcessTree(pid: number | undefined): KillResult {
   return note === undefined ? { ok: true } : { ok: false, note }
 }
 
-// Each owned Linux child carries this variable with a per-spawn value, so an orphan is still found.
+// Each owned Linux child carries this variable with a comma-separated chain of per-spawn tokens (outermost owner first), so an orphan is still found and a nested runner's tree is also found by the outer owner.
 const OWNER_TOKEN_VAR = 'TOKEN_GOAT_OWNED_BY'
 
+/** Whether a /proc/<pid>/environ image carries *token* in its owner chain. */
+export function environCarriesToken(environ: Buffer, token: string): boolean {
+  if (!environ.includes(token)) return false
+  const prefix = `${OWNER_TOKEN_VAR}=`
+  for (const item of environ.toString('latin1').split('\0')) {
+    if (item.startsWith(prefix) && item.slice(prefix.length).split(',').includes(token)) return true
+  }
+  return false
+}
+
+/** What ending a token's carriers reads and does: the pids carrying it (minus the ones already stopped), a fresh per-pid identity check (undefined when unreadable), and the signal. */
+export interface TokenCarrierLookup {
+  list: (token: string, already: ReadonlySet<number>) => number[]
+  carries: (pid: number, token: string) => boolean | undefined
+  signal: (pid: number, signal: NodeJS.Signals) => string | undefined
+}
+
+/** Whether /proc/<pid>/environ carries *token* right now; undefined when it cannot be read (gone, or another user's). */
+function procCarries(pid: number, token: string): boolean | undefined {
+  try {
+    return environCarriesToken(fs.readFileSync(`/proc/${pid}/environ`), token)
+  } catch {
+    return undefined
+  }
+}
+
 /** Linux pids carrying *token* (via /proc). limit: macOS, scrubbed env; revisit-when: a job owner exists. */
-function pidsCarryingToken(token: string): number[] {
-  const needle = Buffer.from(`${OWNER_TOKEN_VAR}=${token}\0`)
+function pidsCarryingToken(token: string, already: ReadonlySet<number>): number[] {
   const found: number[] = []
   let entries: string[]
   try {
@@ -122,28 +151,27 @@ function pidsCarryingToken(token: string): number[] {
   }
   for (const name of entries) {
     const pid = Number(name)
-    if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue
-    try {
-      if (fs.readFileSync(`/proc/${pid}/environ`).includes(needle)) found.push(pid)
-    } catch {
-      // A process that exited meanwhile or belongs to another user carries nothing of ours.
-    }
+    if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || already.has(pid)) continue
+    if (procCarries(pid, token) === true) found.push(pid)
   }
   return found
 }
 
-/** Ends every process carrying *token*: stop each new one so it cannot fork, repeat, then kill all. */
-function killTokenCarriers(token: string): void {
+const procLookup: TokenCarrierLookup = { list: pidsCarryingToken, carries: procCarries, signal: signalPid }
+
+/** Ends every process carrying *token*: stop each new one so it cannot fork, repeat, then kill all; each signal follows a fresh identity read, so a pid that stopped carrying the token or cannot be read gets none. */
+export function killTokenCarriers(token: string, io: TokenCarrierLookup = procLookup): void {
   const stopped = new Set<number>()
   for (let pass = 0; pass < MAX_FREEZE_PASSES; pass++) {
-    const fresh = pidsCarryingToken(token).filter((pid) => !stopped.has(pid))
+    const fresh = io.list(token, stopped)
     if (fresh.length === 0) break
     for (const pid of fresh) {
+      if (io.carries(pid, token) !== true) continue
       stopped.add(pid)
-      signalPid(pid, 'SIGSTOP')
+      io.signal(pid, 'SIGSTOP')
     }
   }
-  for (const pid of stopped) signalPid(pid, 'SIGKILL')
+  for (const pid of stopped) if (io.carries(pid, token) === true) io.signal(pid, 'SIGKILL')
 }
 
 /** Windows: ends exited-shell children by ppid and start. limit: grandchildren; revisit-when: job object. */
@@ -206,12 +234,19 @@ function unhook(): void {
   for (const s of OWNER_SIGNALS) process.removeListener(s, onProcessSignal)
 }
 
+/** The owner chain a child carries: the chain this process was itself started under (a nested runner), then this spawn's token. */
+function ownerChain(env: NodeJS.ProcessEnv, token: string): string {
+  const outer = env[OWNER_TOKEN_VAR]
+  return outer === undefined || outer === '' ? token : `${outer},${token}`
+}
+
 /** Spawn *file* as a child this process answers for. The tree is ended when the caller asks (`kill`, for a timeout or an overflow), when this process exits normally, and when it receives INT, TERM or HUP, in each case only while the child is still running. After a signal the process dies of that signal as it would have without the hook (POSIX), or exits 128 plus the signal number (Windows, where a signal cannot be re-raised). The hooks come off when the last live child closes or fails to start. Not covered: this process being killed outright (SIGKILL, TerminateProcess, a harness killing only its pid) runs nothing here. A tree kill that fails (the helper could not run, or a growing tree) is reported on stderr and the root is then ended through its handle, so a caller waiting on its exit is not left waiting. */
 export function spawnOwned(file: string, args: string[], options: SpawnOptions): OwnedChild {
   const token = process.platform === 'linux' ? randomUUID() : undefined
+  const inherited = options.env ?? process.env
   const spawnOptions = token === undefined
     ? options
-    : { ...options, env: { ...(options.env ?? process.env), [OWNER_TOKEN_VAR]: token } }
+    : { ...options, env: { ...inherited, [OWNER_TOKEN_VAR]: ownerChain(inherited, token) } }
   const spawnedAt = Date.now()
   const child = spawn(file, args, spawnOptions)
   let killed = false

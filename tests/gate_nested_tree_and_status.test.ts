@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { run } from '../src/bash_runner.js'
 import { runGate } from '../src/cli_diagnostics.js'
+import { environCarriesToken, killTokenCarriers, type TokenCarrierLookup } from '../src/process_tree.js'
+import { BUNDLE } from './helpers/bundle.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { processAlive } from './helpers/process_alive.js'
 
@@ -25,6 +27,9 @@ setInterval(() => { if (!fs.existsSync(dir)) process.exit(0) }, 200)
 // The deadline only has to outlast the fixture's node start; rows that expect an early exit wait for it to fire because the sleeper holds the pipe.
 const DEADLINE_SECONDS = 5
 
+// The nested row waits for node to start twice (outer gate, inner sleeper) before its deadline kills them.
+const NESTED_DEADLINE_SECONDS = 12
+
 let dir: string | undefined
 
 const slash = (p: string): string => p.replace(/\\/g, '/')
@@ -39,7 +44,8 @@ function startSleeper(): string {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-gate-status-'))
   const script = path.join(dir, 'sleeper.cjs')
   fs.writeFileSync(script, SLEEPER_SCRIPT)
-  return `exec 3< <('${slash(process.execPath)}' '${slash(script)}' '${slash(dir)}' </dev/null); read -r -u 3 _up`
+  const start = `'${slash(process.execPath)}' '${slash(script)}' '${slash(dir)}' </dev/null`
+  return `exec 3< <(${start}); read -r -u 3 _up`
 }
 
 afterEach(() => {
@@ -54,11 +60,17 @@ afterEach(() => {
 
 const platformCanEnd = process.platform !== 'darwin'
 const quiet = (): void => {}
-const gateRun = (command: string): Promise<number> =>
-  run(command, { filterName: 'passthrough', timeout: DEADLINE_SECONDS, endTreeAfterExit: true, writeStdout: quiet, writeStderr: quiet })
+const gateRun = (command: string, timeout = DEADLINE_SECONDS): Promise<number> =>
+  run(command, {
+    filterName: 'passthrough',
+    timeout,
+    endTreeAfterExit: true,
+    writeStdout: quiet,
+    writeStderr: quiet,
+  })
 
 describe('the status of a shell that exited before the deadline', () => {
-  it.skipIf(!platformCanEnd)('exit 0 with a child holding the pipe is a pass and the child is gone', async () => {
+  it.skipIf(!platformCanEnd)('exit 0 with a child holding the pipe is a pass, child gone', async () => {
     const code = await runGate(`${startSleeper()}; exit 0`, { timeout: DEADLINE_SECONDS })
     const pid = recordedPid()
     expect(code, 'a shell that exited 0 before the deadline is a pass').toBe(0)
@@ -76,5 +88,80 @@ describe('the status of a shell that exited before the deadline', () => {
     const code = await gateRun(`${startSleeper()}; read -r -u 3 _never`)
     expect(code, 'the shell was still waiting when the deadline fired').toBe(124)
     expect(processAlive(recordedPid() as number), 'the tree is ended at the deadline').toBe(false)
+  })
+})
+
+describe('a gate nested inside a gate', () => {
+  it.skipIf(!platformCanEnd)('ends the inner gate sleeper when the outer deadline fires', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-gate-nested-'))
+    const script = path.join(dir, 'sleeper.cjs')
+    fs.writeFileSync(script, SLEEPER_SCRIPT)
+    const inner = `'${slash(process.execPath)}' '${slash(script)}' '${slash(dir)}'`
+    const outer = `'${slash(process.execPath)}' '${slash(BUNDLE)}' gate -- ${inner}`
+    const code = await gateRun(outer, NESTED_DEADLINE_SECONDS)
+    const pid = recordedPid()
+    expect(code, 'the outer shell was still running at its deadline').toBe(124)
+    expect(pid, 'the inner gate started the sleeper').toBeTypeOf('number')
+    expect(processAlive(pid as number), 'ending the outer tree ends the inner gate and its sleeper').toBe(false)
+  })
+})
+
+const TOKEN = '11111111-2222-3333-4444-555555555555'
+const entry = (value: string): Buffer => Buffer.from(`PATH=/bin\0TOKEN_GOAT_OWNED_BY=${value}\0HOME=/h\0`)
+
+describe('an owner token is found whether the run is the outer owner or nested inside one', () => {
+  it('a chain of tokens carries the outer owner', () => {
+    expect(environCarriesToken(entry(TOKEN), TOKEN), 'a single token').toBe(true)
+    expect(environCarriesToken(entry(`${TOKEN},inner-token`), TOKEN), 'outer ahead of inner').toBe(true)
+    expect(environCarriesToken(entry(`outer-token,${TOKEN}`), TOKEN), 'inner after outer').toBe(true)
+  })
+
+  it('a near miss does not match', () => {
+    expect(environCarriesToken(entry(`${TOKEN}0`), TOKEN), 'a longer token with the same prefix').toBe(false)
+    expect(environCarriesToken(entry(TOKEN.slice(1)), TOKEN), 'a shorter token').toBe(false)
+    expect(environCarriesToken(Buffer.from(`OTHER=${TOKEN}\0`), TOKEN), 'another name').toBe(false)
+  })
+})
+
+describe('a pid that no longer proves to be ours receives no signal', () => {
+  type Stub = { lookup: TokenCarrierLookup; sent: string[] }
+  function lookup(carries: (pid: number) => boolean | undefined): Stub {
+    const sent: string[] = []
+    return {
+      sent,
+      lookup: {
+        list: (_token, already) => [101, 102].filter((pid) => !already.has(pid)),
+        carries: (pid) => carries(pid),
+        signal: (pid, signal) => {
+          sent.push(`${pid} ${signal}`)
+          return undefined
+        },
+      },
+    }
+  }
+
+  it('signals pids that still carry the token, stop first and kill after', () => {
+    const { lookup: l, sent } = lookup(() => true)
+    killTokenCarriers(TOKEN, l)
+    expect(sent).toEqual(['101 SIGSTOP', '102 SIGSTOP', '101 SIGKILL', '102 SIGKILL'])
+  })
+
+  it('a pid whose token changed between the listing and the signal is not signalled', () => {
+    const reads = new Map<number, number>()
+    const { lookup: l, sent } = lookup((pid) => {
+      const n = (reads.get(pid) ?? 0) + 1
+      reads.set(pid, n)
+      return pid === 102 ? n <= 1 : true
+    })
+    killTokenCarriers(TOKEN, l)
+    expect(sent, '102 carried the token for the stop and another at the kill').toEqual(
+      ['101 SIGSTOP', '102 SIGSTOP', '101 SIGKILL'],
+    )
+  })
+
+  it('a pid whose environment cannot be read is not signalled', () => {
+    const { lookup: l, sent } = lookup((pid) => (pid === 101 ? undefined : true))
+    killTokenCarriers(TOKEN, l)
+    expect(sent).toEqual(['102 SIGSTOP', '102 SIGKILL'])
   })
 })
