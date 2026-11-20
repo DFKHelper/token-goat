@@ -231,8 +231,7 @@ export function recordCreatedBy<T>(targets: readonly string[], work: () => T): T
 }
 
 /** On a throw, undo what `work` alone made (absent targets and parent dirs, new backups, ledger entries). */
-// A file already there stays with its entry and earlier bytes; the error is rethrown as it was.
-// limit: a file a concurrent install creates meanwhile is undone too; revisit-when: installs overlap by design
+// A file already there stays with its entry and earlier bytes; the error is rethrown as it was. limit: a file a concurrent install creates meanwhile is undone too; revisit-when: installs overlap by design
 export function undoCreatedOnFailure<T>(
   targets: readonly string[],
   work: () => T,
