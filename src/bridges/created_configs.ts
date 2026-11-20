@@ -233,7 +233,11 @@ export function recordCreatedBy<T>(targets: readonly string[], work: () => T): T
 /** On a throw, undo what `work` alone made (absent targets and parent dirs, new backups, ledger entries). */
 // A file already there stays with its entry and earlier bytes; the error is rethrown as it was.
 // limit: a file a concurrent install creates meanwhile is undone too; revisit-when: installs overlap by design
-export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => T): T {
+export function undoCreatedOnFailure<T>(
+  targets: readonly string[],
+  work: () => T,
+  putBack: PutBack = atomicWriteBytes,
+): T {
   const absent = absentPaths(targets)
   const recordedBefore = new Set([...absent, ...targets.map((t) => path.resolve(t))].filter(hasCreatedConfig))
   const backupsBefore = new Set(targets.flatMap(createdBackupsFor))
@@ -243,7 +247,10 @@ export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => 
   try {
     return tracingWrites(wrote, work)
   } catch (error) {
-    undoQuietly(() => restoreEarlierBytes(earlier, wrote, leftAsFound))
+    const unrestored = new Set<string>()
+    undoQuietly(() => {
+      for (const p of restoreEarlierBytes(earlier, wrote, leftAsFound, putBack)) unrestored.add(p)
+    })
     undoQuietly(() => {
       for (const p of [...absent].sort((a, b) => b.length - a.length)) {
         if (!lexists(p)) continue
@@ -252,17 +259,29 @@ export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => 
         else leftAsFound.push(p)
       }
     })
-    for (const backup of targets.flatMap(createdBackupsFor).filter((b) => !backupsBefore.has(b))) {
-      undoQuietly(() => {
-        removeFileInScope(backup)
-        forgetCreatedBackup(backup)
-      })
+    const kept: string[] = []
+    for (const target of targets) {
+      const fresh = createdBackupsFor(target).filter((b) => !backupsBefore.has(b)).map((b) => path.resolve(b))
+      if (unrestored.has(path.resolve(target))) {
+        const why = fresh.length > 0 ? `earlier bytes kept in ${fresh.join(', ')}` : 'it had no new backup'
+        kept.push(`${path.resolve(target)} (${why})`)
+        continue
+      }
+      for (const backup of fresh) {
+        undoQuietly(() => {
+          removeFileInScope(backup)
+          forgetCreatedBackup(backup)
+        })
+      }
     }
     for (const p of [...absent, ...targets.map((t) => path.resolve(t))]) {
       if (!recordedBefore.has(p)) undoQuietly(() => void takeCreatedConfig(p))
     }
     if (leftAsFound.length > 0 && error instanceof Error) {
       error.message += `\nchanged by another program, left as found: ${leftAsFound.join(', ')}`
+    }
+    if (kept.length > 0 && error instanceof Error) {
+      error.message += `\nnot restored, put it back by hand: ${kept.join('; ')}`
     }
     throw error
   }
@@ -278,7 +297,7 @@ export function tracedFileWrites<T>(
   const result = tracingWrites(wrote, write)
   const revert = (error: unknown): void => {
     const left: string[] = []
-    undoQuietly(() => restoreEarlierBytes(earlier, wrote, left))
+    undoQuietly(() => void restoreEarlierBytes(earlier, wrote, left, atomicWriteBytes))
     const created = [...paths.map((t) => path.resolve(t)), ...missingReferents(paths)]
     for (const p of created.filter((t) => !earlier.has(t) && lexists(t) && !fs.lstatSync(t).isSymbolicLink())) {
       if (holdsBytesWritten(p, wrote)) undoQuietly(() => removeFileInScope(p))
@@ -316,19 +335,30 @@ function holdsBytesWritten(p: string, wrote: ReadonlyMap<string, Buffer>): boole
   }
 }
 
+/** Writes `bytes` over `p`; the restore of a failed install, replaceable only so a test can make it throw. */
+export type PutBack = (p: string, bytes: Buffer) => void
+
 /** Write back each `earlier` file still holding the bytes this attempt published; any other goes in `left`. */
+// Returns the files not confirmed, by a read back, to hold their earlier bytes afterwards.
 function restoreEarlierBytes(
   earlier: ReadonlyMap<string, Buffer>,
   wrote: ReadonlyMap<string, Buffer>,
   left: string[],
-): void {
+  putBack: PutBack,
+): string[] {
+  const unconfirmed: string[] = []
   for (const [p, bytes] of earlier) {
-    undoQuietly(() => {
-      if (holdsBytesWritten(p, new Map([[foldPath(path.resolve(p)), bytes]]))) return
-      if (holdsBytesWritten(p, wrote)) atomicWriteBytes(p, bytes)
+    const earlierOnly = new Map([[foldPath(path.resolve(p)), bytes]])
+    try {
+      if (holdsBytesWritten(p, earlierOnly)) continue
+      if (holdsBytesWritten(p, wrote)) putBack(p, bytes)
       else left.push(p)
-    })
+    } catch {
+      // Reported through the read back below, which names the file whatever the write threw.
+    }
+    if (!holdsBytesWritten(p, earlierOnly)) unconfirmed.push(p)
   }
+  return unconfirmed
 }
 
 function undoQuietly(step: () => void): void {
