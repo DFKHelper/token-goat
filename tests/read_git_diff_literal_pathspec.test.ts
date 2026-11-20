@@ -132,6 +132,47 @@ describe('symbol diff of a file whose name holds a glob character', () => {
     expect(keepRequestedFile(text, '/proj/a.ts')).not.toContain('MINE')
   })
 
+  it('drops a section whose header has no a/ b/ prefix, and says so', () => {
+    // HAND-DERIVED: the header git prints under diff.noprefix=true (no a/ or b/); never guessed to be the file.
+    const text = ['diff --git [a].ts [a].ts', '@@ -1 +1 @@', '+NOPREFIX', ''].join('\n')
+    let kept = ''
+    const r = capture(() => { kept = keepRequestedFile(text, '/proj/[a].ts'); return 0 })
+    expect(kept).not.toContain('NOPREFIX')
+    expect(r.err).toContain('omitted:')
+  })
+
+  it('reads the quoted header form git prints for an unusual name', () => {
+    // FORMAT-DERIVED: git-scm.com/docs/git-diff header format: a name with a quote is C-quoted with its prefix.
+    const text = [
+      'diff --git "a/q\\"u.ts" "b/q\\"u.ts"', '@@ -1 +1 @@', '+MINE',
+      'diff --git "a/o\\"ther.ts" "b/o\\"ther.ts"', '@@ -1 +1 @@', '+OTHER', '',
+    ].join('\n')
+    const kept = keepRequestedFile(text, '/proj/q"u.ts')
+    expect(kept).toContain('MINE')
+    expect(kept).not.toContain('OTHER')
+  })
+
+  it('prints no denied text when report.ts became a directory and diff.noprefix is set', () => {
+    // Traced trigger: the index still holds a symbol for report.ts, now a directory holding a denied file.
+    git(['config', 'diff.noprefix', 'true'])
+    fs.writeFileSync(path.join(root, 'report.ts'), body('target', 'old'))
+    git(['add', '.'])
+    git(['commit', '-m', 'initial'])
+    indexFileSync(normalizePath(path.join(root, 'report.ts')))
+    fs.rmSync(path.join(root, 'report.ts'))
+    fs.mkdirSync(path.join(root, 'report.ts'))
+    fs.writeFileSync(path.join(root, 'report.ts', 'inner.ts'), body('target', 'DENIEDTEXT'))
+    git(['add', '.'])
+    fs.mkdirSync(path.join(root, '.claude'), { recursive: true })
+    const rules = { permissions: { deny: ['Read(/report.ts/inner.ts)'] } }
+    fs.writeFileSync(path.join(root, '.claude', 'settings.json'), JSON.stringify(rules))
+    resetReadDenyCache()
+    resetPermissionSourceCache()
+    const spec = `${path.join(root, 'report.ts')}::target`
+    const r = capture(() => runDiff({ spec, projectRoot: root, ref: 'HEAD' }))
+    expect(r.out + r.err).not.toContain('DENIEDTEXT')
+  })
+
   it('still diffs a plain file against a ref', () => {
     setup(null)
     const plain = `${path.join(root, 'a.ts')}::other`

@@ -10,7 +10,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { emitGuarded, guardJsonRows, guardText, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
-import { dropDeniedRows } from './read_deny.js'
+import { dropDeniedRows, noteOmitted } from './read_deny.js'
 import { type GitResult } from './types.js'
 import { parseColonLineRange, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement, resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { trimBlankLines } from './read_suggest.js'
@@ -260,23 +260,35 @@ function literalPathspec(file: string): string {
   return `:(literal)${file}`
 }
 
-/** The path a `diff --git a/P b/P` header names, or null for a quoted, renamed or unparseable header. */
+const QUOTED_HEADER = /^"((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)"$/
+
+/** The path a `diff --git a/P b/P` header names (C-quoted if need be), or null if renamed or unreadable. */
 function diffHeaderPath(header: string): string | null {
   const rest = header.slice('diff --git '.length)
+  if (rest.startsWith('"')) {
+    const quoted = QUOTED_HEADER.exec(rest)
+    if (quoted === null) return null
+    const a = unquoteGitPath(quoted[1] ?? '')
+    const b = unquoteGitPath(quoted[2] ?? '')
+    return a.startsWith('a/') && b.startsWith('b/') && a.slice(2) === b.slice(2) ? a.slice(2) : null
+  }
   const n = (rest.length - 5) / 2
   if (!Number.isInteger(n) || n < 1 || !rest.startsWith('a/')) return null
   const a = rest.slice(2, 2 + n)
   return rest.slice(n + 2, n + 5) === ' b/' && rest.slice(n + 5) === a ? a : null
 }
 
-/** The sections of a `git diff` naming `filePath`; an unparseable header stays. */
+/** The sections of a `git diff` naming `filePath`; one whose header cannot be read is withheld and noted. */
 export function keepRequestedFile(diffText: string, filePath: string): string {
   const want = foldPath(normalizePath(filePath))
   const sections = diffText.split(/^(?=diff --git )/m)
   return sections.filter((section) => {
     if (!section.startsWith('diff --git ')) return true
     const named = diffHeaderPath(section.split(/\r?\n/, 1)[0]!)
-    if (named === null) return true
+    if (named === null) {
+      noteOmitted(`read refused: an unreadable diff header while diffing ${displaySafeText(filePath)}`)
+      return false
+    }
     const got = foldPath(normalizePath(named))
     return want === got || want.endsWith(`/${got}`)
   }).join('')
@@ -285,7 +297,9 @@ export function keepRequestedFile(diffText: string, filePath: string): string {
 /** `git diff` of one indexed file, matched literally (a `[id].ts` is no glob) and cut to its own sections. */
 function runFileDiff(ref: string | undefined, filePath: string, cwd: string): GitResult {
   const refArgs = ref !== undefined ? [ref] : []
-  const args = ['diff', ...refArgs, '--unified=0', '--', literalPathspec(filePath)]
+  // Prefixes pinned as `changed` pins them, so diff.noprefix and diff.mnemonicPrefix cannot change headers.
+  const prefixes = ['--src-prefix=a/', '--dst-prefix=b/']
+  const args = ['diff', ...refArgs, '--unified=0', ...prefixes, '--', literalPathspec(filePath)]
   const result = runGit(args, { cwd })
   return result.exitCode === 0 ? { ...result, stdout: keepRequestedFile(result.stdout, filePath) } : result
 }
