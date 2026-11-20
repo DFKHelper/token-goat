@@ -1,6 +1,6 @@
 /** Every project-scoped install refuses a config path that resolves outside the project, and the refusal is enforced by the write helpers rather than by each installer remembering to ask. THE FINDING. `assertProjectScopeTarget` existed, was correct, and was wired into ONE installer of five. `install --visualstudio -p`, `install --copilot --local`, `install --cursor -p` and `install --pi --local` each read, backed up and rewrote a repo-controlled config path through whatever symlink a clone had checked in -- so a repository could ship `.mcp.json` as a link to `~/.ssh/id_ed25519` or `.github/copilot-instructions.md` as a link to a private file, and the install would `copyFileSync` those bytes into `<repo>/<name>.bak.<ISO>`, an untracked file no `.gitignore` matches and `git add -A` sweeps up. Reproduced live against the built bundle at 3cd0b044: eight escapes across four flags, with `--vscode -p` refusing in-band as the control. `--copilot --local` and `--pi --local` shipped that way in v2.9.10. WHY THIS FILE IS NOT THREE MORE CALL SITES. Four of five installer authors already forgot the call. A guard you must remember to invoke is not a trust boundary, and a per-installer patch regrows the moment a sixth bridge is written. The unit of remembering is moved instead: `withInstallScope` declares the scope once per entry point and `assertWriteInScope` -- called by `backupFile`, `ensureDirSync`, `atomicWriteCore`, `upsertDelimitedBlock` and `removeFileInScope` themselves -- refuses anything leaving it. AND THAT IS WHY THIS FILE IS LOAD-BEARING RATHER THAN SUPPLEMENTARY. An earlier version of this paragraph said "omission now fails CLOSED", and it is not true: `assertWriteInScope` returns early when no scope was declared, so an installer that never calls `withInstallScope` is not confined at all. Measured, with in-band positive controls in one run -- scope-declared + outside REFUSED, scope-declared + inside ALLOWED, NO scope declared + outside ALLOWED, nested-undefined + outside ALLOWED, after nested restore REFUSED. The permissive default cannot simply be flipped, because those helpers are the whole codebase's write path and not the installers' (see `bridges/project_scope_guard.ts::assertWriteInScope` for the full argument). So what covers the undeclared case is THIS TEST, and nothing else. Its two halves cover different failure modes: 1. STRUCTURAL. Enumerate every installer module that both writes through a helper and builds a path from `process.cwd()`/`projectRoot`, and require each to declare a scope. The population is asserted non-empty and by name, because a population that silently empties is the exact way the sibling guard next door went quiet after a rename. 2. BEHAVIOURAL. Spawn the BUILT BUNDLE against a real poisoned clone, once per install flag, and require an actual refusal. Source-text checks cannot see a flag whose scope declaration is present but wrong, and they cannot see a helper that stopped calling `assertWriteInScope`. Every poisoned run is paired with the SAME flag against a CLEAN clone that must still install: without that in-band control, "refused" is indistinguishable from an installer broken into refusing everything, and a refusal you cannot first observe succeeding is not evidence. The user of this repo does not run VS Code, so there is no daily-use backstop for any of this. The test IS the detection surface, not a supplement to one. PROVENANCE: CAPTURE. The structural population is read from `src/**\/*.ts` at run time; every behavioural verdict is the real exit status and stderr of the real bundle against real symlinks, with a canary counter that voids the run if the probe stopped being able to see a leak at all. I/O: spawns the built bundle under a fully redirected HOME/USERPROFILE/TOKEN_GOAT_HOME/ LOCALAPPDATA/APPDATA/XDG_DATA_HOME/XDG_CONFIG_HOME, inside a scratch directory removed afterwards. It never touches the real `~/.claude`, which an audit probe did once and duplicated a section in the user's global config. APPDATA and XDG_CONFIG_HOME were missing from that list while this sentence still claimed "fully redirected" -- see `ensureBase` for what it cost. */
 // tg-no-regex-preload: spawns the built bundle or runs a subprocess and never calls the parser in this process
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -147,19 +147,24 @@ function walkFiles(dir: string, out: string[] = []): string[] {
   return out
 }
 
-function run(args: readonly string[], cwd: string): { code: number; output: string } {
-  try {
-    const output = execFileSync(process.execPath, [CLI, ...args], {
-      cwd,
-      env: ENV,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    return { code: 0, output }
-  } catch (err) {
-    const e = err as { status?: number; stdout?: string; stderr?: string }
-    return { code: e.status ?? -1, output: `${e.stdout ?? ''}${e.stderr ?? ''}` }
-  }
+/** The install's own account of itself for a failure message: status, signal, time it took, last stderr lines. */
+function run(args: readonly string[], cwd: string): { code: number; output: string; summary: string } {
+  // The elapsed time is read for the message only; no verdict depends on it.
+  const started = performance.now()
+  const r = spawnSync(process.execPath, [CLI, ...args], {
+    cwd,
+    env: ENV,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const ms = Math.round(performance.now() - started)
+  const stderr = r.stderr ?? ''
+  const tail = stderr.split('\n').filter((l) => l !== '').slice(-5).join(' | ').slice(-600)
+  const spawnError = r.error === undefined ? '' : `; spawn error: ${r.error.message}`
+  const summary =
+    `install exit=${String(r.status)} signal=${String(r.signal)} after ${String(ms)} ms; ` +
+    `last stderr: ${tail === '' ? '(none)' : tail}${spawnError}`
+  return { code: r.status ?? -1, output: `${r.stdout ?? ''}${stderr}`, summary }
 }
 
 interface Escape {
@@ -188,7 +193,7 @@ function probe(spec: Spec, shape: 'leaf' | 'dir'): Escape {
   }
   const stashBefore = new Set(fs.readdirSync(stash))
 
-  const { code, output } = run(spec.args, clone)
+  const { code, output, summary } = run(spec.args, clone)
 
   const inTree: string[] = []
   for (const f of walkFiles(clone)) {
@@ -203,11 +208,12 @@ function probe(spec: Spec, shape: 'leaf' | 'dir'): Escape {
   const outside = fs.readdirSync(stash).filter((n) => !stashBefore.has(n)).map((n) => `outside:${n}`)
   const escaped = [...inTree, ...outside]
 
-  if (escaped.length > 0) return { verdict: 'ESCAPE', detail: escaped.join(', ') }
+  if (escaped.length > 0) return { verdict: 'ESCAPE', detail: `${escaped.join(', ')}; ${summary}` }
   if (code !== 0 && /resolves outside the project|refusing to touch/i.test(output)) {
-    return { verdict: 'REFUSED', detail: `exit=${code}` }
+    return { verdict: 'REFUSED', detail: `exit=${code}; ${summary}` }
   }
-  return { verdict: 'no-escape', detail: `exit=${code} :: ${output.split('\n')[0]?.slice(0, 200) ?? ''}` }
+  const firstLine = output.split('\n')[0]?.slice(0, 200) ?? ''
+  return { verdict: 'no-escape', detail: `exit=${code} :: ${firstLine}; ${summary}` }
 }
 
 /** The same flag against a CLEAN clone: it must still install, or the refusal above proves nothing. */
@@ -216,11 +222,12 @@ function cleanControl(spec: Spec): { ok: boolean; detail: string } {
   const clone = path.join(base, `clean-${spec.label.replace(/[^\w-]/g, '_')}`)
   fs.rmSync(clone, { recursive: true, force: true })
   fs.mkdirSync(clone, { recursive: true })
-  const { code, output } = run(spec.args, clone)
+  const { code, output, summary } = run(spec.args, clone)
   const wrote = walkFiles(clone).length
+  const head = output.split('\n').slice(0, 3).join(' | ').slice(0, 300)
   return {
     ok: code === 0 && wrote > 0,
-    detail: `exit=${code} filesWritten=${wrote} :: ${output.split('\n').slice(0, 3).join(' | ').slice(0, 300)}`,
+    detail: `exit=${code} filesWritten=${wrote} :: ${head}; ${summary}`,
   }
 }
 
