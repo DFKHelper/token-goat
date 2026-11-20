@@ -369,6 +369,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
 
   let changedFiles: string[]
   let renamedFrom: Map<string, string>
+  let projectRoot: string
   try {
     const result = runGit(['diff', ref, '--name-status'], { cwd })
     if (result.exitCode !== 0) {
@@ -390,7 +391,10 @@ export function runChanged(opts: ChangedOptions = {}): number {
     // A name with a quote, backslash or control character comes back C-quoted even with core.quotePath off.
     const listing = parseNameStatus(result.stdout)
     // A changed file the host denies keeps its hunks out of the answer; the rest still print.
-    changedFiles = dropDeniedRows(listing.files, (f) => path.resolve(cwd, f))
+    // git lists these relative to the repository top level, so they resolve against the root, never the cwd.
+    projectRoot = opts.projectRootResolved === true ? cwd : resolveProjectRoot({ project: cwd })
+    const listedRoot = projectRoot
+    changedFiles = dropDeniedRows(listing.files, (f) => path.resolve(listedRoot, f))
     renamedFrom = listing.renamedFrom
   } catch {
     emitErr(formatCommandError(`Could not run git diff against ${echoedValue(ref)}`))
@@ -438,8 +442,6 @@ export function runChanged(opts: ChangedOptions = {}): number {
     return 0
   }
 
-  // Resolved here, after every early return, so a failed diff or an empty change list never pays the `git rev-parse --show-toplevel` spawn.
-  const projectRoot = opts.projectRootResolved === true ? cwd : resolveProjectRoot({ project: cwd })
   if (opts.symbolMode === true) {
     let hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
     let hunklessFiles = new Set<string>()

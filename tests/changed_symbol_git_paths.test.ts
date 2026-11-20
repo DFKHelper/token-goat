@@ -1,6 +1,6 @@
 /** Regression: `changed --symbol` listed every symbol of a changed file (or none) when git's idea of a path differed from the cwd's. `git diff --name-only` prints paths relative to the repository top level, but the hunk diff took them back as cwd-relative pathspecs, so from a subdirectory they matched nothing and the all-symbols fallback fired. The hunk parser also lost files whose path git tab-terminates (a space) or C-quotes. Provenance: CAPTURE for the git header lines below (real `git diff --unified=0` on git 2.53.0.windows.1, a temp repo holding `my file.ts` and `café.ts`); the repo-level tests drive runChanged end to end against real temp git repositories; expected symbol names are HAND-DERIVED from the source text each test writes. */
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { parseDiffHunks, parseHunklessFiles, runChanged } from '../src/read_git.js'
+import { resetReadDenyCache } from '../src/read_deny.js'
+import { resetPermissionSourceCache } from '../src/rewrite_permission.js'
 
 const roots: string[] = []
 
@@ -217,5 +219,79 @@ describe('changed --symbol on a file git reports with no hunks', () => {
     const out = changedOutput({ ref: 'HEAD', projectRoot: root, symbolMode: true })
     expect(out).toContain('alpha')
     expect(out).toContain('beta')
+  })
+})
+
+describe('changed honours a root-level Read deny rule when run from a subdirectory', () => {
+  // HAND-DERIVED: `Read(/vault/**)` is Claude Code's project-root-anchored deny syntax; git prints root paths.
+  const saved: Record<string, string | undefined> = {}
+
+  function setup(): string {
+    const root = makeRepo()
+    const cfg = realpathSync.native(mkdtempSync(join(tmpdir(), 'tg-changed-cfg-')))
+    roots.push(cfg)
+    for (const k of ['CLAUDE_CONFIG_DIR', 'CLAUDE_PROJECT_DIR']) saved[k] = process.env[k]
+    process.env['CLAUDE_CONFIG_DIR'] = cfg
+    process.env['CLAUDE_PROJECT_DIR'] = root
+    mkdirSync(join(root, 'vault'), { recursive: true })
+    mkdirSync(join(root, 'pkg'), { recursive: true })
+    const mk = (name: string): string => `export function ${name}() {\n  return 1\n}\n`
+    writeFileSync(join(root, 'vault', 'key.ts'), mk('hiddenSecretFn'))
+    writeFileSync(join(root, 'pkg', 'ok.ts'), mk('shownFn'))
+    git(root, 'add', '.')
+    git(root, 'commit', '-m', 'init')
+    for (const f of ['vault/key.ts', 'pkg/ok.ts']) {
+      writeFileSync(join(root, f), readFileSync(join(root, f), 'utf8').replace('return 1', 'return 2'))
+      indexFileSync(normalizePath(join(root, f)))
+    }
+    mkdirSync(join(root, '.claude'), { recursive: true })
+    const rules = { permissions: { deny: ['Read(/vault/**)'] } }
+    writeFileSync(join(root, '.claude', 'settings.json'), JSON.stringify(rules))
+    resetReadDenyCache()
+    resetPermissionSourceCache()
+    return join(root, 'pkg')
+  }
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    resetReadDenyCache()
+    resetPermissionSourceCache()
+  })
+
+  function run(sub: string, opts: Parameters<typeof runChanged>[0]): { out: string; err: string } {
+    vi.spyOn(process, 'cwd').mockReturnValue(sub)
+    let out = ''
+    let err = ''
+    vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => ((out += String(c)), true))
+    vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => ((err += String(c)), true))
+    runChanged({ ref: 'HEAD', projectRoot: sub, ...opts })
+    vi.restoreAllMocks()
+    return { out, err }
+  }
+
+  it('prints no denied symbol in text mode, keeps the allowed sibling, and notes the omission', () => {
+    const { out, err } = run(setup(), { symbolMode: true })
+    expect(out).toContain('shownFn')
+    expect(out).not.toContain('hiddenSecretFn')
+    expect(out).not.toContain('key.ts')
+    expect(err).toContain('omitted:')
+    expect(err).toContain('key.ts')
+  })
+
+  it('prints no denied row in --json mode', () => {
+    const { out } = run(setup(), { symbolMode: true, json: true })
+    expect(out).toContain('shownFn')
+    expect(out).not.toContain('hiddenSecretFn')
+    expect(out).not.toContain('key.ts')
+  })
+
+  it('prints no denied path in file-list mode', () => {
+    const { out, err } = run(setup(), {})
+    expect(out).toContain('pkg/ok.ts')
+    expect(out).not.toContain('key.ts')
+    expect(err).toContain('omitted:')
   })
 })
