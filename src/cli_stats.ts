@@ -187,9 +187,9 @@ export function runStats(opts: StatsOptions = {}): void {
     return
   }
   const window = opts.windowDays ?? 30
-  const summary = summarize(window, undefined, opts.homeDir)
 
   if (opts.json === true) {
+    const summary = summarize(window, undefined, opts.homeDir)
     process.stdout.write(displaySafeJson(statsJsonPayload(summary), 0) + '\n')
     return
   }
