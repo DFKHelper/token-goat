@@ -140,6 +140,11 @@ const GIT_PATHSPEC_ENV = {
   GIT_ICASE_PATHSPECS: '0',
 } as const
 
+/** Every git child's environment: the parent's with the pathspec switches off, shared by both runners. */
+export function gitSpawnEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, ...GIT_PATHSPEC_ENV }
+}
+
 /** Run git and return its captured output. With {@link runGitAsync}, the only git spawn sites in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. Every call is bounded: `timeoutMs` when it is a positive number, else {@link GIT_DEFAULT_TIMEOUT_MS}; only the named {@link GIT_UNBOUNDED} runs without a limit. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   const timeout = gitTimeoutMs(opts.timeoutMs)
@@ -147,7 +152,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(timeout !== undefined ? { timeout } : {}),
     ...(opts.input !== undefined ? { input: opts.input } : {}),
-    env: { ...process.env, ...GIT_PATHSPEC_ENV },
+    env: gitSpawnEnv(),
     encoding: 'utf-8',
     windowsHide: true,
     maxBuffer: 200 * 1024 * 1024,

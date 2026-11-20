@@ -2,7 +2,7 @@
 
 import { spawnOwned, type OwnedChild } from './process_tree.js'
 import type { GitResult, RunGitAsyncOptions } from './types.js'
-import { forgetGitExecutable, gitExecutable, gitInvocation, gitTimeoutMs } from './util.js'
+import { forgetGitExecutable, gitExecutable, gitInvocation, gitSpawnEnv, gitTimeoutMs } from './util.js'
 
 const GIT_MAX_OUTPUT_BYTES = 200 * 1024 * 1024
 
@@ -15,7 +15,13 @@ export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Prom
   return new Promise<GitResult>((resolve) => {
     let owned: OwnedChild
     try {
-      owned = spawnOwned(gitExecutable(), gitInvocation(args), { ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+      const cwd = opts.cwd !== undefined ? { cwd: opts.cwd } : {}
+      owned = spawnOwned(gitExecutable(), gitInvocation(args), {
+        ...cwd,
+        env: gitSpawnEnv(),
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
     } catch (err) {
       resolve(failed(String((err as Error).message ?? err)))
       return
