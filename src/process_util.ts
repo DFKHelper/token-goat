@@ -99,9 +99,15 @@ export function quotePosixShellWord(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`
 }
 
+/** The variables cmd.exe expands though no environment entry holds them (see `set /?`), lower-cased. */
+const CMD_DYNAMIC_NAMES = [
+  'cd', 'date', 'time', 'random', 'errorlevel', 'cmdcmdline', 'cmdextversion',
+  'highestnumanodenumber', 'highestnumanodeid',
+]
+
 /** True when cmd.exe would expand a `%NAME%` pair of the word, reading it left to right as cmd.exe does. */
 function expandsUnderCmd(value: string, env: NodeJS.ProcessEnv): boolean {
-  const defined = new Set(Object.keys(env).map((k) => k.toLowerCase()))
+  const defined = new Set([...Object.keys(env).map((k) => k.toLowerCase()), ...CMD_DYNAMIC_NAMES])
   for (let at = value.indexOf('%'); at >= 0; at = value.indexOf('%', at + 1)) {
     const close = value.indexOf('%', at + 1)
     if (close < 0) return false

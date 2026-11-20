@@ -144,6 +144,27 @@ describe('gateCommandLine', () => {
   })
 })
 
+describe('cmd.exe words under an empty environment map', () => {
+  const cmdLine = (word: string) => gateCommandLine(['echo', word], true, 'win32', {})
+
+  // HAND-DERIVED from `set /?` and a real `cmd /d /s /c echo [..]` run on Windows 11 in this round.
+  it.each([
+    '%CD%', '%date%', '%Time%', '%RANDOM%', '%ERRORLEVEL%', '%CMDCMDLINE%', '%CMDEXTVERSION%',
+    '%HIGHESTNUMANODEID%', '%CD:~0,2%', '%DATE:x=y%', 'a %cd% b',
+  ])('refuses the dynamic variable in %s although the map is empty', (word) => {
+    expect(() => cmdLine(word), `cmd expands ${word}`).toThrow(/cmd\.exe cannot pass/)
+  })
+
+  it('still accepts a plain percent sign and 100%', () => {
+    expect(cmdLine('50%')).toBe('echo "50%"')
+    expect(cmdLine('100% sure')).toBe('echo "100% sure"')
+  })
+
+  it('keeps refusing a defined name with a modifier that cmd would leave literal (the cheap direction)', () => {
+    expect(() => gateCommandLine(['echo', '%PATH:~not-a-number%'], true, 'win32', { PATH: 'x' })).toThrow()
+  })
+})
+
 describe('the gate failure status', () => {
   it('is the literal 2 the help text and docs promise', () => {
     expect(GATE_FAIL_EXIT, 'GATE_FAIL_EXIT must be 2').toBe(2)
