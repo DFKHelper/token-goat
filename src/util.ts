@@ -249,7 +249,7 @@ export function withRetryOnLock(fn: () => void): void {
 }
 
 /** Follows `p` through any chain of symlinks to the path a write has to land on, resolving a relative link against the directory that holds it. A link whose target does not exist yet resolves to that missing target, which is why this is not `realpathSync`: that throws on a dangling link, and the write would then replace the link instead of creating the file it points at. A path that is not a link, or does not exist, comes back unchanged. On POSIX a link owned by another user is not followed and comes back as itself, so the rename replaces it (or the sticky bit refuses it) as before: `fetch-image` writes into the shared temp directory, where anyone can plant a link at a predictable name pointing at the victim's own files, the attack the kernel's `protected_symlinks` blocks for `open()` but not for a readlink-then-rename done in user space. */
-function resolveSymlinkChain(p: string): string {
+export function resolveSymlinkChain(p: string): string {
   const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
   let current = p
   for (let hops = 0; hops < 40; hops++) {
@@ -315,6 +315,14 @@ function atomicWriteCore(requested: string, content: string | Uint8Array): void 
   // Write through a symlinked destination (a dotfiles setup) so the link survives: renaming the temp file over the link itself would replace the link with a regular file and leave its target untouched. Scope is checked again on the real file, so a project-scope link is followed only where it stays inside the project.
   const dest = resolveSymlinkChain(requested)
   if (dest !== requested) assertWriteInScope(dest)
+  // A link left unfollowed is another user's (a planted link is the threat); a rename would replace it.
+  if (lstatSync(dest, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    const why = 'a symbolic link owned by another user, which is neither followed nor replaced'
+    throw Object.assign(
+      new Error(`refusing to write ${requested}: it is ${why}; remove it or use a file you own`),
+      { code: 'EPERM' },
+    )
+  }
   // Two-component temp name: pid + high-resolution time avoids collisions across concurrent and rapid sequential writes to the same path.
   const tmp = `${dest}.${process.pid}.${process.hrtime.bigint().toString()}.tmp`
 
@@ -346,7 +354,10 @@ function atomicWriteCore(requested: string, content: string | Uint8Array): void 
 
     withRetryOnLock(() => renameSync(tmp, dest))
     const published = typeof content === 'string' ? Buffer.from(content, 'utf-8') : Buffer.from(content)
-    for (const trace of writeTraces) trace.set(foldPath(path.resolve(requested)), published)
+    for (const trace of writeTraces) {
+      trace.set(foldPath(path.resolve(requested)), published)
+      if (dest !== requested) trace.set(foldPath(path.resolve(dest)), published)
+    }
   } catch (err) {
     // Clean up the orphaned temp file on ANY failure past this point, not just a failed rename: the temp file is created by openSync before the write attempt, so it exists (and leaks) whether the write or the rename is what failed. Best-effort: a failed cleanup-unlink must never mask the original error.
     try {

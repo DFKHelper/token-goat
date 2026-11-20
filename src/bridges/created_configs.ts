@@ -11,6 +11,7 @@ import {
   foldPath,
   removeEmptyDirInScope,
   removeFileInScope,
+  resolveSymlinkChain,
   tracingWrites,
   withFileLock,
 } from '../util.js'
@@ -221,10 +222,7 @@ export function removeCreatedIfEmpty(target: string): void {
 
 /** Run `work`, then record in the ledger each of `targets` and each directory above one that `work` brought into being, so uninstall can take away exactly what this install made. Recorded even when `work` throws, since whatever it created before failing is still token-goat's. */
 export function recordCreatedBy<T>(targets: readonly string[], work: () => T): T {
-  const absent = new Set<string>()
-  for (const target of targets) {
-    for (let p = path.resolve(target); !fs.existsSync(p) && !absent.has(p); p = path.dirname(p)) absent.add(p)
-  }
+  const absent = absentPaths(targets)
   try {
     return work()
   } finally {
@@ -236,10 +234,7 @@ export function recordCreatedBy<T>(targets: readonly string[], work: () => T): T
 // A file already there stays with its entry and earlier bytes; the error is rethrown as it was.
 // limit: a file a concurrent install creates meanwhile is undone too; revisit-when: installs overlap by design
 export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => T): T {
-  const absent = new Set<string>()
-  for (const target of targets) {
-    for (let p = path.resolve(target); !fs.existsSync(p) && !absent.has(p); p = path.dirname(p)) absent.add(p)
-  }
+  const absent = absentPaths(targets)
   const recordedBefore = new Set([...absent, ...targets.map((t) => path.resolve(t))].filter(hasCreatedConfig))
   const backupsBefore = new Set(targets.flatMap(createdBackupsFor))
   const earlier = earlierBytes(targets)
@@ -251,7 +246,7 @@ export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => 
     undoQuietly(() => restoreEarlierBytes(earlier, wrote, leftAsFound))
     undoQuietly(() => {
       for (const p of [...absent].sort((a, b) => b.length - a.length)) {
-        if (!fs.existsSync(p)) continue
+        if (!lexists(p)) continue
         if (fs.lstatSync(p).isDirectory()) removeEmptyDirInScope(p)
         else if (holdsBytesWritten(p, wrote)) removeFileInScope(p)
         else leftAsFound.push(p)
@@ -284,7 +279,8 @@ export function tracedFileWrites<T>(
   const revert = (error: unknown): void => {
     const left: string[] = []
     undoQuietly(() => restoreEarlierBytes(earlier, wrote, left))
-    for (const p of paths.map((t) => path.resolve(t)).filter((t) => !earlier.has(t) && fs.existsSync(t))) {
+    const created = [...paths.map((t) => path.resolve(t)), ...missingReferents(paths)]
+    for (const p of created.filter((t) => !earlier.has(t) && lexists(t) && !fs.lstatSync(t).isSymbolicLink())) {
       if (holdsBytesWritten(p, wrote)) undoQuietly(() => removeFileInScope(p))
       else left.push(p)
     }
@@ -356,4 +352,38 @@ export function removeCreatedTree(targets: readonly string[]): void {
     if (fs.existsSync(p)) removeCreatedIfEmpty(p)
     else if (hasCreatedConfig(p)) takeCreatedConfig(p)
   }
+}
+
+/** True when anything, a dangling link included, is at `p`: `existsSync` follows a link and says no. */
+function lexists(p: string): boolean {
+  try {
+    fs.lstatSync(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Where each link in `paths` ends when that file does not exist yet: the file a write through it creates. */
+function missingReferents(paths: readonly string[]): string[] {
+  const out: string[] = []
+  for (const target of paths) {
+    const p = path.resolve(target)
+    try {
+      const end = resolveSymlinkChain(p)
+      if (end !== p && !lexists(end)) out.push(end)
+    } catch {
+      // A link loop: the write fails on its own and there is no end to name.
+    }
+  }
+  return out
+}
+
+/** The `targets`, the files their links lead to, and each directory above one, that are not there now. */
+function absentPaths(targets: readonly string[]): Set<string> {
+  const absent = new Set<string>()
+  for (const target of [...targets.map((t) => path.resolve(t)), ...missingReferents(targets)]) {
+    for (let p = target; !lexists(p) && !absent.has(p); p = path.dirname(p)) absent.add(p)
+  }
+  return absent
 }

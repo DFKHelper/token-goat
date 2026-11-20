@@ -179,15 +179,19 @@ describe('a failed probe puts back every file the install overwrote', () => {
   })
 })
 
-/** True where this process may create a file symlink (win32 needs Developer Mode or an elevated shell). */
+/** Codes meaning this account or platform may not create links: win32 without Developer Mode gives EPERM. */
+const NO_LINK_RIGHTS = new Set(['EPERM', 'EACCES', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP'])
+
+/** True where this process may create a file symlink; any error outside {@link NO_LINK_RIGHTS} is thrown. */
 function canSymlink(): boolean {
   const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-symlink-probe-'))
   try {
     fs.writeFileSync(path.join(probe, 'a'), 'x')
     fs.symlinkSync(path.join(probe, 'a'), path.join(probe, 'b'), 'file')
     return true
-  } catch {
-    return false
+  } catch (error) {
+    if (NO_LINK_RIGHTS.has((error as NodeJS.ErrnoException).code ?? '')) return false
+    throw error
   } finally {
     fs.rmSync(probe, { recursive: true, force: true })
   }
@@ -225,6 +229,52 @@ describe('a failed probe puts back a file that is a symlink, and leaves the link
     expect(fs.lstatSync(shim).isSymbolicLink(), 'the link was replaced by a file').toBe(true)
     expect(fs.readlinkSync(shim), 'the link text changed').toBe(linkText)
     expect(fs.readFileSync(target, 'utf8'), 'the target lost its bytes').toBe('// earlier working shim\n')
+  })
+})
+
+describe('a symlink whose target does not exist yet', () => {
+  // Fixture provenance: HAND-DERIVED; the link text and the missing target are written here.
+  const NEEDS = '(skipped without the right to create symlinks, as on win32 without Developer Mode)'
+  const danglingKimiShim = (): { target: string; linkText: string } => {
+    const target = path.join(TMP, 'dotfiles', 'deep', 'kimi-shim.cjs')
+    fs.mkdirSync(path.dirname(kimiHookScriptPath()), { recursive: true })
+    fs.symlinkSync(target, kimiHookScriptPath(), 'file')
+    return { target, linkText: fs.readlinkSync(kimiHookScriptPath()) }
+  }
+
+  it.skipIf(!canSymlink())(`a failed probe leaves the link, its text, and no target ${NEEDS}`, () => {
+    const { target, linkText } = danglingKimiShim()
+    failProbe()
+    expect(() => installKimi()).toThrow(HookSelftestError)
+    expect(fs.lstatSync(kimiHookScriptPath()).isSymbolicLink(), 'link still present').toBe(true)
+    expect(fs.readlinkSync(kimiHookScriptPath()), 'link text').toBe(linkText)
+    expect(fs.existsSync(target), 'the target this install created').toBe(false)
+    expect(fs.existsSync(path.dirname(target)), 'the directory this install made for the target').toBe(false)
+  })
+
+  it.skipIf(!canSymlink())(`a successful install writes the target and keeps the link ${NEEDS}`, () => {
+    const { target, linkText } = danglingKimiShim()
+    setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
+    installKimi()
+    expect(fs.lstatSync(kimiHookScriptPath()).isSymbolicLink(), 'link still present').toBe(true)
+    expect(fs.readlinkSync(kimiHookScriptPath()), 'link text').toBe(linkText)
+    expect(fs.readFileSync(target, 'utf8').length, 'the shim was written to the link target').toBeGreaterThan(0)
+  })
+
+  it.skipIf(!canSymlink())(`an install over a link to a file renames a new file in ${NEEDS}`, () => {
+    const target = path.join(TMP, 'dotfiles', 'kimi-shim.cjs')
+    const earlier = '// earlier working shim\n'
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.mkdirSync(path.dirname(kimiHookScriptPath()), { recursive: true })
+    fs.writeFileSync(target, earlier)
+    fs.symlinkSync(target, kimiHookScriptPath(), 'file')
+    const identity = fs.statSync(target, { bigint: true }).ino
+    setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
+    installKimi()
+    expect(fs.lstatSync(kimiHookScriptPath()).isSymbolicLink(), 'link still present').toBe(true)
+    expect(fs.readFileSync(target, 'utf8'), 'the target holds the new shim').not.toBe(earlier)
+    const after = fs.statSync(target, { bigint: true }).ino
+    expect(after, 'an in-place write keeps the file identity').not.toBe(identity)
   })
 })
 
