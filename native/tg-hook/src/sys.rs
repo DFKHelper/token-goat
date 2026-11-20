@@ -181,6 +181,40 @@ pub fn end_group(group: &Group) {
     }
 }
 
+/// Lets a route that ended in time leave what it started running: clears the job's kill-on-close limit, so closing its handle (by [`close_group`] or this process's exit) ends nothing. False when that could not be done, in which case closing the handle ends the route's descendants; POSIX has nothing to clear.
+pub fn release_group(group: &Group) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::JobObjects as jobs;
+        if group.job == 0 {
+            return false;
+        }
+        let info = jobs::JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        let size = size_of::<jobs::JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+        let class = jobs::JobObjectExtendedLimitInformation;
+        // SAFETY: `info` is the structure this class names, passed with its own size, on a job handle this process made.
+        unsafe { jobs::SetInformationJobObject(group.job as _, class, (&raw const info).cast(), size) != 0 }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = group;
+        true
+    }
+}
+
+/// Closes this process's handle to the job of `group`, which ends the route's members unless [`release_group`] cleared the limit first. The group is spent: nothing may signal it afterwards.
+pub fn close_group(group: Group) {
+    #[cfg(windows)]
+    {
+        if group.job != 0 {
+            // SAFETY: the job handle is the one adopt_child made; `group` is taken by value so it is closed once.
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(group.job as _) };
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = group;
+}
+
 /// Whether process `pid` is running: `Some(false)` only when the system says no such process exists, `None` when it cannot tell, which a caller treats as running.
 pub fn process_alive(pid: u32) -> Option<bool> {
     #[cfg(unix)]
@@ -278,5 +312,27 @@ mod tests {
         let flags = flags.expect("the job's limit flags could not be read, so the job was not made");
         assert!(flags & KILL != 0, "the route's job must be killed when its handle closes");
         assert!(flags & BREAKAWAY == 0, "a descendant of the route must not break away from its job");
+    }
+
+    #[test]
+    fn a_released_job_leaves_its_member_running_when_its_handle_closes_on_windows() {
+        let mut child = HungChild::start("release");
+        let group = adopt_child(&child.0);
+        let released = release_group(&group);
+        let flags = limit_flags(&group);
+        close_group(group);
+        let running = matches!(child.0.try_wait(), Ok(None));
+        assert!(released, "the limit of a live job must be clearable");
+        assert_eq!(flags.map(|f| f & KILL), Some(0), "kill-on-close must be cleared by the release");
+        assert!(running, "closing a released job's handle must leave its member running");
+    }
+
+    #[test]
+    fn a_release_that_cannot_be_made_is_reported_and_closes_nothing_on_windows() {
+        let none = Group { leader: 0, job: 0 };
+        assert!(!release_group(&none), "a route with no job has nothing to release");
+        let bogus = Group { leader: 0, job: 0x7fff_fff0 };
+        assert!(!release_group(&bogus), "a handle this process does not hold cannot be released");
+        close_group(none);
     }
 }

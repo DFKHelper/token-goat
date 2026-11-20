@@ -261,6 +261,9 @@ fn exec_traced(
             Err(e) => return Err(Failure::Spawn(format!("lost track of the child: {e}"))),
         }
     };
+    // The route ended by itself, so what it started (the hook server) is left running; a failed release changes no answer.
+    let _ = crate::sys::release_group(&group);
+    crate::sys::close_group(group);
     let empty_ok = out::safe_answer(harness, event).is_empty();
     // Only a served route (exit 0 or a deliberate 2) passes stderr on; the wait ends with the pipe or the deadline.
     let held_err = if matches!(status.code(), Some(0 | 2)) {
@@ -579,6 +582,51 @@ mod tests {
             .spawn();
         drop(grandchild);
         std::thread::sleep(Duration::from_secs(120));
+    }
+
+    /// Route that starts a detached hanging child (`childfile=<path>` gets its pid), waits for the pid, answers `{}`, exits.
+    #[test]
+    #[ignore = "only runs as the route of the in-time test below"]
+    fn exit_parent() {
+        let arg = |key: &str| std::env::args().find_map(|a| a.strip_prefix(key).map(String::from));
+        let Some(childfile) = arg("childfile=") else { return };
+        // As Node does at startup, so the child does not hold this route's stdout pipe open past the route's exit.
+        crate::sys::stop_handle_inheritance();
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--ignored", "--exact", "capture::tests::hang_child"]).arg(format!("pidfile={childfile}"));
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, as Node's detached spawn.
+            cmd.creation_flags(0x8 | 0x200);
+        }
+        drop(cmd.spawn());
+        // Bounded by BACKSTOP; the row asserts on the pid, so a child that never wrote it fails there.
+        let _ = poll_within(BACKSTOP, || std::fs::metadata(&childfile).is_ok().then_some(()));
+        println!("{{}}");
+    }
+
+    #[test]
+    fn a_route_that_ends_in_time_leaves_what_it_started_running() {
+        let pidfile = own_pidfile!();
+        let _ = std::fs::remove_file(&pidfile);
+        // Ends the recorded grandchild however this test ends, so a red row leaves nothing running.
+        let _reap = ReapRecordedChild(pidfile.clone());
+        let me = std::env::current_exe().unwrap().into_os_string();
+        let test = "capture::tests::exit_parent".into();
+        let file = format!("childfile={}", pidfile.display()).into();
+        let argv = vec![me, "--ignored".into(), "--exact".into(), test, file];
+        let ended = exec(&argv, Stdin::Null, "t", BACKSTOP, "claudecode", "pre_tool_use");
+        // The harness header makes the route's stdout "not JSON", a verdict reached only once the route exited by itself.
+        match ended {
+            Err(Failure::Output(what)) => assert_eq!(what, "not JSON", "the route did not end on its own exit"),
+            Err(other) => panic!("the route did not end on its own exit: {other}"),
+            Ok(_) => panic!("the harness header cannot be a JSON answer"),
+        }
+        let read = || std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse::<u32>().ok());
+        let pid = poll_within(BACKSTOP, read).expect("the route's child never recorded its pid");
+        assert!(!process_is_gone(pid), "grandchild pid {pid} was ended with a route that finished in time");
     }
 
     #[test]
