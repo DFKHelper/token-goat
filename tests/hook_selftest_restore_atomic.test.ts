@@ -21,7 +21,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
   }
 })
 
-import { buildGuardedCommand } from '../src/hook_guard.js'
+import { buildGuardedCommand, GUARD_VERSION } from '../src/hook_guard.js'
 import { HookSelftestError, setHookSelftestRunnerForTesting, verifiedInstall } from '../src/hook_selftest.js'
 
 let dir: string
@@ -36,7 +36,7 @@ const CURRENT = buildGuardedCommand({
   marker: '/x/marker',
 })
 /** A guarded command a newer build wrote. */
-const NEWER = ': tg-guard-v2; true'
+const NEWER = `: tg-guard-v${String(GUARD_VERSION + 1)}; true`
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-selftest-restore-'))

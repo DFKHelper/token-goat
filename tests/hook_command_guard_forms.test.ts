@@ -14,8 +14,8 @@ import {
   parseGuardedCommand,
   type GuardShell,
 } from '../src/hook_guard.js'
-import { noopFor } from '../src/hook_adapters.js'
-import { nativeHookCommandLine, splitHookCommand } from '../src/native_hook.js'
+import { ASYNC_DETACH_LINE, isAsyncDetachEligible, noopFor } from '../src/hook_adapters.js'
+import { hookCommandRewrittenSpan, nativeHookCommandLine, splitHookCommand } from '../src/native_hook.js'
 import { powerShellCommandArgs, resolvePowerShell, resolveWindowsBash } from '../src/shell.js'
 import { HARNESS_HOOK_PAYLOADS } from './fixtures/harness_hook_payloads.js'
 
@@ -386,6 +386,52 @@ describe('a UNC path in the sh form', () => {
     const parsed = parseGuardedCommand(buildGuardedCommand(input('powershell')))
     expect(parsed).toMatchObject({ kind: 'v1', native: [UNC_EXE, '--', 'node', 'C:\\s.cjs'] })
   })
+})
+
+describe('the early async-marker forwarding is built only for events that can be eligible', () => {
+  const SHELLS_ALL: GuardShell[] = ['sh', 'powershell', 'cmd']
+  const EVENTS = ['subagent_stop', 'post_tool_use', 'pre_tool_use', 'session_start', 'stop', 'user_prompt']
+  const PAYLOAD = JSON.stringify({ tool_name: 'Write', tool_input: { file_path: 'a.ts' } })
+  const canBeEligible = (event: string): boolean =>
+    isAsyncDetachEligible(event, PAYLOAD) || isAsyncDetachEligible(event, '{}')
+  const build = (shell: GuardShell, event: string): string =>
+    buildGuardedCommand({
+      shell,
+      native: ['/x/tg-hook', '--event', event, '--', '/x/node', '/x/shim.cjs', event, '/x/e.mjs'],
+      safe: '{}',
+      marker: '/x/hook-broken.json',
+    })
+  const forwards = (shell: GuardShell, command: string): boolean =>
+    shell === 'sh' ? command.includes('dd bs=1 count=15') : command.includes('function tgm')
+
+  for (const shell of SHELLS_ALL) {
+    it(`${shell}: exactly the events isAsyncDetachEligible can accept get the forwarding stage`, () => {
+      for (const event of EVENTS) {
+        expect({ event, forwards: forwards(shell, build(shell, event)) }).toEqual({
+          event,
+          forwards: canBeEligible(event),
+        })
+      }
+    })
+
+    it(`${shell}: the forwarding text round-trips and holds no word Grok CLI rewrites`, () => {
+      for (const event of EVENTS) {
+        const command = build(shell, event)
+        expect(hookCommandRewrittenSpan(command, 'grok')).toBeUndefined()
+        expect(parseGuardedCommand(command)).toMatchObject({
+          kind: 'v1',
+          native: ['/x/tg-hook', '--event', event, '--', '/x/node', '/x/shim.cjs', event, '/x/e.mjs'],
+          safe: '{}',
+          marker: '/x/hook-broken.json',
+        })
+      }
+    })
+
+    it(`${shell}: the marker the guard forwards is the one the shims print`, () => {
+      const written = ASYNC_DETACH_LINE.trim().replaceAll('"', shell === 'cmd' ? "'+[char]34+'" : '"')
+      expect(build(shell, 'subagent_stop')).toContain(written)
+    })
+  }
 })
 
 function parseNotice(raw: string): Outcome['notice'] {

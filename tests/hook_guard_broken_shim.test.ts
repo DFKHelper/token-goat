@@ -343,8 +343,11 @@ describe('the sh guard with no hold files runs no route', () => {
 
 // Provenance: HAND-DERIVED. The marker bytes are what src/bridges/claudecode.ts prints (`{"async":true}` + LF).
 const MARKER_LINE = '{"async":true}\n'
-// The fake route gives up waiting for its release after this long; only a holding guard makes it wait it out.
-const ROUTE_GIVES_UP_MS = 400
+// A route waits this long for its release only on a failing path: a guard that forwards the marker at once
+// releases it within the event that carried the marker, so a passing run never waits any of it out.
+const RELEASE_BOUND_MS = 15_000
+// An event the guard never forwards for holds the marker, so nothing releases the route: it ends by its bound.
+const HELD_BOUND_MS = 1_500
 
 // Ends the guard's shell and its descendants while the handle holds it and its command line names `program`.
 function endTree(child: ChildProcess, program: string): void {
@@ -356,63 +359,172 @@ function endTree(child: ChildProcess, program: string): void {
 interface MarkerRun {
   status: number | null
   stdout: string
-  released: string
+  stderr: string
+  state: string
+  runs: number
+  tmpLeft: string[]
 }
 
-// Runs the guard round a route that prints the marker, then waits (bounded) for a release given on reading it.
-async function runMarkerRoute(shell: GuardShell, event: string): Promise<MarkerRun> {
+// The route's own helpers: `out` writes bytes at once, `hold` waits (bounded) for the release the row gives on
+// seeing the marker on the guard's stdout and records whether it came, `run` counts this route's starts.
+const SHIM_HELPERS = (dir: string, boundMs: number): string =>
+  `const fs = require('fs'); const buf = new Int32Array(new SharedArrayBuffer(4))\n` +
+  `const wait = (ms) => Atomics.wait(buf, 0, 0, ms)\n` +
+  `const runsFile = ${JSON.stringify(path.join(dir, 'runs'))}; fs.appendFileSync(runsFile, 'x')\n` +
+  `const run = fs.readFileSync(runsFile).length; const out = (s) => fs.writeSync(1, s)\n` +
+  `const hold = () => { const end = Date.now() + ${String(boundMs)}; let yes = false\n` +
+  `  const rel = ${JSON.stringify(path.join(dir, 'release'))}\n` +
+  `  while (Date.now() < end) { if (fs.existsSync(rel)) { yes = true; break }\n` +
+  `    wait(20) }\n` +
+  `  fs.writeFileSync(${JSON.stringify(path.join(dir, 'state'))}, yes ? 'released=yes' : 'released=no') }\n`
+
+interface MarkerOptions {
+  readonly event?: string
+  readonly boundMs?: number
+  readonly input?: string
+}
+
+// Runs the guard round a route written by `body`; releases the route on reading the marker line on stdout.
+async function runMarkerShim(shell: GuardShell, body: string, opts: MarkerOptions = {}): Promise<MarkerRun> {
   const dir = path.join(root, `m${String(n++)}`)
   fs.mkdirSync(dir)
+  const tmp = path.join(dir, 'tmp')
+  fs.mkdirSync(tmp)
   const shim = path.join(dir, 'shim.cjs')
-  const release = path.join(dir, 'release')
-  const state = path.join(dir, 'state')
-  fs.writeFileSync(
-    shim,
-    `const fs = require('fs'); fs.writeSync(1, ${JSON.stringify(MARKER_LINE)})\n` +
-      `const end = Date.now() + ${String(ROUTE_GIVES_UP_MS)}; let yes = false\n` +
-      `while (Date.now() < end) { if (fs.existsSync(${JSON.stringify(release)})) { yes = true; break }\n` +
-      '  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20) }\n' +
-      `fs.writeFileSync(${JSON.stringify(state)}, yes ? 'released=yes' : 'released=no')\n` +
-      "fs.writeSync(1, '{}')\n",
-  )
+  fs.writeFileSync(shim, SHIM_HELPERS(dir, opts.boundMs ?? RELEASE_BOUND_MS) + body)
   const command = buildGuardedCommand({
     shell,
-    native: [process.execPath, shim, event],
+    native: [process.execPath, shim, opts.event ?? 'subagent_stop'],
     safe: SAFE,
     marker: path.join(dir, 'hook-broken.json'),
   })
   const p = prog(shell)!
   const child = spawn(p.program, p.args(command), {
     cwd: dir,
+    env: { ...process.env, TMPDIR: tmp },
     windowsHide: true,
     windowsVerbatimArguments: p.verbatim === true,
     detached: !WIN,
-    stdio: ['pipe', 'pipe', 'ignore'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   })
   try {
     let stdout = ''
+    let stderr = ''
     child.stdout.on('data', (c: Buffer) => {
       stdout += c.toString('utf8')
-      if (stdout.includes(MARKER_LINE)) fs.writeFileSync(release, '')
+      if (stdout.includes(MARKER_LINE)) fs.writeFileSync(path.join(dir, 'release'), '')
+    })
+    child.stderr.on('data', (c: Buffer) => {
+      stderr += c.toString('utf8')
     })
     // A shell that ends before reading its payload closes the pipe early; that is not a failure of the row.
     child.stdin.on('error', () => undefined)
-    child.stdin.end('{}')
+    child.stdin.end(opts.input ?? '{}')
     const status = await new Promise<number | null>((resolve) => child.on('close', resolve))
-    const released = fs.existsSync(state) ? fs.readFileSync(state, 'utf8') : 'route never ran'
-    return { status, stdout, released }
+    const read = (f: string): string => {
+      const file = path.join(dir, f)
+      return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+    }
+    return {
+      status,
+      stdout,
+      stderr,
+      state: read('state') === '' ? 'route never held' : read('state'),
+      runs: read('runs').length,
+      tmpLeft: fs.readdirSync(tmp),
+    }
   } finally {
     endTree(child, p.program)
   }
 }
 
-describe('the async marker through the guard', () => {
+const ANSWER = "out('{}')\n"
+
+describe('the async marker through the guard is forwarded at once', () => {
   for (const shell of SHELLS) {
-    // The passing run waits out the route's own bound: nothing releases a route the guard is holding.
-    it(`limit: ${shell} holds the async marker until the route ends, then replays it whole`, async () => {
-      const o = await runMarkerRoute(shell, 'subagent_stop')
-      expect({ released: o.released, status: o.status, stdout: o.stdout }).toEqual({
-        released: 'released=no',
+    it(`${shell}: a leading marker is on the guard's stdout while the route still runs`, async () => {
+      const o = await runMarkerShim(shell, `out(${JSON.stringify(MARKER_LINE)}); hold(); ${ANSWER}`)
+      const seen = { state: o.state, status: o.status, stdout: o.stdout, stderr: o.stderr, tmpLeft: o.tmpLeft }
+      expect(seen).toEqual({
+        state: 'released=yes',
+        status: 0,
+        stdout: `${MARKER_LINE}{}`,
+        stderr: '',
+        tmpLeft: [],
+      })
+    })
+
+    it(`${shell}: a marker written in two parts is forwarded as one whole line`, async () => {
+      const o = await runMarkerShim(
+        shell,
+        `out('{"async":'); wait(100); out('true}\\n'); hold(); ${ANSWER}`,
+      )
+      expect({ state: o.state, status: o.status, stdout: o.stdout }).toEqual({
+        state: 'released=yes',
+        status: 0,
+        stdout: `${MARKER_LINE}{}`,
+      })
+    })
+
+    it(`${shell}: a route failing after the marker gives the marker alone, exit 0, no next route`, async () => {
+      const body =
+        `out(${JSON.stringify(MARKER_LINE)}); out('part'); process.stderr.write('noise\\n'); process.exit(13)\n`
+      const o = await runMarkerShim(shell, body)
+      const seen = { status: o.status, stdout: o.stdout, stderr: o.stderr, runs: o.runs, tmpLeft: o.tmpLeft }
+      expect(seen).toEqual({
+        status: 0,
+        stdout: MARKER_LINE,
+        stderr: '',
+        runs: 1,
+        tmpLeft: [],
+      })
+    })
+
+    it(`${shell}: a route that fails before any marker falls through to the next route`, async () => {
+      const body = `if (run === 1) process.exit(1)\nout(${JSON.stringify(MARKER_LINE)}); hold(); ${ANSWER}`
+      const o = await runMarkerShim(shell, body)
+      expect({ state: o.state, status: o.status, stdout: o.stdout, runs: o.runs }).toEqual({
+        state: 'released=yes',
+        status: 0,
+        stdout: `${MARKER_LINE}{}`,
+        runs: 2,
+      })
+    })
+
+    it(`${shell}: two routes that would both print a marker give one marker`, async () => {
+      const body =
+        `if (run === 1) { out('{"first":1}\\n'); out(${JSON.stringify(MARKER_LINE)}); process.exit(1) }\n` +
+        `out(${JSON.stringify(MARKER_LINE)}); ${ANSWER}`
+      const o = await runMarkerShim(shell, body)
+      expect({ status: o.status, stdout: o.stdout, runs: o.runs }).toEqual({
+        status: 0,
+        stdout: `${MARKER_LINE}{}`,
+        runs: 2,
+      })
+    })
+
+    it(`${shell}: a route whose first line is not the marker is held and replayed whole`, async () => {
+      const text = `{"a":1}\n${MARKER_LINE}{}`
+      const o = await runMarkerShim(shell, `out(${JSON.stringify(text)})\n`)
+      expect({ status: o.status, stdout: o.stdout }).toEqual({ status: 0, stdout: text })
+    })
+
+    it(`${shell}: the payload on stdin still reaches a route that forwards the marker`, async () => {
+      const body =
+        `out(${JSON.stringify(MARKER_LINE)}); let d = ''; process.stdin.on('data', (c) => { d += c })\n` +
+        "process.stdin.on('end', () => out(JSON.stringify({ got: d })))\n"
+      const o = await runMarkerShim(shell, body, { input: PAYLOAD })
+      expect({ status: o.status, stdout: o.stdout }).toEqual({
+        status: 0,
+        stdout: `${MARKER_LINE}${JSON.stringify({ got: PAYLOAD })}`,
+      })
+    })
+
+    it(`${shell}: an event that is never eligible holds the marker as ordinary output`, async () => {
+      const body = `out(${JSON.stringify(MARKER_LINE)}); hold(); ${ANSWER}`
+      const o = await runMarkerShim(shell, body, { event: 'pre_tool_use', boundMs: HELD_BOUND_MS })
+      expect({ state: o.state, status: o.status, stdout: o.stdout }).toEqual({
+        state: 'released=no',
         status: 0,
         stdout: `${MARKER_LINE}{}`,
       })

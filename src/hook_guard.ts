@@ -14,7 +14,7 @@ export class HookCommandRewriteError extends Error {
 }
 
 /** Version token every guarded command starts with: a no-op, so a later build recognises both forms. */
-export const GUARD_VERSION = 2
+export const GUARD_VERSION = 3
 const SH_PREFIX = /^:\s+tg-guard-v(\d+)\s*;/
 const PS_PREFIX = /^'tg-guard-v(\d+)'\s*\|\s*Out-Null\s*;/
 // Built from parts so the version is not an interpolation between hand-written quotes (hint_templates guard).
@@ -84,7 +84,20 @@ const SH_CLEAR = ': >"$1"; [ -z "$2" ] || : >"$2"'
 const CASE_SH =
   `case $? in 0) ${SH_REPLAY}; exit 0;; 2) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ${SH_CLEAR};; ` +
   `*) ${SH_CLEAR};; esac`
-// limit: sh holds the async marker until the route ends (a pipe loses $?); revisit-when: an early read keeps it
+// The line a route prints first to detach the host (ASYNC_DETACH_LINE in hook_adapters.ts, pinned by a test).
+const ASYNC_QUOTED = `'{"async":true}'`
+// Events whose payloads isAsyncDetachEligible can accept: only their guards carry the early-forwarding stage.
+const ASYNC_EVENTS: ReadonlySet<string> = new Set(['subagent_stop', 'post_tool_use'])
+// sh status travels as `x<status>x` and `m` (forwarded) in the capture of fd 6, landing in $3 (no $NAME word).
+// The route's reader takes 15 bytes (marker and LF) into the hold $2; exactly the marker goes to fd 4 at once.
+const SH_LEAD =
+  'dd bs=1 count=15 >>"$2" 2>/dev/null; ' +
+  `if [ "$(cat "$2" 2>/dev/null; echo .)" = ${ASYNC_QUOTED}"$(echo; echo .)" ]; then ` +
+  `: >"$2"; echo ${ASYNC_QUOTED} >&4; echo m; fi; cat >>"$2"`
+// Accepted outcomes are judged as in CASE_SH; after a forwarded marker a failed run prints nothing and exits 0.
+const CASE_SH_LEAD =
+  `case "$3" in *x0x*) ${SH_REPLAY}; exit 0;; *x2x*) if ${SH_SPOKE}; then ${SH_REPLAY}; exit 2; fi; ` +
+  `${SH_CLEAR};; *) ${SH_CLEAR};; esac; case "$3" in *m*) ${SH_RM_ERR}; exit 0;; esac`
 const SH_HOLD_OK = '[ -f "$1" ] && [ -f "$2" ]'
 const SH_MKTEMP_TMP = '"$(mktemp /tmp/tg-guard.XXXXXX 2>/dev/null)"'
 const SH_TMP_IN_TMP = `set -- ${SH_MKTEMP_TMP} ${SH_MKTEMP_TMP}`
@@ -93,8 +106,12 @@ const SH_STDERR =
   `${SH_HOLD_OK} || { ${SH_RM_ERR}; ${SH_TMP_IN_TMP}; }; ` +
   `${SH_HOLD_OK} || { ${SH_RM_ERR}; set -- "" ""; }; exec 3>&2 4>&1; [ -z "$1" ] || exec 2>>"$1" >>"$2"`
 
-function shRoute(test: string, argv: readonly string[]): string {
-  return `if [ -n "$1" ] && ${test}; then ${argv.map((w) => quoteWord('sh', w)).join(' ')}; ${CASE_SH}; fi`
+function shRoute(test: string, argv: readonly string[], forward: boolean): string {
+  const call = argv.map((w) => quoteWord('sh', w)).join(' ')
+  if (!forward) return `if [ -n "$1" ] && ${test}; then ${call}; ${CASE_SH}; fi`
+  // The `then` statement ends at the first `;`, so the argv stays the quoted words of that statement.
+  return `if [ -n "$1" ] && ${test}; then set -- "$1" "$2" "$( { { ${call} 6>&-; echo "x$?x" >&6; } | ` +
+    `{ ${SH_LEAD}; }; } 6>&1 )"; ${CASE_SH_LEAD}; fi`
 }
 
 // The merge of stderr into the held output, as the statement reader returns it.
@@ -102,8 +119,20 @@ const PS_ERR_REDIRECT_WORD = '2>&1'
 // A route's stdout lines and stderr records are held in one variable (no $NAME word) and written only once
 // its exit is accepted. A stderr line is an ErrorRecord, whose message is the raw line (a `2>file` redirect
 // would wrap it in a decorated record on Windows PowerShell 5.1, even a blank one).
-// limit: PowerShell holds the async marker until the route ends (a per-line stage needs a `$_` Grok rewrites)
 const PS_OUT_SINK = ['|', 'Tee-Object', '-Variable', 'tgo', '|', 'Out-Null']
+// Per-line stage: the pipeline item is read as `Get-Variable _` (a `$_` word is one Grok CLI rewrites).
+// New-Variable -Force, not Set-Variable: two Set-Variable words in one cmd-form command line failed (observed).
+const PS_ITEM = '(Get-Variable _ -ValueOnly)'
+const PS_FLAG = (name: string): string => `(Get-Variable ${name} -ValueOnly -ErrorAction Ignore)`
+const PS_STAGE = 'tgm'
+const PS_STAGE_WORDS = ['|', PS_STAGE]
+const PS_STAGE_DEF = `function ${PS_STAGE} { process { ` +
+  `if (${PS_ITEM} -is [string] -and -not ${PS_FLAG('tgn')}) { New-Variable tgn 1 -Scope Global -Force; ` +
+  `if (${PS_ITEM} -ceq (${ASYNC_QUOTED}) -and -not ${PS_FLAG('tgf')}) { ` +
+  `[Console]::Out.Write((${ASYNC_QUOTED}) + [char]10); New-Variable tgf 1 -Scope Global -Force } ` +
+  `else { Write-Output ${PS_ITEM} } } else { Write-Output ${PS_ITEM} } } }`
+// After a forwarded marker a route that did not answer ends the run: nothing more is printed, exit 0.
+const PS_FORWARDED_EXIT = `if (${PS_FLAG('tgf')}) { exit 0 }`
 const PS_HELD = 'Get-Variable tgo -ValueOnly -ErrorAction Ignore | Write-Output | Where-Object PSTypeNames'
 // Only the tail of the type name is matched: a line naming Management.Automation beside a file write is denied.
 const PS_RECORD = "'Automation.ErrorRecord'"
@@ -122,7 +151,7 @@ const PS_BYTE_ENCODING = 'try { [Console]::OutputEncoding | Tee-Object -Variable
 const PS_ENCODING_BACK = 'tgb'
 const PS_ENCODING_BACK_DEF =
   'function tgb { try { [Console]::OutputEncoding = (Get-Variable tge -ValueOnly) } catch { } }'
-const PS_OUT_CLEAR = `Remove-Variable tgo, tge -ErrorAction Ignore; ${PS_BYTE_ENCODING}`
+const PS_OUT_CLEAR = `Remove-Variable tgo, tge, tgn -ErrorAction Ignore; ${PS_BYTE_ENCODING}`
 // limit: PowerShell splits stdout into lines, so CR and a final newline are lost; revisit-when one is needed
 const PS_OUT_DEF = `function tgt { (${PS_HELD} -Contains ${PS_TEXT}) -join [char]10 }`
 const PS_OUT = '(tgt)'
@@ -130,14 +159,16 @@ const PS_REPLAY_OUT = `[Console]::Out.Write(${PS_OUT})`
 // Exit 2 counts as a block only when it speaks: non-blank stderr, or stdout whose first non-blank char is `{`.
 const PS_SPOKE = `(${PS_ERR}.Trim().Length -gt 0) -or (${PS_OUT}.TrimStart() -like '{*')`
 
-function psRoute(test: string, argv: readonly string[]): string {
+function psRoute(test: string, argv: readonly string[], forward: boolean): string {
   const call = argv.map((w) => quoteWord('powershell', w)).join(' ')
   const code = '(Get-Variable LASTEXITCODE -ValueOnly)'
-  return `if (${test}) { try { ${PS_OUT_CLEAR}; & ${call} ${PS_ERR_REDIRECT_WORD} ${PS_OUT_SINK.join(' ')}; ` +
+  const sink = (forward ? [...PS_STAGE_WORDS, ...PS_OUT_SINK] : PS_OUT_SINK).join(' ')
+  const after = forward ? `; ${PS_FORWARDED_EXIT}` : ''
+  return `if (${test}) { try { ${PS_OUT_CLEAR}; & ${call} ${PS_ERR_REDIRECT_WORD} ${sink}; ` +
     `if (${code} -eq 0) { ${PS_REPLAY}; ${PS_REPLAY_OUT}; ${PS_ENCODING_BACK}; exit 0 }; ` +
     `if (${code} -eq 2) { if (${PS_SPOKE}) { ${PS_REPLAY}; ${PS_REPLAY_OUT}; ` +
     `${PS_ENCODING_BACK}; exit 2 } } ` +
-    `} catch { }; ${PS_ENCODING_BACK} }`
+    `} catch { }; ${PS_ENCODING_BACK}${after} }`
 }
 
 /** The part of a native argv after `--`: the Node command the client falls back to. */
@@ -175,14 +206,16 @@ export function buildGuardedCommand(input: GuardInput): string {
   const nodeOnly = !input.native.includes('--')
   const node = nodeOnly ? input.native : wrappedNodeArgv(input.native)
   const shim = node[1]
+  const forward = ASYNC_EVENTS.has(node[2] ?? '')
   const notice = guardNoticeJson(bin)
   if (input.shell === 'sh') {
     const parts = [`: tg-guard-v${String(GUARD_VERSION)}`, SH_STDERR]
-    if (!nodeOnly) parts.push(shRoute(`[ -x ${q(bin)} ] && [ -s ${q(bin)} ]`, input.native))
+    if (!nodeOnly) parts.push(shRoute(`[ -x ${q(bin)} ] && [ -s ${q(bin)} ]`, input.native, forward))
     // limit: a native route reads stdin then fails: no payload, safe answer. revisit-when: a native client does
     if (shim !== undefined) {
-      parts.push(shRoute(`[ -f ${q(shim)} ] && [ -x ${q(node[0]!)} ]`, node))
-      parts.push(shRoute(`[ -f ${q(shim)} ] && command -v node >/dev/null 2>&1`, ['node', ...node.slice(1)]))
+      parts.push(shRoute(`[ -f ${q(shim)} ] && [ -x ${q(node[0]!)} ]`, node, forward))
+      const viaPath = ['node', ...node.slice(1)]
+      parts.push(shRoute(`[ -f ${q(shim)} ] && command -v node >/dev/null 2>&1`, viaPath, forward))
     }
     parts.push(SH_RM_ERR)
     parts.push(`[ -e ${q(input.marker)} ] || printf '%s' ${q(notice)} > ${q(input.marker)} 2>/dev/null`)
@@ -191,14 +224,16 @@ export function buildGuardedCommand(input: GuardInput): string {
   }
   const exists = (p: string): string => `Test-Path -LiteralPath ${q(p)} -PathType Leaf`
   const parts = [PS_VERSION_LINE, PS_ENCODING_BACK_DEF, PS_ERR_DEF, PS_OUT_DEF]
+  if (forward) parts.push(PS_STAGE_DEF)
   if (!nodeOnly) {
-    parts.push(psRoute(`(${exists(bin)}) -and ((Get-Item -LiteralPath ${q(bin)}).Length -gt 0)`, input.native))
+    const test = `(${exists(bin)}) -and ((Get-Item -LiteralPath ${q(bin)}).Length -gt 0)`
+    parts.push(psRoute(test, input.native, forward))
   }
   if (shim !== undefined) {
-    parts.push(psRoute(`${exists(shim)}`, node))
-    parts.push(
-      psRoute(`(${exists(shim)}) -and (Get-Command node -ErrorAction Ignore)`, ['node', ...node.slice(1)]),
-    )
+    parts.push(psRoute(`${exists(shim)}`, node, forward))
+    const viaPath = `(${exists(shim)}) -and (Get-Command node -ErrorAction Ignore)`
+    parts.push(psRoute(viaPath, ['node', ...node.slice(1)], forward))
+
   }
   parts.push(
     `try { if (-not (Test-Path -LiteralPath ${q(input.marker)} )) { ` +
@@ -311,7 +346,8 @@ export function parseGuardedCommand(command: string): GuardedParse | undefined {
     if (shell === 'sh') {
       if (native === undefined && t[0] === 'if') {
         const then = stmts[stmts.indexOf(s) + 1]
-        if (then?.[0]?.text === 'then') native = texts(then).slice(1)
+        // Only the quoted words are the argv: a forwarding route wraps them in unquoted shell words.
+        if (then?.[0]?.text === 'then') native = then.slice(1).filter((w) => w.quoted).map((w) => w.text)
       }
       if (t[0] === 'printf' && t[1] === '%s' && safe === undefined && !t.includes('||')) safe = t[2]
       const e = t.indexOf('-e')
@@ -322,6 +358,8 @@ export function parseGuardedCommand(command: string): GuardedParse | undefined {
         native = t.slice(call + 1)
         const sink = native.length - PS_OUT_SINK.length
         if (native.slice(sink).join(' ') === PS_OUT_SINK.join(' ')) native.length = sink
+        const stage = native.length - PS_STAGE_WORDS.length
+        if (native.slice(stage).join(' ') === PS_STAGE_WORDS.join(' ')) native.length = stage
         if (native.at(-1) === PS_ERR_REDIRECT_WORD) native.pop()
       }
       if (t[0] === '[Console]::Out.Write(') safe = t[1]
