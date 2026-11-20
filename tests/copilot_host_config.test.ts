@@ -8,6 +8,7 @@ import {
   copilotSkillDirectoriesEnv,
   disableBuiltinMcps,
   disabledMcpServers,
+  setCopilotHostConfigClockForTesting,
   skillDirectories,
 } from '../src/copilot_host_config.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -29,11 +30,14 @@ afterEach(() => {
   if (savedMcpToolCache === undefined) delete process.env['COPILOT_MCP_TOOL_CACHE']
   else process.env['COPILOT_MCP_TOOL_CACHE'] = savedMcpToolCache
   vi.restoreAllMocks()
+  setCopilotHostConfigClockForTesting(null)
   fs.rmSync(userRoot, { recursive: true, force: true })
 })
 
 describe('Copilot host config', () => {
   it('caches settings, resets through the registry, and reloads after metadata changes', () => {
+    // A file written a moment ago is racy and never trusted; a clock a minute on makes it an old file.
+    setCopilotHostConfigClockForTesting(() => Date.now() + 60_000)
     const settingsPath = path.join(userRoot, 'settings.json')
     fs.writeFileSync(
       settingsPath,

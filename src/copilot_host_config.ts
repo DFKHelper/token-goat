@@ -16,9 +16,19 @@ interface CachedSettings {
 
 let cachedSettings: CachedSettings | null = null
 
+// The coarsest timestamp tick (FAT: two seconds): a file time this close to the clock cannot order an edit.
+const RACY_WINDOW_MS = 2000
+let clockMs: () => number = Date.now
+
+/** Replaces the clock the racy-timestamp rule reads, for a test; null restores the real one. */
+export function setCopilotHostConfigClockForTesting(clock: (() => number) | null): void {
+  clockMs = clock ?? Date.now
+}
+
 function readSettings(userRoot: string = copilotCliUserRoot()): Record<string, unknown> {
   const settingsPath = path.resolve(userRoot, 'settings.json')
   try {
+    const clockBefore = clockMs()
     const stat = fs.statSync(settingsPath)
     if (!stat.isFile()) {
       discardCachedSettings(settingsPath)
@@ -41,6 +51,15 @@ function readSettings(userRoot: string = copilotCliUserRoot()): Record<string, u
       return {}
     }
     const settings = parsed as Record<string, unknown>
+    // Cached only if no write landed between stat and read and the file time is older than the clock by a tick.
+    const after = fs.statSync(settingsPath)
+    const settled = after.mtimeMs === stat.mtimeMs && after.size === stat.size &&
+      after.ctimeMs === stat.ctimeMs && after.ino === stat.ino && after.dev === stat.dev
+    const racy = clockBefore - Math.max(stat.mtimeMs, stat.ctimeMs) < RACY_WINDOW_MS
+    if (!settled || racy) {
+      discardCachedSettings(settingsPath)
+      return settings
+    }
     cachedSettings = {
       settingsPath,
       mtimeMs: stat.mtimeMs,
