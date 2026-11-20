@@ -12,7 +12,7 @@ import { claudeConfigDir } from './claude_config_dir.js'
 import { compareSemver } from './cli_upgrade.js'
 import { assertHookEntryAllowed } from './install_entry.js'
 import { loadConfig } from './config.js'
-import { GUARD_VERSION, guardVersionOf, parseGuardedCommand } from './hook_guard.js'
+import { GUARD_VERSION, guardVersionOf } from './hook_guard.js'
 import { assertRegisteredCommandsWork } from './hook_selftest.js'
 import { claudeHookShell } from './claude_hook_shell.js'
 import {
@@ -170,22 +170,22 @@ function stringFormHookWords(command: string): string[] {
   return splitHookCommand(command, 'sh')
 }
 
-function guardShellOf(command: string): string | undefined {
-  const parsed = parseGuardedCommand(command)
-  return parsed?.kind === 'v1' ? parsed.shell : undefined
-}
-
 /** True when `command`/`args` is the hook `expected` describes -- the same words in the same order, never `command` alone: an exec-form entry's `command` is just `"node"`, shared by every event and by a stale entry whose `args` point at a deleted shim. A path word matches another spelling of the same existing file (see {@link sameHookWord}); a string-form entry never matches an exec-form expectation or the reverse, so `install` still upgrades one to the other. */
 function hookEntryMatches(command: string, args: readonly string[] | undefined, expected: { command: string; args?: string[] }): boolean {
   const execForm = expected.args !== undefined
   if (!execForm && args !== undefined && args.length > 0) return false
   const a = execForm ? [command, ...(args ?? [])] : stringFormHookWords(command)
   const b = execForm ? [expected.command, ...expected.args!] : stringFormHookWords(expected.command)
-  // An old-form line and its guarded form share words, so the guard itself must match too.
-  if (!execForm && (guardVersionOf(command) === undefined)
-    !== (guardVersionOf(expected.command) === undefined)) return false
-  // A guard written for another shell is stale on a host that now runs the other one.
-  if (!execForm && guardShellOf(command) !== guardShellOf(expected.command)) return false
+  // A string-form entry is current only when its whole text is what this build writes, up to path spelling.
+  if (!execForm) {
+    if (command === expected.command) return true
+    if (a.length !== b.length || !a.every((v, i) => sameHookWord(v, b[i]!))) return false
+    let respelled = command
+    a.forEach((v, i) => {
+      if (v !== b[i]) respelled = respelled.split(v).join(b[i]!)
+    })
+    return respelled === expected.command
+  }
   return a.length === b.length && a.every((v, i) => sameHookWord(v, b[i]!))
 }
 
@@ -413,15 +413,30 @@ function installHooksScoped(scope: HookScope): InstallResult {
     // Strip every token-goat entry that is not byte-identical to what this build wires, whether or not a correct entry also already exists -- a wrong entry coexisting with a right one violates "exactly one, working, entry per event key" just as much as a wrong entry sitting alone does. Exact-match rather than marker-match is what makes this cover all four staleness shapes at once: a legacy alias (tokenwise/token_goat/tg-hook), a pre-shim bare `token-goat hook <event>`, a shim command whose baked absolute paths have since moved (node upgraded, token-goat reinstalled elsewhere), and a string-form entry once exec form becomes available (or vice versa, if a user downgrades Claude Code). A marker check would call any of those "already installed" and leave the hook pointing at a binary that no longer exists, or in a form the running Claude Code can't use.
     const groups: HookMatcherGroup[] = []
     let strippedStale = false
+    // The first stale entry of this tool's own is replaced where it stands unless a current one already exists.
+    const isCurrent = (c: string, a?: readonly string[]): boolean => hookEntryMatches(c, a, expected)
+    let needsReplacement = !existingGroups.some(
+      (g) => typeof g === 'object' && g !== null && hooksOf(g).some((h) => isOwnHookEntry(h, isCurrent)),
+    )
     for (const group of existingGroups) {
       if (typeof group !== 'object' || group === null) {
         groups.push(group)
         continue
       }
-      const keptHooks = hooksOf(group).filter((h) => {
+      const keptHooks = hooksOf(group).flatMap((h) => {
         const isStale = isOwnHookEntry(h, (command, args) => isTokenGoatHookCommand(command, args) && !hookEntryMatches(command, args, expected))
-        if (isStale) strippedStale = true
-        return !isStale
+        if (!isStale) return [h]
+        strippedStale = true
+        if (!needsReplacement) return []
+        needsReplacement = false
+        const { args: _oldArgs, shell: _oldShell, ...rest } = h
+        return [{
+          ...rest,
+          command: expected.command,
+          ...(expected.args !== undefined ? { args: expected.args } : {}),
+          ...(expected.shell !== undefined ? { shell: expected.shell } : {}),
+          onFailure: h.onFailure ?? HOOK_ON_FAILURE,
+        }]
       })
       if (keptHooks.length > 0) {
         groups.push({ ...group, hooks: keptHooks })
