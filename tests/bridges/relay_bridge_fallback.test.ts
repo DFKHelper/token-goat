@@ -321,7 +321,8 @@ describe.each(BRIDGES)('$name: a block is accepted only from a clean run', ({ lo
     expect(await (await load(dir))('pre_tool_use'), 'the PATH answer').toEqual(ROUTE_ANSWER)
   })
 
-  it.each([42, { nested: 'object' }, null, ['a']])('a block whose reason is %j does not block', async (reason) => {
+  const badReasons = [42, { nested: 'object' }, null, ['a']]
+  it.each(badReasons)('a block whose reason is %j does not block', async (reason) => {
     const dir = mkDir()
     writeEntry(dir, printerScript(blockWith(reason)))
     useRealSpawn(writePathStub(dir, '').stubDir)
