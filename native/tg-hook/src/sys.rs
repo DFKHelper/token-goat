@@ -199,9 +199,9 @@ pub fn process_alive(pid: u32) -> Option<bool> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
-        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        use windows_sys::Win32::System::Threading::{self as threading, GetExitCodeProcess, OpenProcess};
         // SAFETY: opens a query-only handle that is closed below; a pid that does not exist makes the call fail.
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        let handle = unsafe { OpenProcess(threading::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
             let code = std::io::Error::last_os_error().raw_os_error();
             return if code == Some(ERROR_INVALID_PARAMETER as i32) { Some(false) } else { None };
