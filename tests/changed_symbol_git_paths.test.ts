@@ -66,6 +66,22 @@ describe('changed --symbol scopes to the touched symbols whatever the cwd', () =
     expect(out).not.toContain('alpha')
   })
 
+  it('scopes to the changed function when GIT_LITERAL_PATHSPECS=1 is in the environment', () => {
+    // CAPTURE: git 2.53.0 under GIT_LITERAL_PATHSPECS=1 reads `:(literal)` as part of the file name.
+    const root = makeRepo()
+    commitAndEdit(root, 'pkg/mod.ts')
+    const before = process.env['GIT_LITERAL_PATHSPECS']
+    process.env['GIT_LITERAL_PATHSPECS'] = '1'
+    try {
+      const out = changedOutput({ ref: 'HEAD', projectRoot: root, symbolMode: true })
+      expect(out).toContain('beta')
+      expect(out).not.toContain('alpha')
+    } finally {
+      if (before === undefined) delete process.env['GIT_LITERAL_PATHSPECS']
+      else process.env['GIT_LITERAL_PATHSPECS'] = before
+    }
+  })
+
   it('lists only the changed function for a file whose name has a space', () => {
     const root = makeRepo()
     commitAndEdit(root, 'my file.ts')

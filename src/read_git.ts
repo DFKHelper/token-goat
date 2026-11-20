@@ -10,7 +10,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { emitGuarded, guardJsonRows, guardText, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
-import { dropDeniedRows, noteOmitted } from './read_deny.js'
+import { dropDeniedRows, noteOmitted, readDenial } from './read_deny.js'
 import { type GitResult } from './types.js'
 import { parseColonLineRange, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement, resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { trimBlankLines } from './read_suggest.js'
@@ -260,7 +260,15 @@ function literalPathspec(file: string): string {
   return `:(literal)${file}`
 }
 
-const QUOTED_HEADER = /^"((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)"$/
+/** The new path of a renamed section, from its `rename to` line (C-quoted when it needs it), else null. */
+function renameDestination(section: string): string | null {
+  const line = /^rename to (.+?)\r?$/m.exec(section)?.[1]
+  if (line === undefined) return null
+  const quoted = line.length > 1 && line.startsWith('"') && line.endsWith('"')
+  return quoted ? unquoteGitPath(line.slice(1, -1)) : line
+}
+
+const QUOTED_HEADER =/^"((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)"$/
 
 /** The path a `diff --git a/P b/P` header names (C-quoted if need be), or null if renamed or unreadable. */
 function diffHeaderPath(header: string): string | null {
@@ -284,7 +292,7 @@ export function keepRequestedFile(diffText: string, filePath: string): string {
   const sections = diffText.split(/^(?=diff --git )/m)
   return sections.filter((section) => {
     if (!section.startsWith('diff --git ')) return true
-    const named = diffHeaderPath(section.split(/\r?\n/, 1)[0]!)
+    const named = diffHeaderPath(section.split(/\r?\n/, 1)[0]!) ?? renameDestination(section)
     if (named === null) {
       noteOmitted(`read refused: an unreadable diff header while diffing ${displaySafeText(filePath)}`)
       return false
@@ -294,14 +302,45 @@ export function keepRequestedFile(diffText: string, filePath: string): string {
   }).join('')
 }
 
+/** The absolute old path git pairs with `filePath` as a rename in a diff against `ref`, or null. */
+function renameSourceOf(ref: string | undefined, filePath: string, cwd: string): string | null {
+  const listing = runGit(['diff', ...(ref !== undefined ? [ref] : []), '--name-status', '-M'], { cwd })
+  if (listing.exitCode !== 0) return null
+  const root = resolveProjectRoot({ project: cwd })
+  const want = foldPath(normalizePath(filePath))
+  const { files, renamedFrom } = parseNameStatus(listing.stdout)
+  for (const file of files) {
+    if (foldPath(normalizePath(path.resolve(root, file))) !== want) continue
+    const from = renamedFrom.get(file)
+    return from === undefined ? null : path.resolve(root, from)
+  }
+  return null
+}
+
 /** `git diff` of one indexed file, matched literally (a `[id].ts` is no glob) and cut to its own sections. */
 function runFileDiff(ref: string | undefined, filePath: string, cwd: string): GitResult {
   const refArgs = ref !== undefined ? [ref] : []
   // Prefixes pinned as `changed` pins them, so diff.noprefix and diff.mnemonicPrefix cannot change headers.
   const prefixes = ['--src-prefix=a/', '--dst-prefix=b/']
-  const args = ['diff', ...refArgs, '--unified=0', ...prefixes, '--', literalPathspec(filePath)]
-  const result = runGit(args, { cwd })
-  return result.exitCode === 0 ? { ...result, stdout: keepRequestedFile(result.stdout, filePath) } : result
+  const run = (paths: readonly string[]): GitResult =>
+    runGit(['diff', ...refArgs, '-M', '--unified=0', ...prefixes, '--', ...paths.map(literalPathspec)], { cwd })
+  let result = run([filePath])
+  if (result.exitCode !== 0) return result
+  // A wholly-added file may be a rename whose old path the pathspec hid (as in unifiedDiffOf): name both.
+  if (result.stdout.includes('--- /dev/null')) {
+    const from = renameSourceOf(ref, filePath, cwd)
+    if (from !== null) {
+      // A rename's diff carries the old file's lines, so a denied source withholds the whole section.
+      const denial = readDenial(from)
+      if (denial !== null) {
+        noteOmitted(denial)
+        return { ...result, stdout: '' }
+      }
+      const paired = run([filePath, from])
+      if (paired.exitCode === 0) result = paired
+    }
+  }
+  return { ...result, stdout: keepRequestedFile(result.stdout, filePath) }
 }
 
 // `git diff --name-status` (no `-M`, so the user's diff.renames setting decides, as it did for `--name-only`) is the one listing `changed` takes: the path each row ends in is what `--name-only` printed, and a rename row, which exists only when renames are on, also names the old path the zero-context diff needs and would otherwise cost a second `--name-status` call to learn.

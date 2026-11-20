@@ -81,6 +81,7 @@ afterEach(() => {
 })
 
 const spec = (): string => `${path.join(root, '[a].ts')}::target`
+const newSpec = (): string => `${path.join(root, 'new.ts')}::target`
 
 describe('symbol diff of a file whose name holds a glob character', () => {
   it('prints its own hunk and none of the sibling a.ts, with no deny rule at all', () => {
@@ -171,6 +172,61 @@ describe('symbol diff of a file whose name holds a glob character', () => {
     const spec = `${path.join(root, 'report.ts')}::target`
     const r = capture(() => runDiff({ spec, projectRoot: root, ref: 'HEAD' }))
     expect(r.out + r.err).not.toContain('DENIEDTEXT')
+  })
+
+  it('diffs a changed file when GIT_LITERAL_PATHSPECS=1 is in the environment', () => {
+    // CAPTURE: git 2.53.0 under GIT_LITERAL_PATHSPECS=1 reads `:(literal)` as part of the file name.
+    setup(null)
+    const before = process.env['GIT_LITERAL_PATHSPECS']
+    process.env['GIT_LITERAL_PATHSPECS'] = '1'
+    try {
+      const plain = `${path.join(root, 'a.ts')}::other`
+      const r = capture(() => runDiff({ spec: plain, projectRoot: root, ref: 'HEAD' }))
+      expect(r.out).toContain('DENIEDTEXT')
+    } finally {
+      if (before === undefined) delete process.env['GIT_LITERAL_PATHSPECS']
+      else process.env['GIT_LITERAL_PATHSPECS'] = before
+    }
+  })
+
+  it('answers "no changes" for a file that was only renamed', () => {
+    fs.writeFileSync(path.join(root, 'old.ts'), body('target', 'same'))
+    git(['add', '.'])
+    git(['commit', '-m', 'initial'])
+    git(['mv', 'old.ts', 'new.ts'])
+    indexFileSync(normalizePath(path.join(root, 'new.ts')))
+    const r = capture(() => runDiff({ spec: newSpec(), projectRoot: root, ref: 'HEAD' }))
+    expect(r.out).toContain('No changes')
+  })
+
+  it('shows only the real edit of a renamed file, not the whole file as new', () => {
+    fs.writeFileSync(path.join(root, 'old.ts'), `${body('target', 'same')}${body('keep', 'KEEPTEXT')}`)
+    git(['add', '.'])
+    git(['commit', '-m', 'initial'])
+    git(['mv', 'old.ts', 'new.ts'])
+    fs.writeFileSync(path.join(root, 'new.ts'), `${body('target', 'EDITED')}${body('keep', 'KEEPTEXT')}`)
+    indexFileSync(normalizePath(path.join(root, 'new.ts')))
+    const r = capture(() => runDiff({ spec: newSpec(), projectRoot: root, ref: 'HEAD' }))
+    expect(r.out).toContain('EDITED')
+    expect(r.out).not.toContain('KEEPTEXT')
+  })
+
+  it('withholds a rename whose source is under a deny rule while its destination is not', () => {
+    fs.writeFileSync(path.join(root, 'old.ts'), body('target', 'SOURCETEXT'))
+    git(['add', '.'])
+    git(['commit', '-m', 'initial'])
+    git(['mv', 'old.ts', 'new.ts'])
+    fs.writeFileSync(path.join(root, 'new.ts'), body('target', 'EDITED'))
+    indexFileSync(normalizePath(path.join(root, 'new.ts')))
+    fs.mkdirSync(path.join(root, '.claude'), { recursive: true })
+    const rules = { permissions: { deny: ['Read(/old.ts)'] } }
+    fs.writeFileSync(path.join(root, '.claude', 'settings.json'), JSON.stringify(rules))
+    resetReadDenyCache()
+    resetPermissionSourceCache()
+    const r = capture(() => runDiff({ spec: newSpec(), projectRoot: root, ref: 'HEAD' }))
+    expect(r.out + r.err).not.toContain('SOURCETEXT')
+    expect(r.err).toContain('omitted:')
+    expect(r.err).toContain('old.ts')
   })
 
   it('still diffs a plain file against a ref', () => {

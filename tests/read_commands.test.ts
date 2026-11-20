@@ -6770,7 +6770,7 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       runDiff({ spec: 'a.ts::touchedFn' })
-      const args = ['diff', '--unified=0', '--', ':(literal)a.ts']
+      const args = ['diff', '-M', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/', '--', ':(literal)a.ts']
       expect(mockRunGit).toHaveBeenCalledWith(args, expect.anything())
     })
 
@@ -6781,7 +6781,8 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([sym as any])
       mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       runDiff({ spec: 'a.ts::touchedFn', ref: 'HEAD~3..HEAD' })
-      const args = ['diff', 'HEAD~3..HEAD', '--unified=0', '--', ':(literal)a.ts']
+      const flags = ['-M', '--unified=0', '--src-prefix=a/', '--dst-prefix=b/']
+      const args = ['diff', 'HEAD~3..HEAD', ...flags, '--', ':(literal)a.ts']
       expect(mockRunGit).toHaveBeenCalledWith(args, expect.anything())
     })
 
