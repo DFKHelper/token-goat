@@ -412,7 +412,7 @@
   "graph_inspection.ts": {
     "reads": 1,
     "accessors": 7,
-    "reason": "guarded at graph_inspection.ts:runDeps+runTypes+runScope+runDead: the deny check runs first"
+    "reason": "guarded at graph_inspection.ts:runDeps+runTypes+runScope+runDead: the deny check runs first; runDepsImporters drops denied importers through deniedFileFilter"
   },
   "graph_traversal.ts": {
     "reads": 0,
@@ -651,8 +651,8 @@
   },
   "read_outline.ts": {
     "reads": 1,
-    "accessors": 1,
-    "reason": "guarded at read_outline.ts:prepareSymbolListing: assertReadAllowed runs first"
+    "accessors": 2,
+    "reason": "guarded at read_outline.ts:prepareSymbolListing: assertReadAllowed runs first; allowedRefCounts drops references of denied files through deniedFileFilter"
   },
   "read_outline_cache.ts": {
     "reads": 0,
@@ -672,7 +672,7 @@
   "read_semantic.ts": {
     "reads": 0,
     "accessors": 5,
-    "reason": "guarded at read_semantic.ts:runSemantic: dropDeniedRows filters hits"
+    "reason": "guarded at read_semantic.ts:runSemantic: deniedFileFilter drops hits silently before any diagnostic, dropDeniedRows is the checked backstop"
   },
   "read_shape.ts": {
     "reads": 1,

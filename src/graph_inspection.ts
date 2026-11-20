@@ -12,7 +12,7 @@ import { REF_BLIND_KIND_REASON, isRefIndexedFile } from './ref_blindness.js'
 import { guardJsonRows } from './read_commands.js'
 import { symbolExtractorGap } from './read_meta.js'
 import { extractImports, importsExtensionFor } from './import_export_extract.js'
-import { fileConfinementRefusal } from './read_spec.js'
+import { deniedFileFilter, fileConfinementRefusal } from './read_spec.js'
 import { rankSimilarNames, didYouMean } from './read_suggest.js'
 import { decodeSource, isTestFile, compileGrepMatcher, excludeTestsHiddenNote, countNoun, foldPath } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
@@ -216,7 +216,9 @@ function runDepsImporters(opts: DepsOptions): number {
   // Named as git spells it, so a target typed in another case on a case-insensitive filesystem still reports the file's real name.
   const display = toDisplayPath(rootDir, normalizePath(tracked))
 
-  const importers = [...(importedBy.get(tracked) ?? [])].map((f) => toDisplayPath(rootDir, normalizePath(f))).sort()
+  // An importer the host denies is dropped silently before it is counted, grepped or printed.
+  const isAllowed = deniedFileFilter()
+  const importers = [...(importedBy.get(tracked) ?? [])].filter(isAllowed).map((f) => toDisplayPath(rootDir, normalizePath(f))).sort()
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const filtered = matchesGrep !== undefined ? importers.filter((i) => matchesGrep(i)) : importers
 
