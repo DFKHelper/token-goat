@@ -20,10 +20,8 @@ import {
   didYouMean,
   endsWithPathBoundary,
   formatCrossFileLead,
-  nearSymbolNames,
   rankSimilarNames,
 } from './read_suggest.js'
-import { symbolNameFiles } from './symbol_scan.js'
 import { countNoun, foldPath } from './util.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
@@ -571,14 +569,7 @@ export function resolveSymbolSpecOrEmitError(
 
   if (entry === null) {
     const messages = [`Symbol ${echoedValue(symbol)} not found in ${echoedValue(file)}`]
-    const rootDir = projectRoot ?? process.cwd()
-    // formatCrossFileLead names the files of every row it finds: it says nothing when one of them is denied.
-    const leadFiles = [
-      ...querySymbols({ name: symbol, limit: 50, rootDir }).map((m) => m.filePath),
-      ...nearLeadFiles(symbol, rootDir),
-    ]
-    const leadAllowed = leadFiles.every(isAllowed)
-    const crossFileLead = leadAllowed ? formatCrossFileLead(commandName, symbol, file, projectRoot) : ''
+    const crossFileLead = formatCrossFileLead(commandName, symbol, file, projectRoot, isAllowed)
     if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveSpecPath(file, projectRoot ?? process.cwd())
     const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
@@ -600,13 +591,6 @@ export function resolveSymbolSpecOrEmitError(
     return null
   }
   return entry
-}
-
-/** The files a near-name cross-file lead would name for a missed `name`. */
-function nearLeadFiles(name: string, rootDir: string): string[] {
-  const near = nearSymbolNames(name, rootDir)
-  if (near.skipped || near.candidates.length === 0) return []
-  return symbolNameFiles(rootDir, near.candidates.slice(0, 50)).map((s) => s.filePath)
 }
 
 /** Whether the host lets a file's names, path or spans be shown; one lookup per path per filter. */

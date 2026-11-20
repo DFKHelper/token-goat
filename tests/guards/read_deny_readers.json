@@ -681,8 +681,8 @@
   },
   "read_spec.ts": {
     "reads": 0,
-    "accessors": 7,
-    "reason": "guarded at read_spec.ts:resolveSymbolSpecOrEmitError: denied dropped, then assertReadAllowed"
+    "accessors": 6,
+    "reason": "guarded at read_spec.ts:resolveSymbolSpecOrEmitError: denied dropped, lead filtered, then assertReadAllowed"
   },
   "read_structured_data.ts": {
     "reads": 1,
@@ -692,7 +692,7 @@
   "read_suggest.ts": {
     "reads": 0,
     "accessors": 2,
-    "reason": "names only: symbol names and locations, no stored file text"
+    "reason": "names only: symbol names and locations, no stored file text; formatCrossFileLead drops denied files via isAllowed"
   },
   "read_symbol.ts": {
     "reads": 0,

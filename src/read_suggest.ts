@@ -223,9 +223,17 @@ export function formatBareNameSpecError(command: string, name: string, projectRo
   return lines.join('\n')
 }
 
-export function formatCrossFileLead(command: string, name: string, excludeFilePath: string, projectRoot?: string): string {
+/** `isAllowed` leaves a denied file out of the lead, which then names the allowed candidates and is empty only when none is left. */
+export function formatCrossFileLead(
+  command: string,
+  name: string,
+  excludeFilePath: string,
+  projectRoot?: string,
+  isAllowed: (filePath: string) => boolean = () => true,
+): string {
   const rootDir = projectRoot ?? process.cwd()
-  const matches = liveRows(() => querySymbols({ name, limit: 50, rootDir }))
+  const allMatches = liveRows(() => querySymbols({ name, limit: 50, rootDir }))
+  const matches = allMatches.filter((m) => isAllowed(m.filePath))
   const excludeResolved = resolveSpecPath(excludeFilePath, rootDir)
   const seen = new Set<string>()
   const specs: string[] = []
@@ -252,7 +260,7 @@ export function formatCrossFileLead(command: string, name: string, excludeFilePa
   const near = nearSymbolNames(name, rootDir)
   if (!near.skipped && near.candidates.length > 0) {
     const cappedCandidates = near.candidates.slice(0, 50)
-    const nearSites = liveRows(() => symbolNameFiles(rootDir, cappedCandidates))
+    const nearSites = liveRows(() => symbolNameFiles(rootDir, cappedCandidates)).filter((s) => isAllowed(s.filePath))
     const fuzzySpecs: string[] = []
     const fuzzySeen = new Set<string>()
     for (const s of nearSites) {
