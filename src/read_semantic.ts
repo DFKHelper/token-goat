@@ -27,7 +27,7 @@ import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from './sem
 import { guardJsonRows, guardText, largestFileSize, readFileText, recordReadStat, warnIfFilesStale } from './read_commands.js'
 import { dropDeniedRows, ReadDeniedError } from './read_deny.js'
 import { previewLines } from './read_meta.js'
-import { resolveProjectConfinement } from './read_spec.js'
+import { deniedFileFilter, resolveProjectConfinement } from './read_spec.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, extractErrorMessage, isTestFile } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
@@ -249,6 +249,9 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
     }
   }
 
+  // A hit in a file the host denies leaves silently before any distance, floor or weak-match diagnostic is measured.
+  const isAllowed = deniedFileFilter()
+  rawHits = rawHits.filter((h) => isAllowed(h.filePath))
   // Relevance floor, applied here rather than inside the scan -- see the max_distance comment on SemanticConfig for why the scan's own bound is the wrong place for it. Reading the nearest rejected distance before filtering is the whole point of the diagnostic below: without it, a floor set too tight for a given corpus removes real answers and says nothing, which is the silent-recall-loss shape this command already had one instance of (an empty dense half only warns when the project is partly unembedded, so on a fully embedded project it warned about nothing at all).
   const relevance = assessDenseRelevance(rawHits)
   const floorNearestRejected = relevance.nearestRejected
@@ -293,11 +296,11 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       // Coverage is a diagnostic aid, never a reason to fail a search that otherwise works.
     }
   }
-  // A hit in a file the host denies is dropped before its stored chunk text can become a preview.
+  // The silent filter above already removed every denied hit; this is the checked backstop before a stored chunk can become a preview.
   const mergedHits = dropDeniedRows(mergeNearbyHits(rawHits), (h) => h.filePath)
   // BM25 full-text search over symbol names/bodies/docstrings, over-fetched for the same reason as the dense side above: searchSymbolsFts caps at the DB level via its own SQL LIMIT, so a post-hoc filter (--grep/--exclude-tests) or a post-hoc fusion rank on an already-`n`-capped result would silently under-represent this list relative to the dense one -- always called now (previously gated behind the dense branch returning zero hits), reusing the same OVER_FETCH_FACTOR/MAX_OVER_FETCH ratio the dense branch already uses.
   const overFetchFts = Math.min(MAX_OVER_FETCH, n * OVER_FETCH_FACTOR)
-  const ftsFound = searchSymbolsFts(query, overFetchFts, undefined, rootDir)
+  const ftsFound = searchSymbolsFts(query, overFetchFts, undefined, rootDir).filter((s) => isAllowed(s.filePath))
   const ftsRows = dropDeniedRows(ftsFound, (s) => s.filePath)
 
   // Fuse both candidate lists with Reciprocal Rank Fusion -- a row is keyed by its enclosing symbol (filePath + name + the symbol's own lineStart) when one is known, since that is the only identity both a dense chunk and a BM25 symbol row can genuinely share; the lineStart component matters because name alone is not unique within a file (e.g. a same-named method on two different classes), and dropping it would silently collapse two distinct symbols into one fused row. A dense hit with no resolvable enclosing symbol falls back to filePath + start line, which an FTS row (always symbol-backed) can never collide with, so it simply stays its own row.
