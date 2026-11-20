@@ -150,11 +150,12 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
     let mut failed_argv: Option<Vec<OsString>> = None;
     let second = data_dir.as_ref().map(|dir| rebuilt(opts, dir));
     let second_follows = matches!(&second, Some(Ok(s)) if s.as_slice() != argv);
+    let began = notice::iso_utc(std::time::SystemTime::now());
     if let Some(timeout) = first_budget(opts, second_follows) {
         match capture::exec(argv, first_in(), reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or("")) {
             Ok(done) => {
                 if let Some(dir) = data_dir.clone() {
-                    out::record_bounded(move || notice::clear(&dir), opts.deadline);
+                    out::record_bounded(move || notice::clear(&dir, &began), opts.deadline);
                 }
                 return finish(done);
             }

@@ -145,3 +145,42 @@ pub fn adopt_child(child: &Child) {
     #[cfg(not(windows))]
     let _ = child;
 }
+
+/// Whether process `pid` is running: `Some(false)` only when the system says no such process exists, `None` when it cannot tell, which a caller treats as running.
+pub fn process_alive(pid: u32) -> Option<bool> {
+    #[cfg(unix)]
+    {
+        // SAFETY: signal 0 only checks that the process exists and may be signalled; nothing is sent.
+        if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+            return Some(true);
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => Some(false),
+            Some(libc::EPERM) => Some(true),
+            _ => None,
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        // SAFETY: opens a query-only handle that is closed below; a pid that does not exist makes the call fail.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            let code = std::io::Error::last_os_error().raw_os_error();
+            return if code == Some(ERROR_INVALID_PARAMETER as i32) { Some(false) } else { None };
+        }
+        let mut exit = 0u32;
+        // SAFETY: `handle` is the live handle just opened; writes one u32.
+        let read = unsafe { GetExitCodeProcess(handle, &mut exit) } != 0;
+        // SAFETY: closes the handle opened above, once.
+        unsafe { CloseHandle(handle) };
+        // 259 is STILL_ACTIVE, the exit code of a process that has not exited.
+        if read { Some(exit == 259) } else { None }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        None
+    }
+}
