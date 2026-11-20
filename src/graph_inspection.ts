@@ -40,7 +40,7 @@ import { emit, emitErr } from './emit.js'
 import { formatCommandError } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 import { couldNotReadError } from './could_not_read.js'
-import { dropDeniedRows, readDenial } from './read_deny.js'
+import { readDenial } from './read_deny.js'
 
 // ---- dead -------------------------------------------------------------------
 
@@ -95,10 +95,12 @@ export function runDead(opts: DeadOptions): number {
     : undefined
   if (blindKindNote !== undefined && opts.json !== true) emitErr(blindKindNote)
 
-  const syms = dropDeniedRows(
-    assessableKinds.flatMap((k) => querySymbols({ kind: k, limit: UNBOUNDED_REF_LIMIT, rootDir })),
-    (s) => s.filePath,
-  )
+  // A denied file's symbols are never listed and its references never count as a use of another symbol.
+  const isAllowed = deniedFileFilter()
+  const scanned = assessableKinds.flatMap((k) => querySymbols({ kind: k, limit: UNBOUNDED_REF_LIMIT, rootDir }))
+  const scannedFiles = [...new Set(scanned.map((s) => s.filePath))]
+  const deniedFiles = new Set(scannedFiles.filter((f) => readDenial(f) !== null))
+  const syms = scanned.filter((s) => !deniedFiles.has(s.filePath))
   const getSyms = buildFileSymCache()
 
   const results: Array<{ name: string; kind: string; file: string; line: number }> = []
@@ -112,10 +114,12 @@ export function runDead(opts: DeadOptions): number {
       continue
     }
     if (opts.includePrivate !== true && sym.name.startsWith('_')) continue
-    let refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    let fetched = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    let refs = fetched.filter((r) => isAllowed(r.filePath))
     let scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
-    if (scoped.length === 0 && refs.length >= DEFAULT_REF_QUERY_LIMIT) {
-      refs = queryRefs({ name: sym.name, limit: UNBOUNDED_REF_LIMIT, rootDir })
+    if (scoped.length === 0 && fetched.length >= DEFAULT_REF_QUERY_LIMIT) {
+      fetched = queryRefs({ name: sym.name, limit: UNBOUNDED_REF_LIMIT, rootDir })
+      refs = fetched.filter((r) => isAllowed(r.filePath))
       scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
     }
     if (isDeadSymbol(sym.name, scoped.length)) suspects.push({ sym, refs })
@@ -218,7 +222,10 @@ function runDepsImporters(opts: DepsOptions): number {
 
   // An importer the host denies is dropped silently before it is counted, grepped or printed.
   const isAllowed = deniedFileFilter()
-  const importers = [...(importedBy.get(tracked) ?? [])].filter(isAllowed).map((f) => toDisplayPath(rootDir, normalizePath(f))).sort()
+  const importers = [...(importedBy.get(tracked) ?? [])]
+    .filter(isAllowed)
+    .map((f) => toDisplayPath(rootDir, normalizePath(f)))
+    .sort()
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const filtered = matchesGrep !== undefined ? importers.filter((i) => matchesGrep(i)) : importers
 
@@ -370,10 +377,11 @@ export function runTypes(opts: TypesOptions): number {
 
   const results: SymbolEntry[] = []
   let suppressed = 0
+  const isAllowed = deniedFileFilter()
 
   for (const k of TYPE_KINDS) {
     const rows = querySymbols({ kind: k, ...fpOpt, limit: TYPES_SCAN_LIMIT, rootDir })
-    const syms = dropDeniedRows(rows, (r) => r.filePath)
+    const syms = rows.filter((r) => isAllowed(r.filePath))
     for (const sym of syms) {
       if (excludeTests && isTestFile(sym.filePath)) {
         suppressed += 1
@@ -384,7 +392,7 @@ export function runTypes(opts: TypesOptions): number {
   }
 
   const classRows = querySymbols({ kind: 'class', ...fpOpt, limit: TYPES_SCAN_LIMIT, rootDir })
-  const classes = dropDeniedRows(classRows, (r) => r.filePath)
+  const classes = classRows.filter((r) => isAllowed(r.filePath))
   for (const cls of classes) {
     if (!looksLikeTypeClass(cls.body)) continue
     if (excludeTests && isTestFile(cls.filePath)) {

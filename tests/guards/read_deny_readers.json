@@ -412,7 +412,7 @@
   "graph_inspection.ts": {
     "reads": 1,
     "accessors": 7,
-    "reason": "guarded at graph_inspection.ts:runDeps+runTypes+runScope+runDead: the deny check runs first; runDepsImporters drops denied importers through deniedFileFilter"
+    "reason": "guarded at graph_inspection.ts:runDeps+runTypes+runScope: the deny check runs first; runDepsImporters drops denied importers, and runDead and the type scans of runTypes drop denied files, through deniedFileFilter"
   },
   "graph_traversal.ts": {
     "reads": 0,
