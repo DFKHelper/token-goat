@@ -214,3 +214,36 @@ describe.each(BRIDGES)('$name: a failed entry spawn falls back to the PATH spawn
     expect(calls.length, 'only the entry spawn ran').toBe(1)
   })
 })
+
+describe.each(BRIDGES)('$name: a block is accepted only from a clean run', ({ load }) => {
+  const blockWith = (reason: unknown): string => JSON.stringify({ decision: 'block', reason })
+
+  it('an entry that prints a block and exits 1 does not block', async () => {
+    const dir = mkDir()
+    writeEntry(dir, printerScript(blockWith('from a crashed run'), undefined, 1))
+    useRealSpawn(writePathStub(dir, '').stubDir)
+    expect(await (await load(dir))('pre_tool_use'), 'a block from a failed run').toBeNull()
+  })
+
+  it('a crashed entry that printed a block falls back to the PATH answer', async () => {
+    const dir = mkDir()
+    writeEntry(dir, printerScript(blockWith('from a crashed run'), undefined, 1))
+    useRealSpawn(writePathStub(dir, BLOCK_JSON).stubDir)
+    expect(await (await load(dir))('pre_tool_use'), 'the PATH answer').toEqual(ROUTE_ANSWER)
+  })
+
+  it.each([42, { nested: 'object' }, null, ['a']])('a block whose reason is %j does not block', async (reason) => {
+    const dir = mkDir()
+    writeEntry(dir, printerScript(blockWith(reason)))
+    useRealSpawn(writePathStub(dir, '').stubDir)
+    expect(await (await load(dir))('pre_tool_use'), 'a block with a non-string reason').toBeNull()
+  })
+
+  it('a clean block with a string reason still blocks, reason unchanged', async () => {
+    const dir = mkDir()
+    writeEntry(dir, printerScript(blockWith('already read this file')))
+    useRealSpawn(writePathStub(dir, '').stubDir)
+    const answer = await (await load(dir))('pre_tool_use')
+    expect(answer, 'the clean block').toEqual({ decision: 'block', reason: 'already read this file' })
+  })
+})

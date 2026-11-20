@@ -91,6 +91,15 @@ async function resolveRelayInProcess(): Promise<RelayInProcessFn | undefined> {
 
 ${shimFallbackTimeoutConst('pi')}
 
+// Parses a hook's printed answer; a block whose reason is not a string is not a block, so it is no answer.
+function hookAnswer(text: string | null | undefined): Record<string, unknown> | null {
+  const out = text?.trim();
+  if (!out) return null;
+  const parsed = JSON.parse(out) as Record<string, unknown> | null;
+  if (parsed && parsed["decision"] === "block" && typeof parsed["reason"] !== "string") return null;
+  return parsed;
+}
+
 // One spawn of the hook; spent is the budget already used, so a call's spawns share one budget.
 function runHookSpawn(
   entryPath: string | undefined,
@@ -120,10 +129,8 @@ function runHookSpawn(
           maxBuffer: 32 * 1024 * 1024,
           env: { ...process.env, TOKEN_GOAT_HARNESS_OVERRIDE: "pi" },
         });
-    if (r.error) return null;
-    const out = r.stdout?.trim();
-    if (!out) return null;
-    return JSON.parse(out) as Record<string, unknown>;
+    if (r.error || r.status !== 0) return null;
+    return hookAnswer(r.stdout);
   } catch {
     return null;
   }
@@ -166,9 +173,9 @@ async function callHook(event: string, payload: Record<string, unknown>): Promis
     try {
       process.env.TOKEN_GOAT_HARNESS_OVERRIDE = "pi";
       const out = await relay(event, payload, undefined, { elapsedMs: () => performance.now() - start });
-      const trimmed = out?.trim();
-      if (!trimmed) return null;
-      return JSON.parse(trimmed) as Record<string, unknown>;
+      if (!out?.trim()) return null;
+      const answer = hookAnswer(out);
+      if (answer) return answer;
     } catch {
       // fall through to the spawnSync fallback below
     }

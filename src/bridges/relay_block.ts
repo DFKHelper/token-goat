@@ -57,6 +57,15 @@ async function resolveRelayInProcess() {
 
 ${shimFallbackTimeoutConst('relay')}
 
+// Parses a hook's printed answer; a block whose reason is not a string is not a block, so it is no answer.
+function hookAnswer(text) {
+  const out = text ? text.trim() : "";
+  if (!out) return null;
+  const parsed = JSON.parse(out);
+  if (parsed && parsed.decision === "block" && typeof parsed.reason !== "string") return null;
+  return parsed;
+}
+
 // One spawn of the hook; spent is the budget already used, so a call's spawns share one budget.
 function runHookSpawn(entryPath, event, payload, spent) {
   try {
@@ -78,10 +87,8 @@ function runHookSpawn(entryPath, event, payload, spent) {
           windowsHide: true,
           maxBuffer: 32 * 1024 * 1024,
         });
-    if (r.error) return null;
-    const out = r.stdout ? r.stdout.trim() : "";
-    if (!out) return null;
-    return JSON.parse(out);
+    if (r.error || r.status !== 0) return null;
+    return hookAnswer(r.stdout);
   } catch {
     return null;
   }
@@ -120,9 +127,9 @@ async function callHook(event, payload) {
   if (relay) {
     try {
       const out = await relay(event, payload, undefined, { elapsedMs: () => performance.now() - start });
-      const trimmed = out ? out.trim() : "";
-      if (!trimmed) return null;
-      return JSON.parse(trimmed);
+      if (!out || !out.trim()) return null;
+      const answer = hookAnswer(out);
+      if (answer) return answer;
     } catch {
       // fall through to the spawnSync fallback below
     }
