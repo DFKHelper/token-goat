@@ -133,8 +133,8 @@ function allowedRefCounts(names: string[], rootDir: string): Map<string, number>
   const counts = queryRefCounts(names, globalDbPath(), rootDir)
   const isAllowed = deniedFileFilter()
   for (const [name, stored] of counts) {
-    const allowed = queryRefs({ name, rootDir, limit: stored }).filter((r) => isAllowed(r.filePath)).length
-    if (allowed !== stored) counts.set(name, allowed)
+    const denied = queryRefs({ name, rootDir, limit: stored }).filter((r) => !isAllowed(r.filePath)).length
+    if (denied > 0) counts.set(name, Math.max(0, stored - denied))
   }
   return counts
 }
