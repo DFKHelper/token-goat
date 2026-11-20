@@ -84,8 +84,7 @@ pub fn run(mut command: Vec<OsString>, started: Instant, call: &Call, limit: Opt
             }
             match rx.try_recv() {
                 Ok(Ok((candidate, diagnostics))) => {
-                    eprint!("{}", String::from_utf8_lossy(&diagnostics));
-                    crate::out::emit(&candidate.to_string());
+                    deliver(&candidate, &diagnostics, crate::out::emit, |text| eprint!("{text}"));
                     return 0;
                 }
                 Ok(Err(error)) => return fall_back(&command, &framed, deadline, call, &error),
@@ -95,6 +94,13 @@ pub fn run(mut command: Vec<OsString>, started: Instant, call: &Call, limit: Opt
             std::thread::sleep(Duration::from_millis(2));
         }
     }
+}
+
+/// Writes the answer, then the diagnostics: a caller that never drains stderr must not delay the answer.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn deliver(json: &serde_json::Value, notes: &[u8], emit: impl FnOnce(&str), note: impl FnOnce(&str)) {
+    emit(&json.to_string());
+    note(&String::from_utf8_lossy(notes));
 }
 
 /// Relay failed after framing: the same route as other hooks (Node argv, pointer, safe answer).
@@ -243,6 +249,16 @@ fn execute(command: &[OsString], epoch: u64, deadline: Instant, framed: &std::sy
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_answer_is_written_before_the_diagnostics() {
+        let order = std::cell::RefCell::new(Vec::new());
+        let answer = serde_json::json!({"a": 1});
+        let say = |text: &str| order.borrow_mut().push(format!("answer {text}"));
+        let note = |text: &str| order.borrow_mut().push(format!("note {text}"));
+        deliver(&answer, b"noise", say, note);
+        assert_eq!(*order.borrow(), vec![r#"answer {"a":1}"#.to_string(), "note noise".to_string()]);
+    }
 
     #[test]
     fn startup_aliases_are_routed_without_changing_other_hooks() {
