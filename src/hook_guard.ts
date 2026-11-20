@@ -21,7 +21,20 @@ const PS_PREFIX = /^'tg-guard-v(\d+)'\s*\|\s*Out-Null\s*;/
 const PS_VERSION_LINE = ['\'tg-guard-v', String(GUARD_VERSION), '\' | Out-Null'].join('')
 const CMD_PREFIX = 'powershell -NoProfile -NonInteractive -Command "'
 const CMD_QUOTE = "'+[char]34+'"
-const CMD_FORM = /^powershell -NoProfile -NonInteractive -Command "([^"]*)"$/
+const CMD_FORM = /^powershell -NoProfile -NonInteractive -Command "([^"]*)"(?: & if errorlevel 9009 .*)?$/
+
+/** cmd.exe's status for a program it cannot find; a PowerShell guard itself exits only 0, 1 or 2. */
+const CMD_NOT_FOUND = 9009
+
+/** The cmd tail that prints `safe` and exits 0 when PowerShell could not start, else keeps its exit status. */
+function cmdStartFailureTail(safe: string): string {
+  const bare = safe.replace(/"[^"]*"/g, '')
+  // An answer cmd.exe would read as more than one command prints nothing: an empty answer is still no hook error.
+  const unprintable = !safe.startsWith('{') || safe.split('"').length % 2 === 0 || safe.includes(BS) ||
+    /[&|<>^()!]/.test(bare)
+  const print = safe === '' || unprintable ? 'type nul' : `echo ${safe}`
+  return ` & if errorlevel ${String(CMD_NOT_FOUND)} (${print}& exit /b 0) else exit /b`
+}
 
 /** Guarded command contents: native argv (client, flags, `--`, Node command), safe answer, notice file. */
 export interface GuardInput {
@@ -208,7 +221,7 @@ export function buildGuardedCommand(input: GuardInput): string {
         script,
       )
     }
-    return CMD_PREFIX + script.split('"').join(CMD_QUOTE) + '"'
+    return CMD_PREFIX + script.split('"').join(CMD_QUOTE) + '"' + cmdStartFailureTail(input.safe)
   }
   const q = (w: string): string => quoteWord(input.shell, w)
   // Every word is quoted up front, so a word no route writes (Node-only) is still refused if unquotable.

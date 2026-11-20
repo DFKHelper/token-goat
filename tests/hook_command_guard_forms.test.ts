@@ -434,6 +434,64 @@ describe('the early async-marker forwarding is built only for events that can be
   }
 })
 
+describe('the cmd form answers when PowerShell cannot be started', () => {
+  const ARGV = ['/x/tg-hook', '--', '/x/node', '/x/shim.cjs', 'pre_tool_use', '/x/e.mjs']
+  const cmdLine = (safe: string): string =>
+    buildGuardedCommand({ shell: 'cmd', native: ARGV, safe, marker: '/x/hook-broken.json' })
+
+  // Provenance: CAPTURE (cmd.exe on Windows 11): a program cmd cannot find sets errorlevel 9009.
+  it('ends with a branch on status 9009 that prints the safe answer and exits 0, else keeps the status', () => {
+    const line = cmdLine('{"a":true}')
+    expect(line.endsWith(' & if errorlevel 9009 (echo {"a":true}& exit /b 0) else exit /b')).toBe(true)
+    expect(line.length, 'cmd.exe refuses a command line over 8191 characters').toBeLessThan(8191)
+  })
+
+  it('still parses back to its argv, safe answer and marker', () => {
+    expect(parseGuardedCommand(cmdLine('{"a":true}'))).toMatchObject({
+      kind: 'v1', shell: 'cmd', native: ARGV, safe: '{"a":true}', marker: '/x/hook-broken.json',
+    })
+  })
+
+  it('prints nothing, exit 0, for a harness whose safe answer is empty', () => {
+    expect(cmdLine('').endsWith(' & if errorlevel 9009 (type nul& exit /b 0) else exit /b')).toBe(true)
+  })
+
+  it.each(['{"a":"x & y"}&', '{"a":"b"} | x', '{"a":"b\\"c"}', '{"a":"b', '(x)', '{"a":"^"} ^', 'ON'])(
+    'prints nothing for a safe answer cmd.exe would parse as more than one command (%s)',
+    (safe) => {
+      expect(cmdLine(safe).endsWith(' & if errorlevel 9009 (type nul& exit /b 0) else exit /b')).toBe(true)
+    },
+  )
+
+  it('builds for every safe answer a harness prints, within the cmd line limit', () => {
+    for (const harness of ['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli'] as const) {
+      for (const event of ['pre_tool_use', 'post_tool_use', 'stop', 'pre_compact', 'user_prompt_submit']) {
+        const line = cmdLine(noopFor(harness, event))
+        expect(line.length, `${harness} ${event}`).toBeLessThan(8191)
+        const prints = noopFor(harness, event) === '' ? '(type nul&' : '(echo '
+        expect(line, `${harness} ${event} prints its own safe answer`).toContain(prints)
+        expect(parseGuardedCommand(line), `${harness} ${event}`).toMatchObject({ kind: 'v1', shell: 'cmd' })
+      }
+    }
+  })
+
+  // Provenance: CAPTURE: real cmd.exe on this host, PATH holding one empty directory (no PowerShell, no client).
+  it.runIf(WIN)('prints the safe answer, exit 0, under cmd.exe when PowerShell is not on PATH', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmd-nops-'))
+    try {
+      const safe = '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"x":[1,2]}'
+      const line = cmdLine(safe)
+      const r = spawnSync(process.env['ComSpec'] ?? 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+        encoding: 'utf8', windowsVerbatimArguments: true, windowsHide: true, cwd: dir, input: '{}',
+        env: { PATH: dir, SystemRoot: process.env['SystemRoot'] ?? 'C:/Windows' },
+      })
+      expect({ status: r.status, stdout: r.stdout.trim() }).toEqual({ status: 0, stdout: safe })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 function parseNotice(raw: string): Outcome['notice'] {
   try {
     return JSON.parse(raw) as Outcome['notice']
