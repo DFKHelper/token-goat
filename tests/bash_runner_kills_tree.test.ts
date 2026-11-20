@@ -198,12 +198,15 @@ describe('a timeout settles even when the shell has already exited', () => {
     const holder = path.join(dir, 'holder.cjs')
     fs.writeFileSync(parent, ORPHANING_PARENT_SCRIPT)
     fs.writeFileSync(holder, GRANDCHILD_SCRIPT)
+    spawned.length = 0
     const started = run(`${quoted(process.execPath)} ${quoted(parent)} ${quoted(dir)} ${quoted(holder)}`, { filterName: 'generic', timeout: RUNNER_TIMEOUT_SECONDS, writeStdout: () => {}, writeStderr: () => {} })
     pending = started
     await grandchildIsRunning()
     const parentPidFile = path.join(dir, 'parent.pid')
     await pollUntil(() => fs.existsSync(parentPidFile) && !alive(Number(fs.readFileSync(parentPidFile, 'utf8'))))
-    // One more turn so the runner has seen the shell's exit event before the timeout fires.
+    // The shell is a separate process from the node parent; wait on its own exit event, then one turn so the runner has seen it.
+    const shell = spawned[0] as ChildProcess
+    if (shell.exitCode === null && shell.signalCode === null) await exitOf(shell)
     await new Promise<void>((resolve) => setImmediate(resolve))
     vi.advanceTimersByTime(RUNNER_TIMEOUT_SECONDS * 1000)
     expect(await started, 'the shell exited 0 before the deadline, so that status is the result').toBe(0)

@@ -127,7 +127,7 @@ describe('gate ends a descendant that outlives its shell', () => {
       : killSignals.filter((signalled) => signalled === String(holderPid))
     const seen = `spawnSync saw ${JSON.stringify(syncCalls)}, SIGKILL to ${JSON.stringify(killSignals)}`
     expect(swept.length, `the timeout did not end the holder, pid ${holderPid} (${seen})`).toBeGreaterThan(0)
-    expect(await started).toBe(2)
+    expect(await started, 'the shell exited 0 before the deadline, so the gate passes').toBe(0)
     pending = undefined
     await holderGone
     expect(processAlive(holderPid), 'the pipe-holding background child is gone after gate returned').toBe(false)
