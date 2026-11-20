@@ -298,7 +298,20 @@ export function gateCommandLine(
       return quoted
     }).join(' ')
   }
-  return words.map((w) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(w) ? w : quotePosixShellWord(w))).join(' ')
+  let prefix = true
+  return words.map((w) => {
+    const assignment = prefix ? POSIX_ASSIGNMENT.exec(w) : null
+    if (assignment === null) prefix = false
+    return assignment === null ? quotePosixWord(w) : `${assignment[1]}=${quotePosixWord(assignment[2] ?? '')}`
+  }).join(' ')
+}
+
+/** A leading `NAME=value` word: NAME a shell identifier, so the shell reads an environment assignment. */
+const POSIX_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/
+
+/** One word as the POSIX shell reads it: bare when plain, else wrapped whole in single quotes. */
+function quotePosixWord(w: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(w) ? w : quotePosixShellWord(w)
 }
 
 /** Run argv words after `gate --`: exit 2 with one line, running nothing, when the shell cannot carry them. */

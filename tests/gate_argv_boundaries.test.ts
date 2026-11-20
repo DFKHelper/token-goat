@@ -72,9 +72,11 @@ describe('gate keeps the argument boundaries of the argv after --', () => {
     expect(status, `a double quote in an argument must survive (stderr: ${stderr})`).toBe(0)
   })
 
-  // The space, single-quote and double-quote values are not here: gateCommandLine quotes that whole word, so the shell runs a command named NAME=... (exit 127); src/cli_diagnostics.ts is outside this round.
   it.each([
     ['plain', 'value'],
+    ['a space', 'a b'],
+    ['a single quote', "it's"],
+    ['a double quote', 'say "hi" now'],
   ])('a leading NAME=value word with %s reaches the child byte for byte', (_label, value) => {
     const { status, stderr } = gateCli([`NAME=${value}`, 'node', script(), 'x'], ['x'], { NAME: value })
     expect(status, `the child did not see NAME=${JSON.stringify(value)} (stderr: ${stderr})`).toBe(0)
@@ -108,6 +110,33 @@ describe('gateCommandLine', () => {
   it('keeps a leading NAME=value word as an environment prefix, ahead of the command word', () => {
     const line = gateCommandLine(['NAME=value', 'node', 'a b.js'], '/bin/sh', 'linux')
     expect(line).toBe("NAME=value node 'a b.js'")
+  })
+
+  it('quotes a leading NAME=value word whose value holds a space, keeping NAME= bare', () => {
+    const line = gateCommandLine(['NAME=a b', 'node', 'x'], '/bin/sh', 'linux')
+    expect(line, 'the value with a space must be quoted, not the whole word').toBe("NAME='a b' node x")
+  })
+
+  it('quotes each shell metacharacter of a leading assignment value so the shell reads data', () => {
+    const line = gateCommandLine(["NAME=it's $HOME `id`; rm", 'node'], '/bin/sh', 'linux')
+    expect(line, 'quote, dollar, backtick and semicolon must stay inside the quotes').toBe(
+      `NAME='it'\\''s $HOME \`id\`; rm' node`,
+    )
+  })
+
+  it('quotes assignments only before the first non-assignment word', () => {
+    const line = gateCommandLine(['A=1 2', 'B=x y', 'env', 'C=p q'], '/bin/sh', 'linux')
+    expect(line).toBe("A='1 2' B='x y' env 'C=p q'")
+  })
+
+  it('treats NAME=a b after the command word as an ordinary argument, quoted whole', () => {
+    const line = gateCommandLine(['node', 'NAME=a b'], '/bin/sh', 'linux')
+    expect(line).toBe("node 'NAME=a b'")
+  })
+
+  it('does not read a non-identifier left of = as an assignment', () => {
+    const line = gateCommandLine(['1X=a b', '-Y=c d', 'node'], '/bin/sh', 'linux')
+    expect(line).toBe("'1X=a b' '-Y=c d' node")
   })
 
   it('is empty for no arguments', () => {
