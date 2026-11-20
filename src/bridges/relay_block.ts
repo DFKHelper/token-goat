@@ -57,22 +57,14 @@ async function resolveRelayInProcess() {
 
 ${shimFallbackTimeoutConst('relay')}
 
-function callHookViaSpawn(event, payload) {
+// One spawn of the hook; spent is the budget already used, so a call's spawns share one budget.
+function runHookSpawn(entryPath, event, payload, spent) {
   try {
-    // Invoking "token-goat" as a bare command here depends on PATH resolution
-    // (the npm global bin being on whatever PATH the host process inherits) --
-    // on Windows a global npm install resolves "token-goat" to a .cmd/.ps1
-    // shim, which spawnSync cannot exec without shell: true. When
-    // resolveEntryPath() finds a baked install-time path, invoke it directly
-    // via process.execPath instead, sidestepping PATH entirely; otherwise
-    // fall back to the old PATH-based lookup with shell: true so a .cmd/.ps1
-    // shim still resolves (e.g. an install predating this fix).
-    const entryPath = resolveEntryPath();
     const r = entryPath
       ? spawnSync(process.execPath, [entryPath, "hook", event], {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS - spent,
           killSignal: "SIGKILL",
           windowsHide: true,
           maxBuffer: 32 * 1024 * 1024,
@@ -80,7 +72,7 @@ function callHookViaSpawn(event, payload) {
       : spawnSync("token-goat hook " + event, {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS - spent,
           killSignal: "SIGKILL",
           shell: true,
           windowsHide: true,
@@ -93,6 +85,26 @@ function callHookViaSpawn(event, payload) {
   } catch {
     return null;
   }
+}
+
+// Whole milliseconds of the call's budget used since start (a spawn timeout must be an integer).
+function budgetSpent(start) {
+  return Math.max(0, Math.floor(performance.now() - start));
+}
+
+// The baked entry runs first via process.execPath; PATH needs shell: true so a Windows .cmd shim resolves.
+// A failed or silent entry run (a directory, a broken bundle) falls back to PATH inside the same budget.
+function callHookViaSpawn(event, payload, start) {
+  const entryPath = resolveEntryPath();
+  if (entryPath) {
+    const spent = budgetSpent(start);
+    if (spent >= SHIM_FALLBACK_TIMEOUT_MS) return null;
+    const answer = runHookSpawn(entryPath, event, payload, spent);
+    if (answer) return answer;
+  }
+  const spentNow = budgetSpent(start);
+  if (spentNow >= SHIM_FALLBACK_TIMEOUT_MS) return null;
+  return runHookSpawn(undefined, event, payload, spentNow);
 }
 
 // Tries the in-process hook call first (resolveRelayInProcess above), which avoids
@@ -115,5 +127,5 @@ async function callHook(event, payload) {
       // fall through to the spawnSync fallback below
     }
   }
-  return callHookViaSpawn(event, payload);
+  return callHookViaSpawn(event, payload, start);
 }`;

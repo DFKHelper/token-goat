@@ -91,25 +91,20 @@ async function resolveRelayInProcess(): Promise<RelayInProcessFn | undefined> {
 
 ${shimFallbackTimeoutConst('pi')}
 
-function callHookViaSpawn(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
+// One spawn of the hook; spent is the budget already used, so a call's spawns share one budget.
+function runHookSpawn(
+  entryPath: string | undefined,
+  event: string,
+  payload: Record<string, unknown>,
+  spent: number,
+): Record<string, unknown> | null {
   try {
-    // TOKEN_GOAT_HARNESS_OVERRIDE=pi guarantees detectHarness() resolves to
-    // 'pi' for every call this bridge makes, instead of relying on a guessed
-    // ambient env var pi-coding-agent may or may not set.
-    //
-    // Invoking "token-goat" as a bare command here depends on PATH resolution
-    // (the npm global bin being on whatever PATH pi-coding-agent's own process
-    // inherits) -- the same class of single-point-of-failure fixed for the
-    // Codex/Copilot CLI bridges' hook commands. When resolveEntryPath() finds a
-    // baked install-time path, invoke it directly via process.execPath instead,
-    // sidestepping PATH entirely; otherwise fall back to the old PATH-based
-    // lookup (e.g. an extension installed before this fix).
-    const entryPath = resolveEntryPath();
+    // TOKEN_GOAT_HARNESS_OVERRIDE=pi pins detectHarness() to 'pi', not a guessed ambient env var.
     const r = entryPath
       ? spawnSync(process.execPath, [entryPath, "hook", event], {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS - spent,
           killSignal: "SIGKILL",
           windowsHide: true,
           maxBuffer: 32 * 1024 * 1024,
@@ -118,7 +113,7 @@ function callHookViaSpawn(event: string, payload: Record<string, unknown>): Reco
       : spawnSync('token-goat hook ' + event, {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: SHIM_FALLBACK_TIMEOUT_MS,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS - spent,
           killSignal: "SIGKILL",
           shell: true,
           windowsHide: true,
@@ -132,6 +127,30 @@ function callHookViaSpawn(event: string, payload: Record<string, unknown>): Reco
   } catch {
     return null;
   }
+}
+
+// Whole milliseconds of the call's budget used since start (a spawn timeout must be an integer).
+function budgetSpent(start: number): number {
+  return Math.max(0, Math.floor(performance.now() - start));
+}
+
+// The baked entry runs first via process.execPath; PATH needs shell: true so a Windows .cmd shim resolves.
+// A failed or silent entry run (a directory, a broken bundle) falls back to PATH inside the same budget.
+function callHookViaSpawn(
+  event: string,
+  payload: Record<string, unknown>,
+  start: number,
+): Record<string, unknown> | null {
+  const entryPath = resolveEntryPath();
+  if (entryPath) {
+    const spent = budgetSpent(start);
+    if (spent >= SHIM_FALLBACK_TIMEOUT_MS) return null;
+    const answer = runHookSpawn(entryPath, event, payload, spent);
+    if (answer) return answer;
+  }
+  const spentNow = budgetSpent(start);
+  if (spentNow >= SHIM_FALLBACK_TIMEOUT_MS) return null;
+  return runHookSpawn(undefined, event, payload, spentNow);
 }
 
 // Tries the in-process hook call first (resolveRelayInProcess above), which avoids
@@ -154,7 +173,7 @@ async function callHook(event: string, payload: Record<string, unknown>): Promis
       // fall through to the spawnSync fallback below
     }
   }
-  return callHookViaSpawn(event, payload);
+  return callHookViaSpawn(event, payload, start);
 }
 
 function reverseArgMap(tool: string): Record<string, string> {
