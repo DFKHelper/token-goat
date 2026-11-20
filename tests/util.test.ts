@@ -18,10 +18,17 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 // vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine property"), so simulating a writeSync failure needs a module mock with a hoisted flag -- same pattern as tests/index_prune.test.ts. Every other fs call passes straight through to the real module untouched; only writeSync is ever intercepted, and only for the one call after the flag is set.
-const mockState = vi.hoisted(() => ({ failNextWrite: false, failNextMkdir: '', lockCreateEperm: '', lockCreateEpermPersist: false, lockStatEperm: '', lockStolenAfterRead: '' }))
+const mockState = vi.hoisted(() => ({ failNextWrite: false, writeMode: '' as '' | 'half' | 'zero', writeCalls: 0, failNextMkdir: '', lockCreateEperm: '', lockCreateEpermPersist: false, lockStatEperm: '', lockStolenAfterRead: '' }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   const guardedWriteSync = ((...args: Parameters<typeof fs.writeSync>) => {
+    mockState.writeCalls += 1
+    if (mockState.writeMode === 'zero') return 0
+    if (mockState.writeMode === 'half') {
+      mockState.writeMode = ''
+      const [fd, buf, off = 0, len = 0] = args as unknown as [number, Buffer, number?, number?]
+      return actual.writeSync(fd, buf, off, Math.ceil(len / 2))
+    }
     if (mockState.failNextWrite) {
       mockState.failNextWrite = false
       throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
@@ -152,6 +159,40 @@ describe('atomic writes', () => {
     const entries2 = readdirSync(dir)
     const temps2 = entries2.filter((e) => e.endsWith('.tmp'))
     expect(temps2).toHaveLength(0)
+  })
+
+  it('a writeSync that returns half still ends with the full content in the destination', () => {
+    const target = path.join(dir, 'half.txt')
+    atomicWriteText(target, 'original')
+    mockState.writeMode = 'half'
+    try {
+      atomicWriteText(target, 'the full new content')
+    } finally {
+      mockState.writeMode = ''
+    }
+    expect(readFileSync(target, 'utf-8')).toBe('the full new content')
+    expect(readdirSync(dir)).toEqual(['half.txt'])
+  })
+
+  it('a writeSync that returns zero throws, keeps the old bytes and leaves no temp file', () => {
+    const target = path.join(dir, 'zero.txt')
+    atomicWriteText(target, 'original')
+    mockState.writeMode = 'zero'
+    try {
+      expect(() => atomicWriteText(target, 'new content')).toThrow(/short write/)
+    } finally {
+      mockState.writeMode = ''
+    }
+    expect(readFileSync(target, 'utf-8')).toBe('original')
+    expect(readdirSync(dir)).toEqual(['zero.txt'])
+  })
+
+  it('the plain path makes exactly one writeSync call per write, text or bytes', () => {
+    mockState.writeCalls = 0
+    atomicWriteText(path.join(dir, 'plain.txt'), 'abc')
+    expect(mockState.writeCalls).toBe(1)
+    atomicWriteBytes(path.join(dir, 'plain.bin'), Buffer.from([1, 2, 3]))
+    expect(mockState.writeCalls).toBe(2)
   })
 
   it('atomicWriteText does not double newlines (no CRLF expansion)', () => {

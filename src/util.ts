@@ -346,12 +346,17 @@ function atomicWriteCore(requested: string, content: string | Uint8Array): void 
     // mode 0o600: owner read/write only (no effect on Windows ACLs, but harmless).
     const fd = openSync(tmp, 'w', 0o600)
     try {
-      if (typeof content === 'string') {
-        // Encode ourselves so we control the encoding; a Buffer write avoids the CRLF translation a text-mode stream could apply on Windows.
-        writeSync(fd, Buffer.from(content, 'utf-8'))
-      } else {
-        writeSync(fd, Buffer.from(content))
-      }
+      // Encode ourselves so we control the encoding; a Buffer write avoids the CRLF translation a text-mode stream could apply on Windows.
+      const buf = typeof content === 'string' ? Buffer.from(content, 'utf-8') : Buffer.from(content)
+      // Advance by the returned count so a short write is finished, never renamed into place; a zero return with bytes left throws.
+      let offset = 0
+      do {
+        const written = writeSync(fd, buf, offset, buf.length - offset)
+        if (written === 0 && offset < buf.length) {
+          throw Object.assign(new Error(`short write: ${offset} of ${buf.length} bytes written`), { code: 'EIO' })
+        }
+        offset += written
+      } while (offset < buf.length)
     } finally {
       closeSync(fd)
     }
