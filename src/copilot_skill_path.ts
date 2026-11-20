@@ -8,6 +8,7 @@ import { resolve } from 'node:path'
 import { copilotCliUserRoot } from './copilot_home.js'
 import { copilotSkillDirectoriesEnv, skillDirectories } from './copilot_host_config.js'
 import { isInsideRoot } from './path_containment.js'
+import { readDenial } from './read_deny.js'
 import { safeSkillName } from './skill_cache.js'
 
 function expandCopilotSkillDir(entry: string, cwd: string | null): string {
@@ -17,8 +18,10 @@ function expandCopilotSkillDir(entry: string, cwd: string | null): string {
   return cwd ? resolve(cwd, entry) : resolve(entry)
 }
 
-function skillNameFromFrontmatter(filePath: string): string | null {
+/** The `name:` a skill file declares; a file the Read rules deny, or cannot check, is never opened. */
+function skillNameFromFrontmatter(filePath: string, cwd: string | null): string | null {
   try {
+    if (readDenial(filePath, cwd === null ? {} : { cwd }) !== null) return null
     const text = fs.readFileSync(filePath, 'utf8')
     if (!text.startsWith('---')) return null
     const end = text.indexOf('\n---', 3)
@@ -40,12 +43,12 @@ function skillNameFromFrontmatter(filePath: string): string | null {
   return null
 }
 
-async function findCustomSkillFile(root: string, name: string): Promise<string | null> {
+async function findCustomSkillFile(root: string, name: string, cwd: string | null): Promise<string | null> {
   const direct = resolve(root, 'SKILL.md')
   try {
     if (!isInsideRoot(direct, root)) return null
     await access(direct)
-    if (skillNameFromFrontmatter(direct) === name) return direct
+    if (skillNameFromFrontmatter(direct, cwd) === name) return direct
   } catch {
     // Continue to collection layout.
   }
@@ -62,7 +65,7 @@ async function findCustomSkillFile(root: string, name: string): Promise<string |
     try {
       if (!isInsideRoot(candidate, root)) continue
       await access(candidate)
-      if (skillNameFromFrontmatter(candidate) === name) return candidate
+      if (skillNameFromFrontmatter(candidate, cwd) === name) return candidate
     } catch {
       continue
     }
@@ -98,7 +101,7 @@ export async function copilotSkillPath(skillName: string, cwd: string | null): P
       try {
         if (!isInsideRoot(root, path.dirname(root))) continue
         await access(root)
-        if (skillNameFromFrontmatter(root) === name) return root
+        if (skillNameFromFrontmatter(root, cwd) === name) return root
       } catch {
         // Continue to collection roots and standard roots.
       }
@@ -106,7 +109,7 @@ export async function copilotSkillPath(skillName: string, cwd: string | null): P
     }
 
     const custom = customRoots.includes(root)
-      ? await findCustomSkillFile(root, name)
+      ? await findCustomSkillFile(root, name, cwd)
       : null
     if (custom !== null) return custom
 

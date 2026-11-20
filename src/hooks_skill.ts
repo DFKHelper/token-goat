@@ -119,12 +119,18 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
     // Skill already loaded earlier this session: its body is cached and recallable, so re-loading just re-injects the whole thing. Deny and point at the cheaper compact recall instead.
     if (await hasSessionOutput(event.sessionId, skillName)) {
       // The blocked re-load's body never reaches the model -- this is the same shape as read_count_deny's blocked re-read, so credit it the same way: the cached body's real byte size (sessionOutputBodyBytes), capped at PER_FILE_COUNTERFACTUAL_CEILING because the counterfactual being priced is "the load that didn't happen", and that load would itself have been truncated past this ceiling (see PER_FILE_COUNTERFACTUAL_CEILING). No sibling stat credits these same bytes: skill_load (postSkillHandler) is event-only (0 bytes) and only fires on an actual load, which this deny prevents.
+      const resolvedPath = await harnessSkillPath(event, skillName);
+      const reloadCwd = getCwd(event);
+      const reloadCtx = reloadCwd === undefined ? {} : { cwd: reloadCwd };
+      const reloadDenied = resolvedPath !== null && readDenial(resolvedPath, reloadCtx) !== null;
+      // A denied skill file is never opened for a heading, so its hint carries the placeholder.
+      const reloadPath = reloadDenied ? null : resolvedPath;
       const cachedBytes = await sessionOutputBodyBytes(event.sessionId, skillName);
       const denyCredit = cachedBytes !== null ? Math.min(cachedBytes, PER_FILE_COUNTERFACTUAL_CEILING) : 0;
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'skill-reload-deny');
       return denyOutput(
         skillSubject + ' was already loaded this session and is cached. Use `token-goat skill-section ' +
-          nameArg + ' ' + skillSectionArg(await harnessSkillPath(event, skillName)) + '` to recall a section, `token-goat skill-body ' +
+          nameArg + ' ' + skillSectionArg(reloadPath) + '` to recall a section, `token-goat skill-body ' +
           nameArg + ' --compact` to recall the compact slice, or `token-goat skill-body ' + nameArg +
           '` for the full body instead of re-loading it.',
       );
