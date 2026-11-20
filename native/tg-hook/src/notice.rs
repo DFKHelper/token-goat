@@ -240,7 +240,7 @@ mod tests {
     }
 
     fn paths(d: &str) -> Vec<String> {
-        let history = read_history(&Path::new(d).join(FILE_NAME)).unwrap();
+        let history = read_history(&Path::new(d).join(FILE_NAME)).unwrap_or(json!({ "events": [] }));
         history["events"].as_array().unwrap().iter().map(|e| e["path"].as_str().unwrap().to_string()).collect()
     }
 
