@@ -450,10 +450,28 @@ describe('stored command credentials', () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const sid = newSession()
     const chain = 'cd dir-hunter2 && X=hunter2 npm test'
-    inSession(sid, () => noteFailedVerificationRun(chain, 'Exit code 1', false))
+    // The cd must be shown to have succeeded before its check is blamed, so the directory is real here.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fx24-stop-'))
+    try {
+      fs.mkdirSync(path.join(home, 'dir-hunter2'))
+      inSession(sid, () => noteFailedVerificationRun(chain, 'Exit code 1', false, home))
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
     const blob = fs.readFileSync(sessionSidecarPath(sid, '.json') ?? '', 'utf8')
     expect(blob).not.toContain('hunter2')
     expect(evaluateVerification(sid).runs[0]?.command).toBe('npm test')
+  })
+
+  it('books a failure of a check run after an || whose left side failed', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => {
+      recordFileEdit('/p/src/a.ts')
+      noteFailedVerificationRun('false || npm test', 'Exit code 1', false)
+    })
+    const state = evaluateVerification(sid)
+    expect(state.runs.map((r) => r.exitCode), 'the check status was dropped').toEqual([1])
   })
 
   it('a failed mysqldump chain before the check records no run and no secret', () => {

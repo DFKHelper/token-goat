@@ -1,6 +1,10 @@
 // A heredoc or <() call is a failed check only if its status is a check's. HAND-DERIVED from bash.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
@@ -17,13 +21,13 @@ function newSession(): string {
 }
 
 /** The latest verdict after a passing `npm test` and then one failed call carrying `command`. */
-function failedCallRecords(command: string): boolean {
+function failedCallRecords(command: string, cwd?: string): boolean {
   const key = newSession()
   loadSessionState(key)
   try {
     recordFileEdit('C:/proj/src/a.ts')
     recordVerificationRun('npm test', 0, T0 + 1000)
-    noteFailedVerificationRun(command, 'Exit code 1', false, undefined, T0 + 2000)
+    noteFailedVerificationRun(command, 'Exit code 1', false, cwd, T0 + 2000)
   } finally {
     saveSessionState(key)
   }
@@ -105,7 +109,6 @@ describe('a failed and-chain blames a check only when the check ends it', () => 
 
   it.each([
     ['a lone check', 'npm test'],
-    ['a plain cd before the check', 'cd pkg && npm test'],
     ['an earlier check before the last one', 'npm run lint && npm test'],
   ])('%s: %s records', (_why, command) => {
     expect(failedCallRecords(command), 'a real failing check went unrecorded').toBe(true)
@@ -113,6 +116,62 @@ describe('a failed and-chain blames a check only when the check ends it', () => 
 
   it('a pass of an install-then-test chain still clears an earlier failure', () => {
     expect(passingCallClears('npm ci && npm test'), 'the pass rule must stay as it was').toBe(true)
+  })
+})
+
+let work = ''
+beforeAll(() => {
+  work = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fx24-')).split(path.sep).join('/')
+  fs.mkdirSync(path.join(work, 'pkg', 'sub'), { recursive: true })
+})
+afterAll(() => {
+  fs.rmSync(work, { recursive: true, force: true })
+})
+
+describe('a failed cd chain blames the check only when the cd is shown to have succeeded', () => {
+  it.each([
+    ['a plain cd into a directory that exists', 'cd pkg && npm test', true],
+    ['two cds that both exist, the second resolved from the first', 'cd pkg && cd sub && npm test', true],
+    ['a cd into a directory that is missing', 'cd missing && npm test', false],
+    ['a second cd that exists only beside the first, not inside it', 'cd pkg && cd pkg && npm test', false],
+    ['a cd to the previous directory cannot be resolved', 'cd - && npm test', false],
+  ])('%s: %s', (_why, command, recorded) => {
+    expect(failedCallRecords(command, work), 'the cd failure was blamed on the check').toBe(recorded)
+  })
+
+  it('a relative cd with no known working directory records nothing', () => {
+    expect(failedCallRecords('cd pkg && npm test'), 'the target could not be shown to exist').toBe(false)
+  })
+
+  it('an absolute cd needs no working directory', () => {
+    expect(failedCallRecords(`cd ${work}/pkg && npm test`), 'an existing absolute target').toBe(true)
+  })
+})
+
+describe('a pipefail failure is the check status only when later stages cannot fail on its output', () => {
+  it.each([
+    ['tail only copies', 'set -o pipefail; npm test | tail -5', true],
+    ['cat only copies', 'set -o pipefail; npm test 2>&1 | cat', true],
+    ['grep -q fails on no match', 'set -o pipefail; npm test | grep -q x', false],
+    ['head closes the pipe early', 'set -o pipefail; npm test | head -1', false],
+    ['one stage in the table then one outside it', 'set -o pipefail; npm test | tail | grep x', false],
+  ])('%s: %s', (_why, command, recorded) => {
+    expect(failedCallRecords(command), 'a later pipe stage may be what failed').toBe(recorded)
+  })
+})
+
+describe('a failure whose status is provably the check status is recorded', () => {
+  it.each([
+    ['an || before the check: a non-zero exit means the check ran', 'false || npm test', true],
+    ['errexit, then a later echo that cannot fail', 'set -e; npm test; echo done', true],
+    ['errexit, then a later check', 'set -e; npm test && npm run lint', true],
+    ['errexit and a later statement that can fail', 'set -e; npm test; git commit -m x', false],
+    ['errexit and an earlier statement that can fail', 'set -e; git add x; npm test', false],
+    ['errexit turned off again', 'set -e; set +e; npm test; echo done', false],
+    ['no errexit: the echo decides the status', 'npm test; echo done', false],
+    ['a subshell around the check', '(npm test)', true],
+  ])('%s: %s', (_why, command, recorded) => {
+    expect(failedCallRecords(command), 'the failure was dropped or blamed wrongly').toBe(recorded)
   })
 })
 

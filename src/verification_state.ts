@@ -15,7 +15,9 @@ import {
   launcherCarriedCheck,
 } from './verification_commands.js'
 import { readHeadCommit } from './git_hint.js'
+import { statSync } from 'node:fs'
 import * as os from 'node:os'
+import * as path from 'node:path'
 import { canonicalize, foldPath, isInsideRoot } from './path_containment.js'
 import { findProject, isUnderSystemTemp } from './project.js'
 
@@ -62,7 +64,14 @@ function withoutInlineScriptBodies(command: string): string {
 
 /** The command as the verdict code reads it: no file-writing heredoc body, no inline interpreter body. */
 function checkableText(typed: string): string {
-  return withoutInlineScriptBodies(withoutFileHeredocBodies(typed))
+  return withoutInlineScriptBodies(withoutSubshell(withoutFileHeredocBodies(typed)))
+}
+
+/** The command with one pair of parentheses around the whole of it removed: `(npm test)` runs the check and exits with its status. */
+function withoutSubshell(command: string): string {
+  const text = command.trim()
+  const inner = text.slice(1, -1)
+  return text.startsWith('(') && text.endsWith(')') && !/[()\n]/.test(inner) ? inner.trim() : command
 }
 
 /** True when any segment is a check itself rather than a launcher carrying one. */
@@ -75,22 +84,69 @@ export function isVerificationCommand(command: string): boolean {
   return withoutInlineScriptBodies(command).split(COMMAND_SEPARATOR).some(isVerificationSegment)
 }
 
-/** A real `set` statement that turns pipefail on or off: `set -o pipefail`, `set -eo pipefail`, `set -euo pipefail`, `set -e -o pipefail`, `set +o pipefail`. Group 1 is the sign. */
-const PIPEFAIL_STATEMENT = /^set\s+(?:[-+]\w+\s+|[-+]o\s+\w+\s+)*([-+])\w*o\s+pipefail\b/
+/** The shell options a `set` statement turns on (true) or off (false); null when the statement is not made only of option switches. Handles `set -e`, `set -eu`, `set -o pipefail`, `set -eo pipefail`, `set -e -o pipefail` and `set +o errexit`. */
+function parseSetStatement(statement: string): { pipefail?: boolean; errexit?: boolean } | null {
+  const words = statement.trim().split(/\s+/)
+  if (words[0] !== 'set' || words.length < 2) return null
+  const options: { pipefail?: boolean; errexit?: boolean } = {}
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i] as string
+    if (!/^[-+][A-Za-z]+$/.test(word)) return null
+    const on = word[0] === '-'
+    if (word.includes('e')) options.errexit = on
+    if (!word.includes('o')) continue
+    const name = words[++i]
+    if (name === undefined || !/^\w+$/.test(name)) return null
+    if (name === 'pipefail') options.pipefail = on
+    if (name === 'errexit') options.errexit = on
+  }
+  return options
+}
 
-/** True when the exit status of `command` is the verdict of its checks: from the first check onward only `&&` joins what follows, no `||`, `;` or newline lets a later segment replace the status, a lone `&` backgrounds the check so nothing finished, and a pipe follows only under a `set -o pipefail` statement that comes before the check (not one in a comment, an `echo` or after it). `npm test 2>&1 | tail`, `npm test || true` and `npm test; echo done` all exit 0 whatever the check did, and a `||` just before the first check means it may not have run at all. */
-export function exitStatusIsCheckVerdict(command: string, isCheck: (segment: string) => boolean = isVerificationSegment): boolean {
+/** The options in force at the first check: the last `set` statement before it wins, so `set -o pipefail; set +o pipefail; npm test | tail` runs with pipefail off. */
+function shellOptionsBefore(parts: string[], first: number): { pipefail: boolean; errexit: boolean } {
+  const state = { pipefail: false, errexit: false }
+  parts.slice(0, Math.max(first, 0)).forEach((part, i) => {
+    const statement = i % 2 === 0 ? parseSetStatement(part) : null
+    if (statement !== null) Object.assign(state, statement)
+  })
+  return state
+}
+
+/** Later pipe stages that read their input to the end and exit 0 whatever it holds, so a pipefail status is still the check's own. Everything else is out: `grep` exits 1 on no match, `head` closes the pipe early (the check gets SIGPIPE), `sort -c` and `diff` compare, and a `tee` with a file can fail to write. */
+const PIPE_STAGE_CANNOT_FAIL = /^(?:tail|cat|wc|tee)(?:\s+(?:-[A-Za-z]+|-\d+|\d+))*$/
+
+/** A statement that exits 0 whatever happens: it only prints to the shell's own output, with no redirection or substitution. */
+const INFALLIBLE_STATEMENT = /^(?:true|:|(?:echo|printf)(?:\s[^<>$`()]*)?)$/
+
+/** Why a status is being read: a pass is judged on exit 0, a failure on a non-zero exit, and what makes a non-zero exit the check's own is wider than what makes a zero exit a pass. */
+export type StatusPurpose = 'pass' | 'failure'
+
+/** True when the exit status of `command` is the verdict of its checks: from the first check onward only `&&` joins what follows, no `||`, `;` or newline lets a later segment replace the status, a lone `&` backgrounds the check so nothing finished, and a pipe follows only under a `set -o pipefail` statement that comes before the check (not one in a comment, an `echo` or after it). `npm test 2>&1 | tail`, `npm test || true` and `npm test; echo done` all exit 0 whatever the check did, and a `||` just before the first check means it may not have run at all. For a `failure` the rule is: a non-zero exit is the check's when no statement that can fail runs after it on any path that reaches the end, and the check is certain to have run. So `a || npm test` qualifies (a non-zero exit means `a` failed and the check ran), a later `;` statement qualifies under `set -e` when it cannot fail ({@link INFALLIBLE_STATEMENT}) or is a check, and a later pipe stage qualifies only when it is in {@link PIPE_STAGE_CANNOT_FAIL}. */
+export function exitStatusIsCheckVerdict(
+  command: string,
+  isCheck: (segment: string) => boolean = isVerificationSegment,
+  purpose: StatusPurpose = 'pass',
+): boolean {
   // A trailing separator ends the command with no segment after it.
   const parts = command.replace(/[;\s]+$/, '').split(COMMAND_SEPARATOR)
   const first = parts.findIndex(isCheck)
-  // The last statement before the check wins: `set -o pipefail; set +o pipefail; npm test | tail` runs with it off.
-  let pipefail = false
-  parts.slice(0, first).forEach((part, i) => {
-    const statement = i % 2 === 0 ? PIPEFAIL_STATEMENT.exec(part.trim()) : null
-    if (statement !== null) pipefail = statement[1] === '-'
-  })
-  const allowed = pipefail ? ['&&', '|'] : ['&&']
-  return first >= 0 && parts[first - 1] !== '||' && parts.slice(first + 1).every((part, i) => i % 2 === 1 || allowed.includes(part))
+  const failure = purpose === 'failure'
+  const { pipefail, errexit } = shellOptionsBefore(parts, first)
+  const allowed = ['&&', ...(pipefail ? ['|'] : []), ...(failure && errexit ? [';', '\n'] : [])]
+  const laterOperandOk = (operand: string, separator: string): boolean => {
+    if (!failure) return true
+    const text = operand.trim().replace(/^&\s*/, '')
+    if (separator === '|') return PIPE_STAGE_CANNOT_FAIL.test(text)
+    if (separator === '&&') return true
+    return isCheck(text) || INFALLIBLE_STATEMENT.test(text)
+  }
+  const afterFirst = parts.slice(first + 1)
+  const orBefore = parts[first - 1] === '||'
+  const laterOk = afterFirst.every((part, i) =>
+    i % 2 === 1 ? laterOperandOk(part, afterFirst[i - 1] as string) : allowed.includes(part),
+  )
+  return first >= 0 && (failure || !orBefore) && laterOk
 }
 
 /** Claude Code and Copilot CLI deliver a failed call to a separate failure event, so a call that reaches the ordinary post-tool event without a status finished cleanly. Every other host reports failures through the same event, with a status only some of them carry. */
@@ -168,7 +224,11 @@ function isFailureCheckSegment(segment: string): boolean {
 
 /** True when a call's only check is a checking script given `.md` documents as positionals (`python scripts/run_self_tests.py README.md`), with its exit status as the verdict. Such a call is recorded only as a failure: its documents are never check inputs, so a pass on them clears nothing. */
 function isDocumentOnlyFailure(command: string): boolean {
-  return exitStatusIsCheckVerdict(command, isFailureCheckSegment) && command.split(COMMAND_SEPARATOR).some((part, i) => i % 2 === 0 && isDocumentOnlyScriptCheckSegment(part.trim().replace(ENV_ASSIGNMENT_PREFIX, '')))
+  const bare = (part: string): string => part.trim().replace(ENV_ASSIGNMENT_PREFIX, '')
+  const documentOnly = command
+    .split(COMMAND_SEPARATOR)
+    .some((part, i) => i % 2 === 0 && isDocumentOnlyScriptCheckSegment(bare(part)))
+  return exitStatusIsCheckVerdict(command, isFailureCheckSegment, 'failure') && documentOnly
 }
 
 const HEREDOC_WORD = '(?:"[^"`()|;&<>]*"|\'[^\'`]*\'|[^\\s"\'`()|;&<>]+)'
@@ -281,12 +341,48 @@ function withoutHeredocFraming(command: string): string {
 
 const PLAIN_CD = /^cd\s+(?:--\s+)?[^\s;&|<>$`()]+$/
 
-/** A `&&` chain blames its check only if the check ends it and earlier operands are checks, cd or pipefail. */
-function andChainEndsInCheck(command: string, isCheck: (segment: string) => boolean): boolean {
+/** The directory a plain `cd` enters, resolved from `from`, or null when it cannot be shown to exist: a target `cd` expands (`-`, `~`, a glob, quotes, braces), a relative one with no known starting directory, or one that is not a directory. */
+function enteredDirectory(from: string | undefined, operand: string): string | null {
+  const target = operand.replace(/^cd\s+(?:--\s+)?/, '')
+  if (target === '-' || /['"~*?[\]{}]/.test(target)) return null
+  const resolved = path.isAbsolute(target) ? target : from === undefined ? null : path.resolve(from, target)
+  if (resolved === null) return null
+  try {
+    return statSync(resolved).isDirectory() ? resolved : null
+  } catch {
+    return null
+  }
+}
+
+/** A `&&` chain (or a `set -e` list) blames its check only if the check is what ends it and the earlier operands are checks, a `cd` shown to have succeeded, a `set` or, under `set -e`, a statement that cannot fail. */
+function andChainEndsInCheck(command: string, isCheck: (segment: string) => boolean, cwd?: string): boolean {
   const parts = command.replace(/[;\s]+$/, '').split(COMMAND_SEPARATOR)
-  if (!parts.includes('&&')) return true
+  const first = parts.findIndex(isCheck)
+  const errexit = shellOptionsBefore(parts, first).errexit
+  if (!parts.includes('&&') && !errexit) return true
   const operand = (i: number): string => (parts[i] as string).trim().replace(ENV_ASSIGNMENT_PREFIX, '')
-  const lenient = (i: number): boolean => PLAIN_CD.test(operand(i)) || PIPEFAIL_STATEMENT.test(operand(i))
+  // Each plain cd is resolved in order, from the directory the earlier ones entered.
+  const entered = new Map<number, boolean>()
+  let here = cwd
+  parts.forEach((_part, i) => {
+    if (i % 2 === 1 || !PLAIN_CD.test(operand(i))) return
+    const dir = enteredDirectory(here, operand(i))
+    entered.set(i, dir !== null)
+    if (dir !== null) here = dir
+  })
+  const lenient = (i: number): boolean => {
+    const next = parts[i + 1]
+    if (entered.has(i)) return entered.get(i) === true || (!errexit && (next === ';' || next === '\n'))
+    return parseSetStatement(operand(i)) !== null
+  }
+  if (errexit) {
+    return parts.every((part, i) => {
+      if (i % 2 === 1) return true
+      if (i === first) return true
+      if (i > first) return parts[i - 1] === '|' || isCheck(part) || INFALLIBLE_STATEMENT.test(operand(i))
+      return parts[i + 1] === '||' || lenient(i) || INFALLIBLE_STATEMENT.test(operand(i))
+    })
+  }
   if (!isCheck(parts[parts.length - 1] as string)) return false
   return parts.every((part, i) => {
     if (i === parts.length - 1) return true
@@ -307,8 +403,8 @@ export function noteFailedVerificationRun(
   // Same rule as the pass path; when the status cannot be told to belong to a check, nothing is recorded.
   const isVerdict =
     hasDirectCheck(command) &&
-    exitStatusIsCheckVerdict(withoutHeredocFraming(command), isDirectVerificationSegment) &&
-    andChainEndsInCheck(withoutHeredocFraming(command), isDirectVerificationSegment)
+    exitStatusIsCheckVerdict(withoutHeredocFraming(command), isDirectVerificationSegment, 'failure') &&
+    andChainEndsInCheck(withoutHeredocFraming(command), isDirectVerificationSegment, cwd)
   if (isInterrupt || !(isVerdict || isDocumentOnlyFailure(command))) return
   const status = EXIT_CODE_IN_ERROR.exec(errorText)
   const exitCode = status !== null && Number(status[1]) !== 0 ? Number(status[1]) : 1
