@@ -144,6 +144,8 @@ describe('runGateArgv refuses with one line and exit 2, running nothing', () => 
     expect(runner.calls, 'the runner was called after the refusal').toBe(0)
     const lines = write.mock.calls.map((c) => String(c[0]))
     expect(lines.length, 'the refusal is not one line').toBe(1)
-    expect(lines[0], 'the refusal does not name gate').toMatch(/^gate: .*\n$/)
+    expect(lines[0], 'the refusal does not give its reason').toMatch(
+      /^gate: no Git Bash was found, and cmd\.exe cannot pass an argument with a defined %NAME%.*\n$/,
+    )
   })
 })
