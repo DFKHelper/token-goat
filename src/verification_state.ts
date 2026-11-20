@@ -231,6 +231,7 @@ export function noteVerificationRun(
   exitCode: number | null,
   runInBackground: boolean,
   cwd?: string,
+  at: number = Date.now(),
 ): void {
   if (runInBackground) return
   const command = checkableText(typed)
@@ -238,11 +239,11 @@ export function noteVerificationRun(
     const status = exitCode ?? (successImpliedWithoutStatus() ? 0 : null)
     // A launcher-carried check may clear a failure by passing but never records one.
     if (status !== null && status !== 0 && !hasDirectCheck(command)) return
-    recordVerificationRun(storedCommand(command), status, Date.now(), headAt(cwd))
+    recordVerificationRun(storedCommand(command), status, at, headAt(cwd))
     return
   }
   if (exitCode !== null && exitCode !== 0 && isDocumentOnlyFailure(command)) {
-    recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode, Date.now(), headAt(cwd))
+    recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode, at, headAt(cwd))
   }
 }
 
@@ -300,6 +301,7 @@ export function noteFailedVerificationRun(
   errorText: string,
   isInterrupt: boolean,
   cwd?: string,
+  at: number = Date.now(),
 ): void {
   const command = checkableText(typed)
   // Same rule as the pass path; when the status cannot be told to belong to a check, nothing is recorded.
@@ -310,7 +312,7 @@ export function noteFailedVerificationRun(
   if (isInterrupt || !(isVerdict || isDocumentOnlyFailure(command))) return
   const status = EXIT_CODE_IN_ERROR.exec(errorText)
   const exitCode = status !== null && Number(status[1]) !== 0 ? Number(status[1]) : 1
-  recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode, Date.now(), headAt(cwd))
+  recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode, at, headAt(cwd))
 }
 
 export interface VerificationState {

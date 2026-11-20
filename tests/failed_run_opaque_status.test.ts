@@ -1,6 +1,6 @@
 // A heredoc or <() call is a failed check only if its status is a check's. HAND-DERIVED from bash.
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
@@ -23,7 +23,7 @@ function failedCallRecords(command: string): boolean {
   try {
     recordFileEdit('C:/proj/src/a.ts')
     recordVerificationRun('npm test', 0, T0 + 1000)
-    noteFailedVerificationRun(command, 'Exit code 1', false)
+    noteFailedVerificationRun(command, 'Exit code 1', false, undefined, T0 + 2000)
   } finally {
     saveSessionState(key)
   }
@@ -37,7 +37,7 @@ function passingCallClears(command: string): boolean {
   try {
     recordFileEdit('C:/proj/src/a.ts')
     recordVerificationRun('npm test', 1, T0 + 1000)
-    noteVerificationRun(command, 0, false)
+    noteVerificationRun(command, 0, false, undefined, T0 + 2000)
   } finally {
     saveSessionState(key)
   }
@@ -113,5 +113,17 @@ describe('a failed and-chain blames a check only when the check ends it', () => 
 
   it('a pass of an install-then-test chain still clears an earlier failure', () => {
     expect(passingCallClears('npm ci && npm test'), 'the pass rule must stay as it was').toBe(true)
+  })
+})
+
+describe('the verdict order does not depend on the host clock', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('a failure after a seeded pass records with the system time faked to 2020', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(Date.UTC(2020, 0, 1)))
+    expect(failedCallRecords('npm test'), 'the failure took the faked clock, not its time').toBe(true)
   })
 })
