@@ -154,7 +154,27 @@ fn reap_by(child: &mut std::process::Child, how: impl FnOnce(&mut std::process::
     how(child, REAP_BOUND);
 }
 
+/// Held from clearing inheritance flags until the child exists, so two runs never interleave those steps.
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What a run saw, kept so a test failure can name its evidence: the wait that ended the stdout read, the status, the bytes.
+#[derive(Debug, Default)]
+pub struct Trace {
+    pub stdout_ended_by: &'static str,
+    pub status: Option<Option<i32>>,
+    pub stdout_bytes: Option<usize>,
+    pub stderr_bytes: Option<usize>,
+}
+
 pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, harness: &str, event: &str) -> Result<Outcome, Failure> {
+    exec_traced(argv, stdin, reason, timeout, harness, event, &mut Trace::default())
+}
+
+#[rustfmt::skip]
+fn exec_traced(
+    argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, harness: &str, event: &str,
+    trace: &mut Trace,
+) -> Result<Outcome, Failure> {
     let Some((program, args)) = argv.split_first() else { return Err(Failure::NoCommand) };
     let end = Instant::now() + timeout;
     let mut cmd = Command::new(program);
@@ -165,8 +185,12 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
         Stdin::Null => Stdio::null(),
     });
     crate::sys::guard_child(&mut cmd);
+    // One thread clearing inherit flags while another spawns hands that child dead stdio (exit 0, no output).
+    let spawning = SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     crate::sys::stop_handle_inheritance();
-    let mut child = cmd.spawn().map_err(|e| Failure::Spawn(e.to_string()))?;
+    let spawned = cmd.spawn().map_err(|e| Failure::Spawn(e.to_string()));
+    drop(spawning);
+    let mut child = spawned?;
     crate::sys::adopt_child(&child);
     if let (Some(mut pipe), Stdin::Bytes(bytes)) = (child.stdin.take(), &stdin) {
         let payload = bytes.to_vec();
@@ -196,7 +220,11 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
     let kill = reap;
     let left = |end: Instant| end.saturating_duration_since(Instant::now());
     let held = match rx.recv_timeout(left(end)) {
-        Ok(Ok(bytes)) => bytes,
+        Ok(Ok(bytes)) => {
+            trace.stdout_ended_by = "the stdout reader finished";
+            trace.stdout_bytes = Some(bytes.len());
+            bytes
+        }
         Ok(Err(what)) => {
             kill(&mut child);
             return Err(Failure::Output(what));
@@ -205,7 +233,10 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
             kill(&mut child);
             return Err(Failure::Timeout(timeout));
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => Vec::new(),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            trace.stdout_ended_by = "the stdout reader was gone without an answer";
+            Vec::new()
+        }
     };
     let status = loop {
         match child.try_wait() {
@@ -225,6 +256,8 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
     } else {
         Vec::new()
     };
+    trace.status = Some(status.code());
+    trace.stderr_bytes = Some(held_err.len());
     let code = judge(status.code(), &held, &held_err, empty_ok)?;
     out::emit(&String::from_utf8_lossy(&held));
     let _ = std::io::stderr().write_all(&held_err);
@@ -297,6 +330,12 @@ mod tests {
         println!("{{}}");
     }
 
+    fn run_traced(argv: &[OsString]) -> (Result<Outcome, Failure>, Trace) {
+        let mut trace = Trace::default();
+        let got = exec_traced(argv, Stdin::Null, "test", BACKSTOP, "claudecode", "pre_tool_use", &mut trace);
+        (got, trace)
+    }
+
     #[test]
     fn a_route_writing_past_the_stderr_cap_is_served_when_it_exits() {
         let me = std::env::current_exe().unwrap().into_os_string();
@@ -305,12 +344,31 @@ mod tests {
         // Without a drain the reader closes at the cap: the child's write fails and it exits 101, not 0.
         // The harness prints its own header on stdout, so a child that ended on exit 0 is judged "not JSON":
         // that verdict is only reachable after the child exited and its stderr was drained.
-        let got = exec(&argv, Stdin::Null, "test", BACKSTOP, "claudecode", "pre_tool_use");
+        let (got, trace) = run_traced(&argv);
         match got {
-            Err(Failure::Timeout(_)) => panic!("the route stalled on its full stderr pipe until the deadline"),
-            Err(Failure::Output(what)) => assert_eq!(what, "not JSON", "the child did not end on exit 0"),
-            Err(other) => panic!("expected a judged exit 0, got: {other}"),
+            Err(Failure::Timeout(_)) => panic!("the route stalled on its full stderr pipe: {trace:?}"),
+            Err(Failure::Output(what)) => assert_eq!(what, "not JSON", "not ended on exit 0: {trace:?}"),
+            Err(other) => panic!("expected a judged exit 0, got: {other}: {trace:?}"),
             Ok(_) => panic!("the harness header cannot be a JSON answer"),
+        }
+    }
+
+    #[test]
+    fn routes_started_together_each_get_their_own_stdio() {
+        let me = std::env::current_exe().unwrap().into_os_string();
+        let argv = vec![me, "--list".into()];
+        let runs: Vec<_> = (0..8)
+            .map(|_| {
+                let argv = argv.clone();
+                std::thread::spawn(move || {
+                    let (got, trace) = run_traced(&argv);
+                    (matches!(got, Err(Failure::Output("not JSON"))), format!("{:?} {trace:?}", got.err()))
+                })
+            })
+            .collect();
+        for run in runs {
+            let (listed, seen) = run.join().unwrap();
+            assert!(listed, "a started route lost its stdout: {seen}");
         }
     }
 
