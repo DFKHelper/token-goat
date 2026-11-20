@@ -564,7 +564,6 @@ mod tests {
     }
 
     /// Hanging route that starts a hanging child of its own: `parentfile=<path>` gets its pid, `childfile=<path>` the child's.
-    #[cfg(unix)]
     #[test]
     #[ignore = "only runs as the route of the grandchild kill test below"]
     fn hang_parent() {
@@ -595,10 +594,8 @@ mod tests {
         assert_eq!(group.leader, child.id(), "the group must be the one the route heads");
     }
 
-    // Not run on Windows: the job is made with silent breakaway, so no descendant of the route is ever in it.
-    #[cfg(unix)]
     #[test]
-    fn a_timed_out_route_takes_the_child_it_started_with_it_on_posix() {
+    fn a_timed_out_route_takes_the_child_it_started_with_it() {
         let pidfile = own_pidfile!();
         let parentfile = pidfile.with_extension("parent");
         // Each recorded pid is ended however this test ends, so a red row leaves nothing running.

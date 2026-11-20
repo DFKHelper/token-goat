@@ -125,7 +125,7 @@ pub fn guard_child(cmd: &mut Command) {
     let _ = cmd;
 }
 
-/// Windows half of [`guard_child`]: puts `child` in a job that is killed when this process's handle to it closes, which the exit of this process does. Processes the child starts itself break away from the job silently, so the hook server the Node shim starts in the background outlives this call as it does today. Best effort: a child left outside the job behaves exactly as it would have without one.
+/// Windows half of [`guard_child`]: puts `child` in a job that is killed when this process's handle to it closes, which the exit of this process does. Processes the child starts stay in the job, so a route that times out takes its descendants with it; [`release_group`] lets a route that ended in time leave them running. Best effort: a child left outside the job behaves exactly as it would have without one.
 pub fn adopt_child(child: &Child) -> Group {
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut held = 0usize;
@@ -133,8 +133,7 @@ pub fn adopt_child(child: &Child) -> Group {
     {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JobObjectExtendedLimitInformation, SetInformationJobObject,
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
         };
         // SAFETY: an unnamed job with default security; the handle is deliberately never closed, so the job lives exactly as long as this process.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -142,7 +141,7 @@ pub fn adopt_child(child: &Child) -> Group {
             return Group { leader: child.id(), job: 0 };
         }
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         // SAFETY: `info` is the structure this information class names, passed with its own size.
         let set = unsafe { SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&raw const info).cast(), size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) } != 0;
         if set {
@@ -163,7 +162,7 @@ pub struct Group {
     job: usize,
 }
 
-/// Ends every process of `group` at once. Call it only while the route's direct child is still unreaped, so the leader's pid cannot have been handed to another process. A descendant that left the group (POSIX setsid) or broke away from the job (silently, as the hook server the shim starts does) is not chased.
+/// Ends every process of `group` at once. Call it only while the route's direct child is still unreaped, so the leader's pid cannot have been handed to another process. A descendant that left the group (POSIX setsid) is not chased.
 pub fn end_group(group: &Group) {
     #[cfg(unix)]
     {
@@ -218,5 +217,66 @@ pub fn process_alive(pid: u32) -> Option<bool> {
     {
         let _ = pid;
         None
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::process::Stdio;
+    use windows_sys::Win32::System::JobObjects as jobs;
+
+    const KILL: u32 = jobs::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    const BREAKAWAY: u32 = jobs::JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+    type Limits = jobs::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
+
+    /// A route child the row owns: the test binary running its hanging test, ended with its tree when the row ends.
+    struct HungChild(Child);
+
+    impl HungChild {
+        fn start(tag: &str) -> HungChild {
+            let pidfile = std::env::temp_dir().join(format!("tg-sys-{tag}-{}.pid", std::process::id()));
+            let child = Command::new(std::env::current_exe().unwrap())
+                .args(["--ignored", "--exact", "capture::tests::hang_child"])
+                .arg(format!("pidfile={}", pidfile.display()))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            HungChild(child)
+        }
+    }
+
+    impl Drop for HungChild {
+        fn drop(&mut self) {
+            let pid = self.0.id().to_string();
+            let mut kill = Command::new("taskkill");
+            kill.args(["/PID", &pid, "/T", "/F"]).stdout(Stdio::null()).stderr(Stdio::null());
+            let _ = kill.status();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// The limit flags the system reports for the job of `group`, `None` when it cannot be read.
+    fn limit_flags(group: &Group) -> Option<u32> {
+        let mut info = Limits::default();
+        let (job, size) = (group.job as _, size_of::<Limits>() as u32);
+        let class = jobs::JobObjectExtendedLimitInformation;
+        let (at, null) = ((&raw mut info).cast(), std::ptr::null_mut());
+        // SAFETY: reads into `info`, the structure this information class names, passed with its own size.
+        let read = unsafe { jobs::QueryInformationJobObject(job, class, at, size, null) };
+        (read != 0).then_some(info.BasicLimitInformation.LimitFlags)
+    }
+
+    #[test]
+    fn a_route_job_kills_on_close_and_lets_no_descendant_break_away_on_windows() {
+        let child = HungChild::start("flags");
+        let group = adopt_child(&child.0);
+        let flags = limit_flags(&group);
+        end_group(&group);
+        let flags = flags.expect("the job's limit flags could not be read, so the job was not made");
+        assert!(flags & KILL != 0, "the route's job must be killed when its handle closes");
+        assert!(flags & BREAKAWAY == 0, "a descendant of the route must not break away from its job");
     }
 }
