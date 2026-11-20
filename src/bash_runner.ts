@@ -353,7 +353,8 @@ async function wrapAndCompress(
     writeStderr(`[token-goat compress] still running, ${elapsed}s elapsed\n`)
   })
   const timeoutHandle = setTimeout(() => {
-    timedOut = true
+    // A shell that already exited keeps its own status (its descendant holding the pipes is what the deadline ends); one still running is a timeout.
+    timedOut = child.exitCode === null && child.signalCode === null
     owned.kill()
     // A descendant that was reparented away from the shell can hold the pipes open past the shell's death and 'close' would never fire: once the shell is gone (now, or when its exit event arrives after the kill) stop reading them so the run settles as a timeout.
     const stopReading = (): void => {

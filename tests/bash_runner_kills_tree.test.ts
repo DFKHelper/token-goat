@@ -191,7 +191,7 @@ describe('a timed-out command leaves no process behind', () => {
 })
 
 describe('a timeout settles even when the shell has already exited', () => {
-  it('the capture path returns 124 although a descendant still holds its pipes', async () => {
+  it('the capture path returns the exited shell status 0 while a descendant holds its pipes', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-runner-tree-'))
     const parent = path.join(dir, 'parent.cjs')
@@ -206,7 +206,7 @@ describe('a timeout settles even when the shell has already exited', () => {
     // One more turn so the runner has seen the shell's exit event before the timeout fires.
     await new Promise<void>((resolve) => setImmediate(resolve))
     vi.advanceTimersByTime(RUNNER_TIMEOUT_SECONDS * 1000)
-    expect(await started).toBe(124)
+    expect(await started, 'the shell exited 0 before the deadline, so that status is the result').toBe(0)
     pending = undefined
   })
 })
