@@ -54,7 +54,7 @@ afterEach(() => {
 // limit: macOS has no token carrier or group end; revisit-when: the owned spawn gets a process group.
 const platformCanEnd = process.platform !== 'darwin'
 
-// The command is bash syntax; on Windows with no bash.exe the product falls back to cmd, where it means something else.
+// The command is bash syntax; with no bash.exe on Windows the product falls back to cmd, which differs.
 const noWindowsBash = process.platform === 'win32' && resolveWindowsBash() === null
 
 describe('a command that leaves a background child behind', () => {

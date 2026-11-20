@@ -14,7 +14,7 @@ import { keepRequestedFile, runDiff } from '../src/read_git.js'
 import { resetPermissionSourceCache } from '../src/rewrite_permission.js'
 import type { runGit as RealRunGit } from '../src/util.js'
 
-// Seam: read_git.ts takes runGit from util.js; a row can append hunks to the zero-context file diff git printed.
+// Seam: read_git.ts takes runGit from util.js; a row can append hunks to the zero-context file diff.
 const injected = vi.hoisted(() => ({ extra: null as string | null }))
 vi.mock('../src/util.js', async (importOriginal) => {
   const real = await importOriginal<{ runGit: typeof RealRunGit }>()
@@ -23,7 +23,8 @@ vi.mock('../src/util.js', async (importOriginal) => {
     runGit: (...a: Parameters<typeof RealRunGit>): ReturnType<typeof RealRunGit> => {
       const r = real.runGit(...a)
       const isFileDiff = a[0][0] === 'diff' && a[0].includes('--unified=0')
-      return injected.extra !== null && isFileDiff && r.exitCode === 0 ? { ...r, stdout: r.stdout + injected.extra } : r
+      if (injected.extra === null || !isFileDiff || r.exitCode !== 0) return r
+      return { ...r, stdout: r.stdout + injected.extra }
     },
   }
 })
@@ -33,10 +34,11 @@ let cfg: string
 let cwdSpy: ReturnType<typeof vi.spyOn>
 const saved: Record<string, string | undefined> = {}
 
-// The 30 s bound is SPAWN_SYNC_TIMEOUT_MS of tests/helpers/batch-cli.ts (a blocking spawn, so a clock); the empty hooksPath keeps the machine's hooks out of this fixture repo.
+// The 30 s bound is SPAWN_SYNC_TIMEOUT_MS of tests/helpers/batch-cli.ts; the empty hooksPath keeps hooks out.
 const GIT_SPAWN_TIMEOUT_MS = 30000
 const git = (args: string[]): void => {
-  execFileSync('git', ['-c', 'core.hooksPath=', ...args], { cwd: root, stdio: 'ignore', timeout: GIT_SPAWN_TIMEOUT_MS })
+  const options = { cwd: root, stdio: 'ignore' as const, timeout: GIT_SPAWN_TIMEOUT_MS }
+  execFileSync('git', ['-c', 'core.hooksPath=', ...args], options)
 }
 const body = (name: string, ret: string): string =>
   `export function ${name}(): string {\n  return '${ret}'\n}\n`

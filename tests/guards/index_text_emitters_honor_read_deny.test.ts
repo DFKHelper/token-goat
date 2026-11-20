@@ -105,7 +105,7 @@ export function countAll(files: ReadonlyMap<string, string>): Map<string, SiteCo
 
 const QUALIFIED_NAME = /([\w./]+\.ts):([a-z][a-z0-9]*[A-Z]\w*)/g
 
-/** The first camelCase name a prose reason mentions that its file lacks; `other.ts:name` is read in other.ts. */
+/** The first camelCase name a prose reason mentions that its file lacks; `other.ts:name` reads other.ts. */
 function missingNamedFunction(reason: string, file: string, files: ReadonlyMap<string, string>): string | null {
   const holds = (where: string, name: string): boolean =>
     new RegExp(String.raw`\b${name}\b`).test(withoutComments(files.get(where) ?? ''))
