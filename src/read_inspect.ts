@@ -28,7 +28,8 @@ import { DELETED_TAG, emitGuarded, fileExists, fileIsGone, guardJsonRows, healSt
 import { capListField, guardAndFenceFileText, redactKeyedValue, redactReadJson, redactReadText } from './fence_cap.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
-import { fileConfinementRefusal } from './read_spec.js'
+import { assertReadAllowed } from './read_deny.js'
+import { deniedFileFilter, fileConfinementRefusal } from './read_spec.js'
 import { listSections } from './section_reader.js'
 import { compareBinary, FirstRows, forEachSymbol, type SymbolHead, type SymbolScanScope } from './symbol_scan.js'
 import {
@@ -849,6 +850,17 @@ export function runNoteList(opts: NoteListOptions = {}): { text: string; code: n
   return { text: lines.join('\n'), code: 0 }
 }
 
+/** The scan `find` and `locate` share: rows of a denied file are never offered, so never counted. */
+function forEachAllowedSymbol(
+  isAllowed: (filePath: string) => boolean,
+  scope: SymbolScanScope,
+  visit: (s: SymbolHead) => void,
+): void {
+  forEachSymbol(scope, (s: SymbolHead) => {
+    if (isAllowed(s.filePath)) visit(s)
+  })
+}
+
 export interface FindOptions {
   pattern: string
   limit?: number
@@ -867,7 +879,8 @@ export function runFind(opts: FindOptions): number {
   const matchedFiles = new Set<string>()
   const allNames = new Set<string>()
   let hasSubstringMatch = false
-  forEachSymbol({ rootDir }, (s: SymbolHead) => {
+  const isAllowed = deniedFileFilter()
+  forEachAllowedSymbol(isAllowed, { rootDir }, (s: SymbolHead) => {
     if (s.name.toLowerCase().includes(patternLower)) {
       if (!hasSubstringMatch) {
         allNames.clear()
@@ -887,7 +900,7 @@ export function runFind(opts: FindOptions): number {
     if (fuzzyNames.length > 0) {
       // Grouped by name and emitted in ranked order, so the files listed for the closest name come first -- the same order the single-pass filter produced when every row was in hand at once.
       const byName = new Map<string, Set<string>>(fuzzyNames.map((n: string) => [n, new Set()]))
-      forEachSymbol({ rootDir }, (s: SymbolHead) => { byName.get(s.name)?.add(s.filePath) })
+      forEachAllowedSymbol(isAllowed, { rootDir }, (s: SymbolHead) => { byName.get(s.name)?.add(s.filePath) })
       for (const n of fuzzyNames) for (const f of [...(byName.get(n) ?? [])].sort(compareBinary)) matchedFiles.add(f)
       allFiles = [...matchedFiles]
     }
@@ -967,12 +980,13 @@ export function runLocate(opts: LocateOptions): number {
   }
 
   const limit = opts.limit ?? 25
+  const isAllowed = deniedFileFilter()
   const specLower = targetSpec.toLowerCase()
   // Walked in full rather than fetched as one capped page, for the reason runFind gives above: the name tests below are JS string matches with no SQL equivalent, and a cap ahead of them hides matches that sorted past it behind the near-name fallback. Exact matches are kept ahead of contains matches, and each list stops at `limit` because that is all `shown` can display -- the counts beside them stay exact, so the totals reported below still describe every match in the project rather than the rows held in memory.
   interface LocateScan { exact: FirstRows<SymbolHead>; exactCount: number; partial: FirstRows<SymbolHead>; partialCount: number; names: Set<string>; files: Set<string> }
   const scan = (): LocateScan => {
     const found: LocateScan = { exact: new FirstRows(limit), exactCount: 0, partial: new FirstRows(limit), partialCount: 0, names: new Set(), files: new Set() }
-    forEachSymbol(scanOpts, (s: SymbolHead) => {
+    forEachAllowedSymbol(isAllowed, scanOpts, (s: SymbolHead) => {
       found.names.add(s.name)
       found.files.add(s.filePath)
       const nameLower = s.name.toLowerCase()
@@ -1001,7 +1015,7 @@ export function runLocate(opts: LocateOptions): number {
     if (fuzzyNames.length > 0) {
       // Grouped by name and emitted in ranked order so the closest name's locations come first, matching the order a single pass over every row produced.
       const byName = new Map<string, FirstRows<SymbolHead>>(fuzzyNames.map((n: string) => [n, new FirstRows(limit)]))
-      forEachSymbol(scanOpts, (s: SymbolHead) => {
+      forEachAllowedSymbol(isAllowed, scanOpts, (s: SymbolHead) => {
         const bucket = byName.get(s.name)
         if (bucket === undefined) return
         matchCount++
@@ -1064,6 +1078,8 @@ export interface ListSectionsOptions {
 }
 
 export function runListSections(opts: ListSectionsOptions): number {
+  // The heading names are the file's own text: refuse a denied file as the plain section read does.
+  assertReadAllowed(opts.file)
   const sections = listSections(opts.file)
 
   if (sections.length === 0) {

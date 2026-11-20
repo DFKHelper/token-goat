@@ -647,7 +647,7 @@
   "read_inspect.ts": {
     "reads": 0,
     "accessors": 1,
-    "reason": "names only: symbol names and locations, no stored file text"
+    "reason": "guarded at read_inspect.ts:runListSections: assertReadAllowed first; find/locate filter"
   },
   "read_outline.ts": {
     "reads": 1,
@@ -681,8 +681,8 @@
   },
   "read_spec.ts": {
     "reads": 0,
-    "accessors": 6,
-    "reason": "guarded at read_spec.ts:resolveSymbolSpecOrEmitError: assertReadAllowed runs first"
+    "accessors": 7,
+    "reason": "guarded at read_spec.ts:resolveSymbolSpecOrEmitError: denied dropped, then assertReadAllowed"
   },
   "read_structured_data.ts": {
     "reads": 1,

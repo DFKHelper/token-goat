@@ -14,14 +14,16 @@ import { findProject, getDisplayRoot, isInsideRoot, resolveProjectRoot } from '.
 import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, indexFreshness, readFileText, readRedactedFileText, recordStaleServed, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
 import { refuseDeniedUnindexed } from './read_commands.js'
 import { emitErr } from './emit.js'
-import { assertReadAllowed, ReadDeniedError } from './read_deny.js'
+import { assertReadAllowed, readDenial, ReadDeniedError } from './read_deny.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
   didYouMean,
   endsWithPathBoundary,
   formatCrossFileLead,
+  nearSymbolNames,
   rankSimilarNames,
 } from './read_suggest.js'
+import { symbolNameFiles } from './symbol_scan.js'
 import { countNoun, foldPath } from './util.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
@@ -553,15 +555,30 @@ export function resolveSymbolSpecOrEmitError(
     return null
   }
 
+  const isAllowed = deniedFileFilter()
+  let entry: SymbolEntry | null = resolution.kind === 'ok' ? resolution.entry : null
   if (resolution.kind === 'ambiguous') {
-    const ambiguity = formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates, projectRoot, commandName)
-    emitErr(formatCommandError(new CliError(ambiguity.split('\n'))))
-    return null
+    // Candidates of a denied file leave before the branch is chosen: one allowed survivor is the answer.
+    const allowed = resolution.candidates.filter((c) => isAllowed(c.filePath))
+    if (allowed.length === 1) entry = allowed[0]!
+    else if (allowed.length === 0) entry = resolution.candidates[0]!
+    else {
+      const ambiguity = formatAmbiguity(resolution.symbol, resolution.file, allowed, projectRoot, commandName)
+      emitErr(formatCommandError(new CliError(ambiguity.split('\n'))))
+      return null
+    }
   }
 
-  if (resolution.kind === 'none') {
+  if (entry === null) {
     const messages = [`Symbol ${echoedValue(symbol)} not found in ${echoedValue(file)}`]
-    const crossFileLead = formatCrossFileLead(commandName, symbol, file, projectRoot)
+    const rootDir = projectRoot ?? process.cwd()
+    // formatCrossFileLead names the files of every row it finds: it says nothing when one of them is denied.
+    const leadFiles = [
+      ...querySymbols({ name: symbol, limit: 50, rootDir }).map((m) => m.filePath),
+      ...nearLeadFiles(symbol, rootDir),
+    ]
+    const leadAllowed = leadFiles.every(isAllowed)
+    const crossFileLead = leadAllowed ? formatCrossFileLead(commandName, symbol, file, projectRoot) : ''
     if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveSpecPath(file, projectRoot ?? process.cwd())
     const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
@@ -576,11 +593,31 @@ export function resolveSymbolSpecOrEmitError(
 
   // The commands behind this resolver print git history of the file, which holds the text a Read rule protects.
   try {
-    assertReadAllowed(resolution.entry.filePath)
+    assertReadAllowed(entry.filePath)
   } catch (e) {
     if (!(e instanceof ReadDeniedError)) throw e
     emitErr(formatCommandError(e))
     return null
   }
-  return resolution.entry
+  return entry
+}
+
+/** The files a near-name cross-file lead would name for a missed `name`. */
+function nearLeadFiles(name: string, rootDir: string): string[] {
+  const near = nearSymbolNames(name, rootDir)
+  if (near.skipped || near.candidates.length === 0) return []
+  return symbolNameFiles(rootDir, near.candidates.slice(0, 50)).map((s) => s.filePath)
+}
+
+/** Whether the host lets a file's names, path or spans be shown; one lookup per path per filter. */
+export function deniedFileFilter(): (filePath: string) => boolean {
+  const verdicts = new Map<string, boolean>()
+  return (filePath) => {
+    let ok = verdicts.get(filePath)
+    if (ok === undefined) {
+      ok = readDenial(filePath) === null
+      verdicts.set(filePath, ok)
+    }
+    return ok
+  }
 }
