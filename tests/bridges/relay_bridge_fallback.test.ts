@@ -248,6 +248,7 @@ describe.each(BRIDGES)('$name: the in-process route is bounded by the call budge
     await vi.advanceTimersByTimeAsync(cap - 1)
     expect(settled, 'still pending just before the bound').toBe(false)
     await vi.advanceTimersByTimeAsync(1)
+    expect(settled, 'settled once the bound passed').toBe(true)
     expect(await pending, 'null once the bound passes').toBeNull()
     expect(vi.getTimerCount(), 'no timer left behind').toBe(0)
     expect(failedSpawn.length, 'no spawn after the budget is spent').toBe(0)
