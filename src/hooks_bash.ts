@@ -822,10 +822,38 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   return maybeCompressRewrite(event, rawCmd, cmd) ?? passOutput()
 }
 
+const FOLLOW_TAIL_FIRST_MATCH = new RegExp(
+  String.raw`\btail\s(?:[^|;&\n]*\s)?(?:-[A-Za-z0-9]{0,6}[fF][A-Za-z0-9]{0,6}|--follow\S*)(?=\s)[^|;&\n]*` +
+    String.raw`\|\s*[ef]?grep\s(?:[^|;&\n]*\s)?` +
+    String.raw`(?:-m\s*1|--max-count[= ]1|-[A-Za-z]{0,6}q[A-Za-z]{0,6})(?=\s|$)`,
+)
+const SLEEP_THEN_READ = new RegExp(
+  String.raw`\bsleep\s+\d+[smhd]?\s*(?:;|&&)\s*` +
+    String.raw`(?:cat|tail|head|less|more|type|Get-Content|gc|ps|pgrep|tasklist|` +
+    String.raw`git\s+status|docker\s+ps|systemctl\s+status)\b`,
+)
+const WAIT_TAIL = 'Wait on the command\'s own completion or exit status instead.'
+const FOLLOW_TAIL_NOTE =
+  'A follow-mode tail piped into a first-match grep never ends if the file goes quiet, ' +
+  `so the wait can outlive the command. ${WAIT_TAIL}`
+const SLEEP_READ_NOTE =
+  `A fixed sleep before a read can end before the work does, so the wait can outlive the command. ${WAIT_TAIL}`
+
+/** The advisory for a wait shape that leaves a process behind, or null: a note only, never a decision. */
+function waitAdvice(command: string): string | null {
+  if (FOLLOW_TAIL_FIRST_MATCH.test(command)) return FOLLOW_TAIL_NOTE
+  if (SLEEP_THEN_READ.test(command)) return SLEEP_READ_NOTE
+  return null
+}
+
 /** Public wrapper: intercepts every `context` (hint) output from {@link preBashHandlerInner} for efficacy tracking/suppression — see hint_stats.ts's module doc comment for the category list and honesty design. */
 export function preBashHandler(event: HookEvent): HookOutput {
   const output = preBashHandlerInner(event)
   const command = event.toolInput['command']
+  if (output.hookType === 'pass' && typeof command === 'string') {
+    const advice = waitAdvice(command)
+    if (advice !== null) return contextOutput(advice)
+  }
   // A hint naming a token-goat command that reads a file Claude Code's Read rules cover would lead around them, since Claude Code checks those rules against a cat or sed of the file but never against token-goat; a rewrite was already checked.
   if ((output.hookType === 'deny' || output.hookType === 'context') && !SYNTAX_OUTPUTS.has(output) && typeof command === 'string' && readHintCrossesRule(detectHarness(), getCwd(event) ?? process.cwd(), shellPathWords(command), command, (p) => !commandPathIsTouchable(p, event))) return passOutput()
   return applyHintTracking(event, output, classifyBashHint)
