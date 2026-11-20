@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { run } from '../src/bash_runner.js'
 import { runGate } from '../src/cli_diagnostics.js'
+import { resolveWindowsBash } from '../src/shell.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { processAlive } from './helpers/process_alive.js'
 
@@ -53,8 +54,12 @@ afterEach(() => {
 // limit: macOS has no token carrier or group end; revisit-when: the owned spawn gets a process group.
 const platformCanEnd = process.platform !== 'darwin'
 
+// The command is bash syntax; on Windows with no bash.exe the product falls back to cmd, where it means something else.
+const noWindowsBash = process.platform === 'win32' && resolveWindowsBash() === null
+
 describe('a command that leaves a background child behind', () => {
-  it.skipIf(!platformCanEnd)('gate passes and the child is gone (not on macOS: no tree end)', async () => {
+  const endsName = 'gate passes and the child is gone (not on macOS or Windows without bash.exe)'
+  it.skipIf(!platformCanEnd || noWindowsBash)(endsName, async () => {
     const code = await runGate(backgroundCommand())
     const pid = recordedPid()
     expect(code, 'the verdict stays a pass').toBe(0)
@@ -62,7 +67,8 @@ describe('a command that leaves a background child behind', () => {
     expect(processAlive(pid as number), 'the background child is not alive after the gate returns').toBe(false)
   })
 
-  it('a run without the option leaves the child alone, as before', async () => {
+  const plainName = 'a run without the option leaves the child alone (not on Windows without bash.exe)'
+  it.skipIf(noWindowsBash)(plainName, async () => {
     const quiet = (): void => {}
     const io = { filterName: 'passthrough', writeStdout: quiet, writeStderr: quiet }
     const code = await run(backgroundCommand(), io)
