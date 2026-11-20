@@ -18,7 +18,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 // vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine property"), so simulating a writeSync failure needs a module mock with a hoisted flag -- same pattern as tests/index_prune.test.ts. Every other fs call passes straight through to the real module untouched; only writeSync is ever intercepted, and only for the one call after the flag is set.
-const mockState = vi.hoisted(() => ({ failNextWrite: false, writeMode: '' as '' | 'half' | 'zero', writeCalls: 0, failNextMkdir: '', lockCreateEperm: '', lockCreateEpermPersist: false, lockStatEperm: '', lockStolenAfterRead: '' }))
+const mockState = vi.hoisted(() => ({ failNextWrite: false, writeMode: '' as '' | 'half' | 'zero', writeCalls: 0, fakeOwnerOf: '', chownThrows: false, events: [] as string[], failNextMkdir: '', lockCreateEperm: '', lockCreateEpermPersist: false, lockStatEperm: '', lockStolenAfterRead: '' }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   const guardedWriteSync = ((...args: Parameters<typeof fs.writeSync>) => {
@@ -35,6 +35,22 @@ vi.mock('node:fs', async (importOriginal) => {
     }
     return actual.writeSync(...args)
   }) as typeof fs.writeSync
+  // The destination reports another owner; chown and rename are recorded in order, and chown is never really run.
+  const guardedLstatSync = ((file: Parameters<typeof fs.lstatSync>[0], ...rest: unknown[]) => {
+    const st = (actual.lstatSync as (...a: unknown[]) => fs.Stats | undefined)(file, ...rest)
+    if (st === undefined || mockState.fakeOwnerOf === '' || String(file) !== mockState.fakeOwnerOf) return st
+    return Object.create(st, { uid: { value: st.uid + 1 }, gid: { value: st.gid + 2 } }) as fs.Stats
+  }) as typeof fs.lstatSync
+  const guardedChownSync = ((file: string, uid: number, gid: number) => {
+    mockState.events.push(`chown:${path.basename(String(file)).includes('.tmp') ? 'tmp' : file}:${uid}:${gid}`)
+    if (mockState.chownThrows) {
+      throw Object.assign(new Error('EPERM: operation not permitted, chown'), { code: 'EPERM' })
+    }
+  }) as typeof fs.chownSync
+  const guardedRenameSync = ((...args: Parameters<typeof fs.renameSync>) => {
+    mockState.events.push('rename')
+    return actual.renameSync(...args)
+  }) as typeof fs.renameSync
   const guardedMkdirSync = ((...args: Parameters<typeof fs.mkdirSync>) => {
     if (mockState.failNextMkdir) {
       const code = mockState.failNextMkdir
@@ -69,7 +85,7 @@ vi.mock('node:fs', async (importOriginal) => {
     }
     return content
   }) as typeof fs.readFileSync
-  return { ...actual, default: actual, writeSync: guardedWriteSync, mkdirSync: guardedMkdirSync, writeFileSync: guardedWriteFileSync, statSync: guardedStatSync, readFileSync: guardedReadFileSync }
+  return { ...actual, default: actual, writeSync: guardedWriteSync, lstatSync: guardedLstatSync, chownSync: guardedChownSync, renameSync: guardedRenameSync, mkdirSync: guardedMkdirSync, writeFileSync: guardedWriteFileSync, statSync: guardedStatSync, readFileSync: guardedReadFileSync }
 })
 
 import type * as fs from 'node:fs'
@@ -193,6 +209,64 @@ describe('atomic writes', () => {
     expect(mockState.writeCalls).toBe(1)
     atomicWriteBytes(path.join(dir, 'plain.bin'), Buffer.from([1, 2, 3]))
     expect(mockState.writeCalls).toBe(2)
+  })
+
+  describe('owner of the destination', () => {
+    beforeEach(() => {
+      mockState.events = []
+    })
+
+    afterEach(() => {
+      mockState.fakeOwnerOf = ''
+      mockState.chownThrows = false
+      mockState.events = []
+    })
+
+    function withPlatform<T>(platform: string, work: () => T): T {
+      const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor
+      Object.defineProperty(process, 'platform', { value: platform })
+      try {
+        return work()
+      } finally {
+        Object.defineProperty(process, 'platform', original)
+      }
+    }
+
+    it('gives the temp the destination owner with one chown call before the rename', () => {
+      const target = path.join(dir, 'owned.txt')
+      writeFileSync(target, 'old')
+      const st = statSync(target)
+      mockState.fakeOwnerOf = target
+      withPlatform('linux', () => atomicWriteText(target, 'new'))
+      expect(mockState.events).toEqual([`chown:tmp:${st.uid + 1}:${st.gid + 2}`, 'rename'])
+      expect(readFileSync(target, 'utf-8')).toBe('new')
+    })
+
+    it('makes no chown call when owner and group already match', () => {
+      const target = path.join(dir, 'same.txt')
+      writeFileSync(target, 'old')
+      withPlatform('linux', () => atomicWriteText(target, 'new'))
+      expect(mockState.events).toEqual(['rename'])
+    })
+
+    it('still completes the write when the chown is refused', () => {
+      const target = path.join(dir, 'refused.txt')
+      writeFileSync(target, 'old')
+      mockState.fakeOwnerOf = target
+      mockState.chownThrows = true
+      withPlatform('linux', () => atomicWriteText(target, 'new'))
+      expect(mockState.events.filter((e) => e.startsWith('chown'))).toHaveLength(1)
+      expect(readFileSync(target, 'utf-8')).toBe('new')
+      expect(readdirSync(dir)).toEqual(['refused.txt'])
+    })
+
+    it('makes no chown call on Windows', () => {
+      const target = path.join(dir, 'win.txt')
+      writeFileSync(target, 'old')
+      mockState.fakeOwnerOf = target
+      withPlatform('win32', () => atomicWriteText(target, 'new'))
+      expect(mockState.events).toEqual(['rename'])
+    })
   })
 
   it('atomicWriteText does not double newlines (no CRLF expansion)', () => {

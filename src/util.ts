@@ -1,6 +1,6 @@
 /** Cross-cutting helpers shared across token-goat modules. Kept intentionally small: only utilities with no natural owner that would otherwise be duplicated. Imports only Node built-ins and other Layer 1 files. IMPORTANT: `runGit` is the ONLY place in the entire codebase that spawns git. A structural test (tests/guards/git_is_spawned_only_by_runGit.test.ts) scans every src/*.ts for git spawn patterns outside this file and fails if any are found. */
 
-import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, chownSync, closeSync, constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup } from './bridges/created_configs.js'
@@ -317,7 +317,7 @@ export function tracingWrites<T>(into: Map<string, Buffer>, work: () => T): T {
   }
 }
 
-/** Shared atomic-write core for text and bytes. Writes `content` to a sibling temp file (created with 0o600 so it is never world-readable even transiently on POSIX), then renames over `dest`. On Windows a brief exclusive-lock window can make the rename fail with EPERM/EBUSY/ETXTBSY; we retry up to 5 times with a `50 * attempt` ms backoff. Any failure past this point -- a failed write (ENOSPC, EIO, ...) just as much as a failed rename -- cleans up the temp file before the error propagates, so a partial write never leaks a `.tmp` file next to `dest`. */
+/** Shared atomic-write core for text and bytes. Writes `content` to a sibling temp file (created with 0o600 so it is never world-readable even transiently on POSIX), then renames over `dest`. On Windows a brief exclusive-lock window can make the rename fail with EPERM/EBUSY/ETXTBSY; we retry up to 5 times with a `50 * attempt` ms backoff. Any failure past this point -- a failed write (ENOSPC, EIO, ...) just as much as a failed rename -- cleans up the temp file before the error propagates, so a partial write never leaks a `.tmp` file next to `dest`. On POSIX the temp takes the destination's mode and, when they differ and the chown is allowed, its uid and gid; ACLs and extended attributes are not carried over. */
 function atomicWriteCore(requested: string, content: string | Uint8Array): void {
   assertWriteInScope(requested)
   const held = stagedWrites?.get(foldPath(path.resolve(requested)))
@@ -365,7 +365,20 @@ function atomicWriteCore(requested: string, content: string | Uint8Array): void 
     try {
       // lstat, not stat: `dest` is only still a link when resolveSymlinkChain declined to follow it, and the rename then replaces the link, so the mode of whatever it points at is not this file's to inherit.
       const destStat = lstatSync(dest)
-      if (!destStat.isSymbolicLink()) chmodSync(tmp, destStat.mode)
+      if (!destStat.isSymbolicLink()) {
+        // Keep the owner too, before the chmod (a chown clears setuid bits); a refused chown (EPERM, not root) never fails the write.
+        if (process.platform !== 'win32') {
+          try {
+            const tmpStat = lstatSync(tmp)
+            if (tmpStat.uid !== destStat.uid || tmpStat.gid !== destStat.gid) {
+              chownSync(tmp, destStat.uid, destStat.gid)
+            }
+          } catch {
+            // ignore: owner preservation is best-effort
+          }
+        }
+        chmodSync(tmp, destStat.mode)
+      }
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
     }
