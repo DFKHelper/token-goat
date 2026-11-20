@@ -15,6 +15,7 @@ import {
   launcherCarriedCheck,
 } from './verification_commands.js'
 import { readHeadCommit } from './git_hint.js'
+import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -271,8 +272,14 @@ function fileHeredocTerminator(line: string, before: string[]): string | null {
 
 /** The command minus file-writing heredoc bodies: quoting `vitest run` runs no check. Unsure keeps the body. */
 function withoutFileHeredocBodies(command: string): string {
+  return splitFileHeredocBodies(command).kept
+}
+
+/** The command with its file-writing heredoc bodies dropped, and those bodies' lines (terminator included) in order. */
+function splitFileHeredocBodies(command: string): { kept: string; dropped: string[] } {
   const lines = command.split('\n')
   const kept: string[] = []
+  const dropped: string[] = []
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? ''
     kept.push(line)
@@ -280,9 +287,17 @@ function withoutFileHeredocBodies(command: string): string {
     if (terminator === null) continue
     const end = lines.findIndex((later, j) => j > i && later.trim() === terminator)
     if (end < 0) continue
+    dropped.push(...lines.slice(i + 1, end + 1))
     i = end
   }
-  return kept.join('\n')
+  return { kept: kept.join('\n'), dropped }
+}
+
+/** The stored command with a short hash of the heredoc bodies dropped from it, so two runs fed different bodies are two records. Never the body text: bodies can hold secrets and the stored string must not grow with them. A command with no dropped body is returned unchanged, which is how a record from an older build compares. */
+function withBodyFingerprint(stored: string, typed: string): string {
+  const { dropped } = splitFileHeredocBodies(typed)
+  if (dropped.length === 0 || stored === '') return stored
+  return `${stored} [body ${createHash('sha256').update(dropped.join('\n')).digest('hex').slice(0, 8)}]`
 }
 
 /** Record a finished Bash call if it was a verification command. A background launch has not finished, so it is not a verdict, and neither is a call whose exit status something around the check decided ({@link exitStatusIsCheckVerdict}): that call is left unrecorded, so it neither clears the edits made since the last pass nor counts as a failure. An unknown status is not recorded as null here because evaluateVerification reads null as a pass. A failing document-only check is recorded too ({@link isDocumentOnlyFailure}). */
@@ -299,11 +314,12 @@ export function noteVerificationRun(
     const status = exitCode ?? (successImpliedWithoutStatus() ? 0 : null)
     // A launcher-carried check may clear a failure by passing but never records one.
     if (status !== null && status !== 0 && !hasDirectCheck(command)) return
-    recordVerificationRun(storedCommand(command), status, at, headAt(cwd))
+    recordVerificationRun(withBodyFingerprint(storedCommand(command), typed), status, at, headAt(cwd))
     return
   }
   if (exitCode !== null && exitCode !== 0 && isDocumentOnlyFailure(command)) {
-    recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode, at, headAt(cwd))
+    const stored = withBodyFingerprint(storedCommand(command, isFailureCheckSegment), typed)
+    recordVerificationRun(stored, exitCode, at, headAt(cwd))
   }
 }
 
@@ -408,7 +424,8 @@ export function noteFailedVerificationRun(
   if (isInterrupt || !(isVerdict || isDocumentOnlyFailure(command))) return
   const status = EXIT_CODE_IN_ERROR.exec(errorText)
   const exitCode = status !== null && Number(status[1]) !== 0 ? Number(status[1]) : 1
-  recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode, at, headAt(cwd))
+  const stored = withBodyFingerprint(storedCommand(command, isFailureCheckSegment), typed)
+  recordVerificationRun(stored, exitCode, at, headAt(cwd))
 }
 
 export interface VerificationState {
@@ -462,19 +479,40 @@ function failureIsCurrent(run: VerificationRun, scope: VerificationScope | undef
   return run.head !== undefined && now !== null && run.head === now
 }
 
+const BODY_MARK = / \[body [0-9a-f]{8}\]$/
+
+/** The failed run a pass of the same check with another heredoc body must not clear: both records carry a body mark and the marks differ. A record without a mark compares as before. */
+function failureOfOtherBody(
+  runs: readonly VerificationRun[],
+  latest: VerificationRun,
+): VerificationRun | undefined {
+  if (!BODY_MARK.test(latest.command) || (latest.exitCode !== null && latest.exitCode !== 0)) return undefined
+  const base = latest.command.replace(BODY_MARK, '')
+  return runs.find(
+    (run) =>
+      run.exitCode !== null &&
+      run.exitCode !== 0 &&
+      run.command !== latest.command &&
+      BODY_MARK.test(run.command) &&
+      run.command.replace(BODY_MARK, '') === base,
+  )
+}
+
 /** The verification verdict for one session-state key. An unreadable or absent state is an empty verdict, which never claims an edit. Without a `scope` every source edit counts, which is how the subagent report receipt reads it; the Stop advisory passes the session scope ({@link verificationScopeFor}). */
 export function evaluateVerification(stateKey: string, scope?: VerificationScope): VerificationState {
   const state = readSessionStateFile(stateKey)
   const runs = state?.verificationRuns ?? []
   const latestRun = runs.reduce<VerificationRun | undefined>((latest, run) => (latest === undefined || run.at >= latest.at ? run : latest), undefined)
-  const latestFailed = latestRun !== undefined && latestRun.exitCode !== null && latestRun.exitCode !== 0
+  const otherBodyFailure = latestRun === undefined ? undefined : failureOfOtherBody(runs, latestRun)
+  const judged = otherBodyFailure ?? latestRun
+  const latestFailed = judged !== undefined && judged.exitCode !== null && judged.exitCode !== 0
   const lastPassAt = runs.reduce((at, run) => (run.exitCode === null || run.exitCode === 0 ? Math.max(at, run.at) : at), -1)
   const edited = (state?.files ?? []).filter((f) => f.wasEdited && f.lastEditedAt !== undefined && languageHasFlag(detectLanguage(f.path), 'sourceHints') && (scope === undefined || inScope(f.path, scope)))
   const names = (files: typeof edited): string[] => [...new Set(files.map((f) => displaySafePath(f.path.split(/[/\\]/).pop() ?? f.path)))].sort()
   return {
     runs,
-    ...(latestRun !== undefined ? { latestRun } : {}),
-    failingUnresolved: latestFailed && failureIsCurrent(latestRun, scope),
+    ...(judged !== undefined ? { latestRun: judged } : {}),
+    failingUnresolved: latestFailed && failureIsCurrent(judged, scope),
     editedFiles: names(edited),
     editedAnyFile: (state?.files ?? []).some((f) => f.wasEdited),
     editedSinceLastPass: names(edited.filter((f) => (f.lastEditedAt ?? 0) > lastPassAt)),
