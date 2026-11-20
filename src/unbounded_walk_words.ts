@@ -158,7 +158,10 @@ export function cdLandsAtRoot(seg: Segment, wasRoot: boolean, ctx: WalkContext):
   const target = positionals(seg.words.slice(at + 1), new Set<string>())[0]
   // A bare `cd` goes home in a POSIX shell, but PowerShell 5.1 only prints the location.
   if (target === undefined) return !ctx.powershell && name !== 'popd' && name !== 'pushd'
-  return isRoot(target.text) || (wasRoot && /^\.\.([\\/]\.\.)*[\\/]*$/.test(target.text))
+  if (isRoot(target.text)) return true
+  if (!wasRoot) return false
+  // From a root a target that resolves lexically back to the start keeps the root, as does one that cannot be resolved.
+  return isRelativeStart(target.text) || (!/^[\\/]|^[A-Za-z]:/.test(target.text) && /[$`*?[]/.test(target.text))
 }
 
 /** A find start that is the working directory itself or only steps up from it (`.`, `./`, `..`, `../..`), as opposed to a subdirectory of it. */
@@ -173,7 +176,7 @@ export const isRelativeStart = (start: string): boolean => {
     else if (kept.length > 0) kept.pop()
   }
   // Lexical only: the start names the working directory or an ancestor when no named directory is left.
-  return kept.length === 0 && (segments > 0 || /^\.[\\/]*$/.test(start))
+  return kept.length === 0 && (segments > 0 || start.includes('.'))
 }
 
 export const texts = (words: readonly Word[]): string[] => words.map((w) => w.text)
