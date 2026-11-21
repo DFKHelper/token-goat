@@ -381,6 +381,8 @@ const CACHE_READ_MULTIPLIER = 0.1
 const READ_DIVERT_MARKER_RE = /(?:(?:was|were) already read this session|Already read |You've already read|(?:Use|Run) `token-goat (?:section|read|bash-output|config-get|skeleton|json-query|yaml-query)|token-goat bash-output --file)/
 /** A divert message is a short pointer; a matching result at or above this size is a real file body that merely mentions a token-goat command, not a divert. */
 const READ_DIVERT_MAX_BYTES = 2500
+/** The is_error read the deny gate and the divert count share: only a literal true counts. */
+const isErrorResult = (block: Record<string, unknown>): boolean => block['is_error'] === true
 /** Non-diverted Read results at or above this size are counted as the full-serve pool surgical reads exist to shrink. */
 const READ_FULL_SERVE_MIN_BYTES = 10240
 
@@ -897,7 +899,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
           // Deny-outcome census: orthogonal to the Read-only divert/full-serve split below -- a deny template match opens a new pending row that watches the calls following it in this same file. Each template names the tool whose result can carry its wording and matches only that tool, so a Read of a file which merely quotes a deny is not counted as one. Skill denies from hooks_skill.ts have no path, so readPathById.get(id) misses and path/basename fall back to '', which safely never matches the path-keyed isReadSamePath/isEditSamePath/isSurgicalSamePath checks further down -- and with the tool gate in place those three outcomes are now unreachable for a Skill row rather than reachable only by contamination.
           if (name === 'Read' || name === 'Skill' || name === 'Grep') {
             const denyTemplate = DENY_TEMPLATES.find((t) => t.tool === name && t.re.test(text))
-            if (denyTemplate !== undefined) {
+            // Counted only when is_error is true: a non-error body that quotes a template is a delivery.
+            if (denyTemplate !== undefined && isErrorResult(block)) {
               const path = readPathById.get(id) ?? ''
               const lastSlash = path.lastIndexOf('/')
               openDenies.push({
@@ -911,7 +914,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 toolCalls: [],
               })
               // Claim only on the is_error deny marker; a non-error body that quotes a template is a delivery.
-              if (block['is_error'] === true && ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
+              if (ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
                 if (path === '') {
                   s.alreadyReadClaims.uncheckedNoPath += 1
                 } else {
@@ -929,7 +932,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             // A non-error body is a delivery even if it quotes a deny template; is_error marks a deny.
             const deliveredPath = readPathById.get(id)
             if (block['is_error'] !== true && deliveredPath !== undefined) deliveredReadEpoch.set(deliveryKey(obj, deliveredPath), compactEpoch)
-            if (bytes < READ_DIVERT_MAX_BYTES && READ_DIVERT_MARKER_RE.test(text)) {
+            // Divert needs is_error true; an absent marker is a quote (summary.json divert_read).
+            if (bytes < READ_DIVERT_MAX_BYTES && isErrorResult(block) && READ_DIVERT_MARKER_RE.test(text)) {
               s.readInterception.divertedByMarker += 1
               s.readInterception.divertedBytes += bytes
             } else if (bytes >= READ_FULL_SERVE_MIN_BYTES) {

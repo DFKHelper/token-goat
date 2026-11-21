@@ -13,7 +13,8 @@ const use = (id: string, name: string, input: Record<string, unknown>): string =
   JSON.stringify({ type: 'assistant', message: { id: `msg_use_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
 const result = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
-// FORMAT-DERIVED: `is_error` is a real, optional boolean field on an Anthropic Messages API `tool_result` content block (https://docs.claude.com/en/api/messages -- content block types), the same schema this file's `use`/`result` helpers already hand-construct above. Never copied from a real session transcript; the census only ever reads this boolean, never any error text.
+// CAPTURE (Read): transcript dbbf6b4b-2366-4086-84af-e082e79212ee, tool_use call_c70d852691fb4925aab97c1c
+// FORMAT-DERIVED (Skill, Grep: is_error not captured)
 const errorResult = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] } })
 const COMPACT = '{"type":"system","subtype":"compact_boundary"}'
@@ -103,7 +104,7 @@ beforeAll(() => {
     fs.mkdirSync(projectDir)
     const toolName = fx.toolName ?? 'Read'
     const input = toolName === 'Skill' ? { skill: `skill-${i}` } : toolName === 'Grep' ? { pattern: 'def dog_loader', path: `x/target-${i}.py` } : { file_path: `x/target-${i}.ts` }
-    const lines = [use('d', toolName, input), result('d', fx.text)]
+    const lines = [use('d', toolName, input), errorResult('d', fx.text)]
     fs.writeFileSync(path.join(projectDir, 'session.jsonl'), lines.join('\n') + '\n')
   })
 })
@@ -133,6 +134,20 @@ describe('DENY_TEMPLATES classification', () => {
       expect(row!.withheldBytesUnknownFraction).toBe(fx.expectedWithheldBytes === null ? 1 : 0)
     }
   })
+
+  it('does not count a successful Read that quotes a deny template, with no error marker, as a deny', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-quoted-'))
+    try {
+      const fx = DENY_FIXTURES.find((f) => f.kind === 'lock_file_deny')!
+      const projectDir = path.join(dir, 'p0')
+      fs.mkdirSync(projectDir)
+      fs.writeFileSync(path.join(projectDir, 'session.jsonl'), [use('q', 'Read', { file_path: 'x/quoted.ts' }), result('q', fx.text)].join('\n') + '\n')
+      const s = await auditSessionCorpus({ dir })
+      expect(s.denyOutcomes).toEqual([])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('Skill deny classification reaches the census (TASK D)', () => {
@@ -148,11 +163,11 @@ describe('Skill deny classification reaches the census (TASK D)', () => {
     const projectDir = path.join(skillDir, 'p0')
     fs.mkdirSync(projectDir)
     const lines = [
-      use('sc', 'Skill', { skill: 'relentless' }), result('sc', complete.text),
-      use('st', 'Skill', { skill: 'image-to-code' }), result('st', truncated.text),
-      use('sa', 'Skill', { skill: 'database-design' }), result('sa', alreadyLoaded.text),
-      use('sp', 'Skill', { skill: 'council' }), result('sp', slicePointer.text),
-      use('si', 'Skill', { skill: 'brainstorming' }), result('si', sliceInlined.text),
+      use('sc', 'Skill', { skill: 'relentless' }), errorResult('sc', complete.text),
+      use('st', 'Skill', { skill: 'image-to-code' }), errorResult('st', truncated.text),
+      use('sa', 'Skill', { skill: 'database-design' }), errorResult('sa', alreadyLoaded.text),
+      use('sp', 'Skill', { skill: 'council' }), errorResult('sp', slicePointer.text),
+      use('si', 'Skill', { skill: 'brainstorming' }), errorResult('si', sliceInlined.text),
     ]
     fs.writeFileSync(path.join(projectDir, 'session.jsonl'), lines.join('\n') + '\n')
   })
@@ -244,7 +259,7 @@ describe('DENY_TEMPLATES keeps classifying superseded wordings', () => {
     SUPERSEDED_DENY_FIXTURES.forEach((fx, i) => {
       const projectDir = path.join(supersededDir, `s${i}`)
       fs.mkdirSync(projectDir)
-      const lines = [use('d', 'Read', { file_path: `x/old-${i}.md` }), result('d', fx.text)]
+      const lines = [use('d', 'Read', { file_path: `x/old-${i}.md` }), errorResult('d', fx.text)]
       fs.writeFileSync(path.join(projectDir, 'session.jsonl'), lines.join('\n') + '\n')
     })
   })
@@ -278,7 +293,7 @@ describe('range_reread_deny matches its wording before and after "were"', () => 
     rangeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-range-wording-'))
     const projectDir = path.join(rangeDir, 'p')
     fs.mkdirSync(projectDir)
-    const lines = [use('o', 'Read', { file_path: 'x/old.ts', offset: 548, limit: 5 }), result('o', OLD_TEXT), use('n', 'Read', { file_path: 'x/new.ts', offset: 548, limit: 5 }), result('n', NEW_TEXT)]
+    const lines = [use('o', 'Read', { file_path: 'x/old.ts', offset: 548, limit: 5 }), errorResult('o', OLD_TEXT), use('n', 'Read', { file_path: 'x/new.ts', offset: 548, limit: 5 }), errorResult('n', NEW_TEXT)]
     fs.writeFileSync(path.join(projectDir, 'session.jsonl'), lines.join('\n') + '\n')
   })
 
@@ -306,7 +321,7 @@ beforeAll(() => {
   // compacted: a compact_boundary fires before the window closes -- must never fall through to 'retried'.
   writeScenario('compacted', [
     use('d1', 'Read', { file_path: 'src/big.ts' }),
-    result('d1', LARGE_DENY_TEXT),
+    errorResult('d1', LARGE_DENY_TEXT),
     COMPACT,
     use('f1', 'Bash', { command: 'ls' }),
     result('f1', 'ok'),
@@ -315,7 +330,7 @@ beforeAll(() => {
   // retried: a plain Read of the exact same path within the 3-call window.
   writeScenario('retried', [
     use('d2', 'Read', { file_path: 'src/big2.ts' }),
-    result('d2', LARGE_DENY_TEXT),
+    errorResult('d2', LARGE_DENY_TEXT),
     use('d2r', 'Read', { file_path: 'src/big2.ts' }),
     result('d2r', 'retry content'),
   ])
@@ -323,7 +338,7 @@ beforeAll(() => {
   // substituted: a Bash surgical command against the denied path's basename within the window.
   writeScenario('substituted', [
     use('d3', 'Read', { file_path: 'src/widget.ts' }),
-    result('d3', LARGE_DENY_TEXT),
+    errorResult('d3', LARGE_DENY_TEXT),
     use('s3', 'Bash', { command: 'token-goat read "src/widget.ts::Foo"' }),
     result('s3', 'ok'),
   ])
@@ -331,13 +346,13 @@ beforeAll(() => {
   // unresolved: the file ends with fewer than 3 tool calls after the deny (here: zero).
   writeScenario('unresolved', [
     use('d4', 'Read', { file_path: 'src/lonely.ts' }),
-    result('d4', LARGE_DENY_TEXT),
+    errorResult('d4', LARGE_DENY_TEXT),
   ])
 
   // abandoned: 3 tool calls follow, none a same-path retry/substitution, no compaction.
   writeScenario('abandoned', [
     use('d5', 'Read', { file_path: 'src/other.ts' }),
-    result('d5', LARGE_DENY_TEXT),
+    errorResult('d5', LARGE_DENY_TEXT),
     use('a1', 'Bash', { command: 'ls' }),
     result('a1', 'ok'),
     use('a2', 'Bash', { command: 'git status' }),
@@ -349,7 +364,7 @@ beforeAll(() => {
   // shell_read: a Bash command reads the denied file by basename via a shell reader binary (sed/grep/cat/...) within the window -- what would otherwise silently fall into 'abandoned'.
   writeScenario('shell_read', [
     use('d6', 'Read', { file_path: 'src/wanted.ts' }),
-    result('d6', LARGE_DENY_TEXT),
+    errorResult('d6', LARGE_DENY_TEXT),
     use('sr1', 'Bash', { command: "sed -n '1,40p' src/wanted.ts" }),
     result('sr1', 'file contents'),
   ])
@@ -394,7 +409,7 @@ beforeAll(() => {
   const lines = [
     use('d6', 'Read', { file_path: 'x/state.json' }),
     // FORMAT-DERIVED, same improve_state_reread_deny text as the classification fixture above.
-    result('d6', 'Orchestrator state already read this session. Use `token-goat bash-output --file "x/state.json" --tail 50` (or `--grep PATTERN`) to read a slice instead of the full file.'),
+    errorResult('d6', 'Orchestrator state already read this session. Use `token-goat bash-output --file "x/state.json" --tail 50` (or `--grep PATTERN`) to read a slice instead of the full file.'),
     use('u1', 'Bash', { command: 'ls' }),
     result('u1', 'ok'),
     use('u2', 'Bash', { command: 'ls' }),
@@ -443,7 +458,7 @@ beforeAll(() => {
   // TASK A: SURGICAL_COMMAND_RE must recognize token-goat after a shell separator (cd x &&), not just at the start of the command.
   writeProject(censusDir, 'cd-prefixed', [
     use('d1', 'Read', { file_path: 'src/big.ts' }),
-    result('d1', LARGE_DENY_TEXT),
+    errorResult('d1', LARGE_DENY_TEXT),
     use('s1', 'Bash', { command: 'cd somewhere && token-goat section "src/big.ts::Heading"' }),
     result('s1', 'ok'),
   ])
@@ -451,7 +466,7 @@ beforeAll(() => {
   // TASK A: node <path>/token-goat.mjs <subcommand> must also be recognized as substituted, and -- because it is checked before the shell-read class -- never fall into 'shell_read' just because node is also a shell-reader binary.
   writeProject(censusDir, 'node-invoked', [
     use('d2', 'Read', { file_path: 'src/other.ts' }),
-    result('d2', LARGE_DENY_TEXT),
+    errorResult('d2', LARGE_DENY_TEXT),
     use('s2', 'Bash', { command: 'node dist/token-goat.mjs read src/other.ts::Foo' }),
     result('s2', 'ok'),
   ])
@@ -459,7 +474,7 @@ beforeAll(() => {
   // TASK B: sed reading the denied file by basename, boundary-adjacent (quoted on one side, path-separator on the other) -- a confident shell_read match.
   writeProject(censusDir, 'sed-read', [
     use('d3', 'Read', { file_path: 'src/wanted.ts' }),
-    result('d3', LARGE_DENY_TEXT),
+    errorResult('d3', LARGE_DENY_TEXT),
     use('s3', 'Bash', { command: "sed -n '1,20p' src/wanted.ts" }),
     result('s3', 'file contents'),
   ])
@@ -467,7 +482,7 @@ beforeAll(() => {
   // TASK B: grep reading the denied file by basename -- same class, different reader binary.
   writeProject(censusDir, 'grep-read', [
     use('d4', 'Read', { file_path: 'src/target.ts' }),
-    result('d4', LARGE_DENY_TEXT),
+    errorResult('d4', LARGE_DENY_TEXT),
     use('s4', 'Bash', { command: 'grep -n pattern src/target.ts' }),
     result('s4', 'match line'),
   ])
@@ -475,7 +490,7 @@ beforeAll(() => {
   // TASK B guard: a short basename ("index.ts") appears only as an incidental substring of a different file's name ("myindex.tsx"), not adjacent to any path separator/quote/word boundary. Must NOT be credited as shell_read (a bare substring test would over-credit it); must be counted in the dedicated ambiguous field instead of silently dropped either way.
   writeProject(censusDir, 'ambiguous-basename', [
     use('d5', 'Read', { file_path: 'src/index.ts' }),
-    result('d5', LARGE_DENY_TEXT),
+    errorResult('d5', LARGE_DENY_TEXT),
     use('s5', 'Bash', { command: 'grep -n pattern myindex.tsx' }),
     result('s5', 'match line'),
   ])
@@ -483,7 +498,7 @@ beforeAll(() => {
   // TASK C: an Edit on the exact denied path whose tool_result carries is_error: true, within the 10-call window -- the Edit-error canary. Also contributes one Edit + one error to the corpus-wide baseline denominator.
   writeProject(censusDir, 'edit-error', [
     use('d6', 'Read', { file_path: 'src/errfile.ts' }),
-    result('d6', LARGE_DENY_TEXT),
+    errorResult('d6', LARGE_DENY_TEXT),
     use('e6', 'Edit', { file_path: 'src/errfile.ts', old_string: 'x', new_string: 'y' }),
     errorResult('e6', 'edit blocked: file has not been read in this session'),
   ])
@@ -583,14 +598,14 @@ describe('deny outcomes for an upper-case basename', () => {
 
     writeProject(caseDir, 'surgical-uppercase', [
       use('u1', 'Read', { file_path: 'docs/CLAUDE.md' }),
-      result('u1', LARGE_DENY_TEXT),
+      errorResult('u1', LARGE_DENY_TEXT),
       use('u2', 'Bash', { command: 'token-goat section "docs/CLAUDE.md::Commands"' }),
       result('u2', 'ok'),
     ])
 
     writeProject(caseDir, 'shell-read-uppercase', [
       use('u3', 'Read', { file_path: 'docs/README.md' }),
-      result('u3', LARGE_DENY_TEXT),
+      errorResult('u3', LARGE_DENY_TEXT),
       use('u4', 'Bash', { command: "sed -n '1,40p' docs/README.md" }),
       result('u4', 'file contents'),
     ])

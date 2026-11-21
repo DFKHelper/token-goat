@@ -205,7 +205,8 @@ describe('session-audit via the built bundle', () => {
 describe('sidechain lane and read interception census', () => {
   const DIVERT_TEXT = 'a.md was already read this session. Use the cache.'
   const R_USE = (id: string): string => `{"type":"assistant","message":{"id":"msg_ru_${id}","role":"assistant","content":[{"type":"tool_use","id":"${id}","name":"Read","input":{"file_path":"a.md"}}]}}`
-  const R1 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r1","content":"${DIVERT_TEXT}"}]}}`
+  // FORMAT-DERIVED from hooks_read.ts denyOutput; summary.json divert_read: is_error true 121, absent 21.
+  const R1 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r1","is_error":true,"content":"${DIVERT_TEXT}"}]}}`
   const BIG = 'A'.repeat(11950) + ' Use `token-goat section "a.md::H"' + 'B'.repeat(16)
   const R2 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r2","content":"${BIG.replace(/"/g, '\\"')}"}]}}`
   const R3 = '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r3","content":"hello"}]}}'
@@ -471,7 +472,7 @@ describe('redacted_thinking blocks in the corpus audit', () => {
 // Already-read claims: a deny is true only if a Read result for its path came earlier in the same epoch. Provenance: tool_use and tool_result shapes match this file's existing rows (format, not a capture). Provenance: deny wording FORMAT-DERIVED from src/hooks_read.ts:1246 (emitter text, not a capture). Provenance: compact_boundary CAPTURE per tests/resident_context.test.ts header (read off real transcripts). Provenance: sequences HAND-DERIVED from the epoch rule; non-Claude-Code record HAND-DERIVED (response_item).
 const READ_USE = (id: string, file: string, top: Record<string, unknown> = {}): string => JSON.stringify({ ...top, type: 'assistant', message: { id: `msg_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: file } }] } })
 const READ_SERVED = (id: string, text: string, top: Record<string, unknown> = {}): string => JSON.stringify({ ...top, type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text }] } })
-// Deny marker is_error: true (CAPTURE: session_audit_tool_errors.test.ts:27, :45; the Read form is FORMAT-DERIVED).
+// Deny marker is_error: true (CAPTURE: session_audit_tool_errors.test.ts:27, :45; deny_outcomes.test.ts:16).
 const READ_DENIED = (id: string, text: string, top: Record<string, unknown> = {}): string => JSON.stringify({ ...top, type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: text }] } })
 const ALREADY_READ_DENY = 'Lines 1..40 of this file were already read this session. Use `token-goat section "a.ts::Heading"` to extract a part.'
 const COMPACT_BOUNDARY_LINE = '{"type":"system","subtype":"compact_boundary"}'
@@ -522,11 +523,20 @@ describe('already-read claims in the corpus audit', () => {
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
   })
 
-  // PROVENANCE: HAND-DERIVED. One already-read deny sentence in a Read result without is_error, so the census matches its wording and the claim check, which needs the marker, never runs.
-  it('says denies were seen but none was checked when no result carried the error marker', async () => {
+  // PROVENANCE: HAND-DERIVED. A successful Read quoting a deny (no is_error) is not a deny.
+  it('does not report a successful Read that quotes a deny as a seen deny', async () => {
     const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 0, uncheckedNoPath: 0 })
-    expect(formatSessionAudit(s)).toContain('1 already-read deny seen by text, but none carried the transcript error marker, so none was checked.')
+    expect(s.denyOutcomes).toEqual([])
+    expect(formatSessionAudit(s)).not.toContain('seen by text')
+  })
+
+  // FORMAT-DERIVED from hooks_read.ts denyOutput; summary.json divert_read: is_error true 121, absent 21.
+  it('counts a divert marker as diverted only when its own is_error is true', async () => {
+    const absent = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY)]) })
+    expect(absent.readInterception.divertedByMarker).toBe(0)
+    const marked = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_DENIED('r1', ALREADY_READ_DENY)]) })
+    expect(marked.readInterception.divertedByMarker).toBe(1)
   })
 
   it('prints no such line once a claim was checked', async () => {
