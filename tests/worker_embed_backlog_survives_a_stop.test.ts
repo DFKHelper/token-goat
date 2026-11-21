@@ -7,11 +7,10 @@ import * as path from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
-
 import type * as NodeFsModule from 'node:fs'
 
 import { closeAllDbs, getDb } from '../src/db.js'
+import { modelFilesPresent } from '../src/embed_model.js'
 import { modelDownloadHeld } from '../src/embed_preflight.js'
 import { DEFAULT_DIM, isAvailable, setPipelineFnForTesting } from '../src/embeddings.js'
 import { disabledEmbedSha } from '../src/parser.js'
@@ -61,7 +60,8 @@ function classifyVec0(): 'working' | 'broken' | 'absent' {
   }
 }
 
-const canExerciseRealEmbed = classifyVec0() === 'working' && isAvailable()
+// The pinned model is read from the isolated home or TOKEN_GOAT_MODEL_CACHE_DIR, never downloaded: without a copy these rows skip.
+const canExerciseRealEmbed = classifyVec0() === 'working' && isAvailable() && modelFilesPresent()
 
 let TMP: string
 let DB_PATH: string
@@ -136,8 +136,6 @@ it('sqlite-vec is not installed-but-broken, which would skip the suite below whi
 })
 
 describe.skipIf(!canExerciseRealEmbed)('the embed backlog a stopped worker drops', () => {
-  // The real model is fetched when the isolated home has no copy, so these rows need the network the suite defaults off.
-  allowNetworkInDescribe()
   it('is picked up by the next worker and embedded, with nothing touching the file', async () => {
     await parsedButNeverEmbedded()
     const sha = getDb(DB_PATH).prepare('SELECT sha FROM files').pluck().get() as string
