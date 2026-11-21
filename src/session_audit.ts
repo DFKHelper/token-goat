@@ -180,6 +180,8 @@ export interface SessionAuditSummary {
   toolErrors: ToolErrorCensus
   /** Cold cache re-writes by tool and command class, main sessions and subagents apart (see cold_gap.ts). */
   coldGap: ColdGapCensus
+  /** Already-read deny claims, checked against same-epoch Read deliveries; other hosts are skipped. */
+  alreadyReadClaims: { transcriptsChecked: number; transcriptsSkipped: number; checked: number; falseClaims: number; uncheckedNoPath: number; examples: Array<{ transcript: string; line: number; path: string }> }
 }
 
 /** One deny's measured real-world outcome, tested in this fixed order so the six buckets partition every deny exactly once: a later re-read after a compaction boundary is correct by design and must never fall through to 'retried'; a shell command (sed/grep/cat/...) that reads the denied file's basename is 'shell_read' -- a real substitute the agent found on its own, not an escape from the census -- and is tested after 'substituted' so a `node <path>/token-goat.mjs` invocation (also a shell command) is never miscounted as a plain shell read; and a transcript that ends too soon to observe 3 calls is 'unresolved' rather than the misleadingly final-sounding 'abandoned'. */
@@ -434,6 +436,11 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' |
 /** Every kind DENY_TEMPLATES can classify, exported so the suite can assert its fixture set covers all of them. Without that assertion a kind added to the array without a fixture is never exercised by any test: it can be born stale, match nothing the code emits, and drop its events from the census silently, which is the exact failure the fixtures exist to prevent. */
 export const DENY_TEMPLATE_KINDS: readonly string[] = DENY_TEMPLATES.map((t) => t.kind)
 
+/** Deny kinds whose wording says a file was already read or served this session: the claims to check. */
+const ALREADY_READ_CLAIM_KINDS: ReadonlySet<string> = new Set(['read_served_deny', 'range_reread_deny', 'markdown_already_read_deny', 'generic_reread_deny', 'memory_md_reread_deny', 'improve_state_reread_deny', 'env_reread_deny', 'session_artifact_generic_reread_deny'])
+/** How many false already-read claims the report names, each with its transcript line. */
+const ALREADY_READ_EXAMPLE_MAX = 5
+
 /** Kinds whose message template prints a byte figure (formatBytes/toKB style) that parseWithheldBytes can extract. Every other kind's withheldBytes is unconditionally null -- not every template prints a size, and guessing one from unrelated digits in the message (e.g. a reread count, or bytes inside a fenced diff) would be worse than admitting it is unknown. */
 const DENY_KINDS_WITH_SIZE = new Set(['large_file_deny', 'session_artifact_large_deny', 'file_type_handler_deny'])
 
@@ -659,6 +666,13 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   // Normalized path -> compact-boundary count at its last Read tool_use, so a repeat can tell whether a compaction intervened (the boundary count is file-wide, not per lane; reads are overwhelmingly main-chain).
   const readPathEpoch = new Map<string, number>()
   let compactEpoch = 0
+  // Normalized path -> epoch of its last delivered Read result (a pointer or a deny delivers nothing).
+  const deliveredReadEpoch = new Map<string, number>()
+  // 1-based line number in this transcript, counting blank lines, so an example names the real line.
+  let fileLines = 0
+  // Set by a user or assistant record with a message object; a transcript without one is another host's.
+  let sawClaudeCodeShape = false
+  const transcriptName = path.basename(filePath)
   // Deny-outcome census: one entry per Read deny still watching its post-deny call window. Finalized (outcome/retriedWithin10 computed, R/nextCall filled from perCall) once the stream ends, so R and "the next API call" can see the whole file rather than only what came before this point in it.
   interface OpenDenyState {
     kind: string
@@ -715,6 +729,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   const streamFailure = new Promise<never>((_, reject) => stream.on('error', reject))
   const consume = (async () => {
     for await (const line of rl) {
+      fileLines += 1
       if (line.length === 0) continue
       s.lines += 1
       const lineBytes = Buffer.byteLength(line, 'utf8')
@@ -733,6 +748,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
       }
       const obj = parsed as Record<string, unknown>
       const type = typeof obj['type'] === 'string' ? obj['type'] : (typeof obj['kind'] === 'number' ? `vscode:kind${obj['kind']}` : '(untyped)')
+      if ((type === 'user' || type === 'assistant') && obj['message'] !== null && typeof obj['message'] === 'object') sawClaudeCodeShape = true
       const census = (s.lineTypes[type] ??= { lines: 0, bytes: 0 })
       census.lines += 1
       census.bytes += lineBytes
@@ -885,10 +901,25 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 compactEpochAtWindow: null,
                 toolCalls: [],
               })
+              if (ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
+                if (path === '') {
+                  s.alreadyReadClaims.uncheckedNoPath += 1
+                } else {
+                  s.alreadyReadClaims.checked += 1
+                  if (deliveredReadEpoch.get(path) !== compactEpoch) {
+                    s.alreadyReadClaims.falseClaims += 1
+                    if (s.alreadyReadClaims.examples.length < ALREADY_READ_EXAMPLE_MAX) s.alreadyReadClaims.examples.push({ transcript: transcriptName, line: fileLines, path })
+                  }
+                }
+              }
             }
           }
           if (name === 'Read') {
             s.readInterception.readResults += 1
+            // A small deny or pointer delivers no content; a *_served sidecar does.
+            const isPointer = bytes < READ_DIVERT_MAX_BYTES && (READ_DIVERT_MARKER_RE.test(text) || DENY_TEMPLATES.some((t) => t.tool === 'Read' && !t.kind.endsWith('_served') && t.re.test(text)))
+            const deliveredPath = readPathById.get(id)
+            if (block['is_error'] !== true && !isPointer && deliveredPath !== undefined) deliveredReadEpoch.set(deliveredPath, compactEpoch)
             if (bytes < READ_DIVERT_MAX_BYTES && READ_DIVERT_MARKER_RE.test(text)) {
               s.readInterception.divertedByMarker += 1
               s.readInterception.divertedBytes += bytes
@@ -1024,6 +1055,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   }
   flushLane(0)
   flushLane(1)
+  if (sawClaudeCodeShape) s.alreadyReadClaims.transcriptsChecked += 1
+  else if (fileLines > 0) s.alreadyReadClaims.transcriptsSkipped += 1
   // Finalize every deny opened in this file: R and nextCall need the file's final perCall count (which is why this waits for end of stream instead of resolving eagerly), editErrorById needs every Edit tool_result in the file to have resolved, and the outcome is computed in the fixed order this module documents (DenyOutcome) so the six buckets partition every deny.
   for (const o of openDenies) {
     if (o.compactEpochAtWindow === null) o.compactEpochAtWindow = compactEpoch
@@ -1211,6 +1244,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     runtimeMs: 0,
     measured: emptyMeasured(),
     measuredSidechain: emptyMeasured(),
+    alreadyReadClaims: { transcriptsChecked: 0, transcriptsSkipped: 0, checked: 0, falseClaims: 0, uncheckedNoPath: 0, examples: [] },
     estimated: {
       userTurns: emptyCategory(),
       toolResults: emptyCategory(),

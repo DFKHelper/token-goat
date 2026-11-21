@@ -3,6 +3,7 @@
 import { formatColdGap } from './cold_gap.js'
 import { displaySafeText } from './paths.js'
 import { BASH_SMALL_RESULT_MAX_BYTES, type EstimatedCategory, type SessionAuditSummary } from './session_audit.js'
+import { countNoun } from './util.js'
 
 function fmt(n: number): string {
   return n.toLocaleString('en-US')
@@ -12,7 +13,20 @@ function pct(part: number, whole: number): string {
   return whole === 0 ? '0.0%' : `${((part / whole) * 100).toFixed(1)}%`
 }
 
-/** Render the plain-text report. Aggregates only: no message content, paths, or project names. */
+/** The already-read section: Claude Code only; another host's transcript is named as skipped, not as clean. */
+function formatAlreadyReadClaims(c: SessionAuditSummary['alreadyReadClaims']): string[] {
+  const scope = 'Claude Code transcripts only'
+  if (c.transcriptsChecked === 0) {
+    return [`Already-read claims: not checked (${scope}; ${countNoun(c.transcriptsSkipped, 'transcript')} not recognised as Claude Code and skipped)`]
+  }
+  const out = [`Already-read claims: ${fmt(c.checked)} checked, ${fmt(c.falseClaims)} with no Read of the path delivered earlier in the same compaction epoch (${scope})`]
+  if (c.transcriptsSkipped > 0) out.push(`Skipped ${countNoun(c.transcriptsSkipped, 'transcript')} not recognised as Claude Code; their claims were not checked.`)
+  if (c.uncheckedNoPath > 0) out.push(`${countNoun(c.uncheckedNoPath, 'claim')} named no path and were not checked.`)
+  for (const ex of c.examples) out.push(`  false claim: ${displaySafeText(ex.transcript)} line ${fmt(ex.line)}, path ${displaySafeText(ex.path)} (path lower-cased)`)
+  return out
+}
+
+/** Render the plain-text report: aggregates, plus a few already-read examples by transcript line and path. */
 export function formatSessionAudit(s: SessionAuditSummary): string {
   const lines: string[] = []
   lines.push('# Session corpus audit')
@@ -32,6 +46,8 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
   lines.push(`Cache-read share of input: ${pct(m.cacheReadTokens, totalInput)}`)
   lines.push('')
   lines.push(...formatColdGap(s.coldGap))
+  lines.push('')
+  lines.push(...formatAlreadyReadClaims(s.alreadyReadClaims))
   lines.push('')
   lines.push('## Estimated content attribution (chars/3 heuristic; NOT billed units)')
   const e = s.estimated

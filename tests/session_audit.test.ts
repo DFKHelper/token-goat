@@ -467,3 +467,55 @@ describe('redacted_thinking blocks in the corpus audit', () => {
     }
   })
 })
+
+// Already-read claims: a deny is true only if a Read result for its path came earlier in the same epoch.
+// Provenance: tool_use and tool_result shapes match this file's existing rows (format, not a capture).
+// Provenance: deny wording FORMAT-DERIVED from src/hooks_read.ts:1246 (emitter text, not a capture).
+// Provenance: compact_boundary CAPTURE per tests/resident_context.test.ts header (read off real transcripts).
+// Provenance: sequences HAND-DERIVED from the epoch rule; non-Claude-Code record HAND-DERIVED (response_item).
+const READ_USE = (id: string, file: string): string => JSON.stringify({ type: 'assistant', message: { id: `msg_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: file } }] } })
+const READ_SERVED = (id: string, text: string): string => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text }] } })
+const ALREADY_READ_DENY = 'Lines 1..40 of this file were already read this session. Use `token-goat section "a.ts::Heading"` to extract a part.'
+const COMPACT_BOUNDARY_LINE = '{"type":"system","subtype":"compact_boundary"}'
+
+describe('already-read claims in the corpus audit', () => {
+  const roots: string[] = []
+  const corpusOf = (lines: string[]): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-already-read-'))
+    roots.push(dir)
+    fs.mkdirSync(path.join(dir, 'C--Projects-example'))
+    fs.writeFileSync(path.join(dir, 'C--Projects-example', 'session-claims.jsonl'), lines.join('\n') + '\n')
+    return dir
+  }
+
+  afterAll(() => {
+    for (const root of roots) fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('counts a claim as true when a Read of the same path was delivered earlier in the epoch', async () => {
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    expect(s.alreadyReadClaims).toMatchObject({ transcriptsChecked: 1, transcriptsSkipped: 0, checked: 1, falseClaims: 0, examples: [] })
+  })
+
+  it('counts a claim as false when no Read of the path was delivered in the transcript', async () => {
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1, examples: [{ transcript: 'session-claims.jsonl', line: 2, path: '/p/a.ts' }] })
+  })
+
+  it('counts a claim as false when the only Read of the path came before a compaction boundary', async () => {
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), COMPACT_BOUNDARY_LINE, READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1 })
+  })
+
+  it('does not let a delivered Read of another path support the claim', async () => {
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/b.ts'), READ_SERVED('r1', 'export const b = 2\n'), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1 })
+  })
+
+  it('says the check was skipped for a non-Claude-Code transcript and never reports zero false claims', async () => {
+    const otherHost = JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', output: ALREADY_READ_DENY } })
+    const s = await auditSessionCorpus({ dir: corpusOf([otherHost, otherHost]) })
+    expect(s.alreadyReadClaims).toMatchObject({ transcriptsChecked: 0, transcriptsSkipped: 1, checked: 0, falseClaims: 0 })
+    expect(formatSessionAudit(s)).toContain('Already-read claims: not checked')
+  })
+})
