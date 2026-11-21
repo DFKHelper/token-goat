@@ -26,7 +26,7 @@ export const PINNED_MODEL_REVISION = 'ea104dacec62c0de699686887e3f920caeb4f3e3'
 type ModelFile = PinnedFile
 
 /** Everything the model needs, and nothing else. Recorded by hand from the pinned revision: `sha256sum` over the files as fetched on 2026-08-22. */
-const MODEL_FILES: readonly ModelFile[] = [
+export const MODEL_FILES: readonly ModelFile[] = [
   {
     name: 'tokenizer.json',
     sha256: 'd241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66',
@@ -64,7 +64,7 @@ function downloadUrl(file: ModelFile): string {
 }
 
 /** A copy of the pinned model that outlives the data directory, or null when the feature is off. {@link modelDir} sits under the data root, which is exactly what makes it wrong as the only copy in two situations: a test run pins the data root at a fresh temp directory per worker, and several tests build their own data roots on top of that, so one CI run downloaded the 32 MB weights 57 times into 57 directories. Point this at a stable path and each of those becomes a local file copy instead of a network fetch. Reading from here is safe even if the directory is hostile: nothing is trusted on the strength of its location. Bytes copied out of it are hashed and compared against the same pinned sha256 a download is held to, and a file that fails is discarded and refetched, so the worst a bad cache can do is cost the download it was meant to save. */
-function sharedModelCacheDir(): string | null {
+export function sharedModelCacheDir(): string | null {
   const raw = process.env['TOKEN_GOAT_MODEL_CACHE_DIR']?.trim()
   if (!raw) return null
   return path.join(raw, ...DEFAULT_MODEL.split('/'), PINNED_MODEL_REVISION)

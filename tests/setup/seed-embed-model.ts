@@ -19,7 +19,7 @@ function scratchRoots(dir: string): Record<string, string> {
   return roots
 }
 
-// vitest globalSetup: the embed rows read the pinned model from TOKEN_GOAT_MODEL_CACHE_DIR and never download it (the suite is offline by default, tests/setup/isolate-home.ts), so without a copy they skip. This is the one place a test run may reach the network for it: a child process with its own scratch home, so nothing lands in the real data directory, fetches it into the shared cache once and verifies the pinned digests. A value inherited from the launching shell wins, which is how CI points at its restored cache (.github/workflows/ci.yml). A failed fetch is reported in one line and the rows skip.
+// vitest globalSetup: the embed rows read the pinned model from TOKEN_GOAT_MODEL_CACHE_DIR and never download it (the suite is offline by default, tests/setup/isolate-home.ts), so without a copy they skip. This is the one place a test run may reach the network for it: a child process with its own scratch home, so nothing lands in the real data directory, checks the shared cache's files against the pinned sizes and sha256 digests (tests/setup/fetch-embed-model.ts), drops any that fail, and downloads what is missing, which costs no network call when the cache is good. A value inherited from the launching shell wins and is not checked here, which is how CI points at its restored cache (.github/workflows/ci.yml). A failed check or fetch is reported in one line, naming a file dropped for failing its pin, and the rows skip; the CI row then fails.
 export default function setup(): void {
   // A nested `vitest run` (tests/retry_visibility_reporter.test.ts) sets this and never touches the model.
   if (process.env['TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD'] === '1') return
