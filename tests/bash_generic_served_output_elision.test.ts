@@ -121,14 +121,14 @@ describe('postBashHandler: generic served-output elision (shipped default, confi
   })
 
   // Command outputs are HAND-DERIVED synthetic rows; each recall body is CAPTURE, printed by the built bundle's `bash-output` for the id this hook's own notice named, the chain observed live when `token-goat bash-output 65eed6d63d26be06 --full` came back as a notice pointing at that same id. `tg` is FORMAT-DERIVED from package.json's `bin`, which maps it to the same dist/token-goat.mjs; the built bundle's hook answered `tg bash-output <id> --full` with a notice naming that id after the `token-goat` spelling was already exempt.
-  async function recallServedId(session: string, flags: readonly string[], bin = 'token-goat'): Promise<{ recalled: string; body: string }> {
+  async function recallServedId(session: string, flags: readonly string[], bin = 'token-goat', commandPrefix = ''): Promise<{ recalled: string; body: string }> {
     await postBashHandler(postEvent('some-report-tool --stage recall-src', block(1, 40), 0, session))
     const elided = await postBashHandler(postEvent('some-report-tool --stage recall-overlap', block(20, 60), 0, session))
     const id = /Recall them with `token-goat bash-output ([0-9a-f]+) --full`/.exec(delivered(elided, ''))?.[1]
     if (id === undefined) throw new Error('the overlapping run was not withheld behind a recall pointer')
     const recall = spawnSync(process.execPath, [BUNDLE, 'bash-output', id, ...flags], { encoding: 'utf8' })
     expect(recall.status).toBe(0)
-    const command = `${bin} bash-output ${id} ${flags.map((f) => (f.includes(' ') ? `'${f}'` : f)).join(' ')}`
+    const command = `${commandPrefix}${bin} bash-output ${id} ${flags.map((f) => (f.includes(' ') ? `'${f}'` : f)).join(' ')}`
     const out = await postBashHandler(postEvent(command, recall.stdout, 0, session))
     return { recalled: recall.stdout, body: delivered(out, recall.stdout) }
   }
@@ -142,6 +142,14 @@ describe('postBashHandler: generic served-output elision (shipped default, confi
     expect(recalled).toContain(outLine(lo))
     expect(body).toContain(outLine(lo))
     expect(body).toContain(outLine(hi))
+    expect(body).not.toMatch(/already served verbatim/)
+  })
+
+  it('delivers a location-prefixed recall without replacing it with a pointer to itself', async () => {
+    const { recalled, body } = await recallServedId('recall-location-prefix', ['--full'], 'token-goat', 'Set-Location .; ')
+    expect(recalled).toContain(outLine(1))
+    expect(body).toContain(outLine(1))
+    expect(body).toContain(outLine(40))
     expect(body).not.toMatch(/already served verbatim/)
   })
 

@@ -375,11 +375,23 @@ export function pipelineShapeFilter(cmd: string, cwd: string | null): { filter: 
   return detected === null ? null : { filter: detected.filter, argv: detected.argv }
 }
 
-/** The words of the first pipeline stage of `cmd` when that stage is a `token-goat bash-output|web-output|mcp-output` recall, whatever its flags, otherwise null. `tg` counts as `token-goat`: package.json installs both names for the same program. */
+const LOCATION_CHANGE_COMMANDS = new Set(['cd', 'chdir', 'set-location', 'sl', 'pushd', 'push-location', 'popd', 'pop-location'])
+
+function isLocationChangeSegment(segment: string): boolean {
+  const tokens = safeShlexSplit(segment)
+  if (tokens === null || tokens.length === 0) return false
+  const head = (tokens[0] ?? '').replace(/^.*[/\\]/, '').replace(/\.exe$/i, '').toLowerCase()
+  return LOCATION_CHANGE_COMMANDS.has(head)
+}
+
+/** The arguments after leading location changes and at the first pipeline stage of `cmd` when that stage is a `token-goat bash-output|web-output|mcp-output` recall, whatever its flags, otherwise null. `tg` counts as `token-goat`: package.json installs both names for the same program. */
 function recallStageTokens(cmd: string): string[] | null {
   const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
   if (hasBareBackgroundOrNewline(forSplit)) return null
-  const first = splitShellSegments(forSplit)[0]
+  const segments = splitShellSegments(forSplit)
+  let firstIndex = 0
+  while (firstIndex < segments.length && isLocationChangeSegment(segments[firstIndex] ?? '')) firstIndex++
+  const first = segments[firstIndex]
   if (first === undefined) return null
   const args = tokenGoatInvocation(stripOutputPipeline(first))
   if (args === null) return null
