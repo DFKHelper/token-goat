@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import { resolveBrowserExecutablePath, takeScreenshot } from '../src/screenshot.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { ensureChromeProfileTree } from './helpers/chrome_profile_tree.js'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 
 const METADATA_MARKER = 'SECRET_INSTANCE_METADATA_MARKER_4213'
 const SANDBOXED_ENV_KEYS = ['LOCALAPPDATA', 'XDG_DATA_HOME', 'HOME', 'USERPROFILE'] as const
@@ -43,6 +44,7 @@ try {
 const describeWithBrowser = browserPath ? describe : describe.skip
 
 describeWithBrowser('takeScreenshot redirect SSRF', () => {
+  allowNetworkInDescribe()
   let server: http.Server
   let tmpDir: string
   let extraLaunchArgs: string[]

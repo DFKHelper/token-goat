@@ -9,6 +9,7 @@ export const KEPT_TOKEN_GOAT_ENV_VARS = [
   'TOKEN_GOAT_NO_WORKER_SPAWN',
   'TOKEN_GOAT_INSTALL_INDEX',
   'TOKEN_GOAT_HARNESS_OVERRIDE',
+  'TOKEN_GOAT_OFFLINE',
   // tests/setup/isolate-home.ts sets this one unconditionally, so an inherited value does not win.
   'TOKEN_GOAT_MCP_WITH_HOOKS',
   'TOKEN_GOAT_HOOK_SERVER',

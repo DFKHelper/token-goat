@@ -1,5 +1,6 @@
 // Regression: webfetch.allow/webfetch.deny gated only the harness's own WebFetch tool, through the pre-hook. token-goat's own outbound commands -- fetch-image and gdrive-sections -- call performHttpFetch directly and ignored the policy entirely, so an operator who had denied everything still had two commands that reached the network. Verified against the built binary before the fix: `gdrive-sections <id>` reached docs.google.com and `fetch-image` downloaded a file, both under deny = ["*"]. Enforcing at performHttpFetch covers every present and future caller, including each redirect hop, since that function recurses into itself for redirects.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 import type * as HttpsModule from 'https'
 
 import { clearModuleCaches } from '../src/reset.js'
@@ -24,6 +25,7 @@ beforeEach(() => {
 })
 
 describe('performHttpFetch honours the configured URL policy', () => {
+  allowNetworkInDescribe()
   it('refuses a denied URL without opening a socket', async () => {
     process.env['TOKEN_GOAT_WEBFETCH_DENY'] = 'https://docs.google.com/*'
 

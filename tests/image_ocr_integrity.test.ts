@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import type * as ChildProcess from 'node:child_process'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 
 // Same wrapper as image_ocr.test.ts: the real spawn still runs, but call counts become observable, which is how "refused without ever starting the engine" is asserted as behavior rather than inferred from timing.
 vi.mock('node:child_process', async (importOriginal) => {
@@ -133,6 +134,7 @@ describe('ocrImage with a cached model that fails verification', () => {
 })
 
 describe('the model cache directory', () => {
+  allowNetworkInDescribe()
   // Provenance: CAPTURE. tesseract.js was run directly against a cachePath whose directory did not exist: it returned OCR text normally and wrote nothing, so the missing directory is silent. With the directory present it wrote eng.traineddata (5,199,098 bytes). Without this, the model is re-fetched on every call and the warm-cache verification above never has a file to check.
   it('exists after an OCR run, so the model is cached instead of re-downloaded every call', async () => {
     const dir = path.join(tokenGoatHome(), 'ocr-cache')
@@ -160,6 +162,7 @@ describe('image-text reporting an integrity refusal', () => {
 })
 
 describe('the child script the engine actually receives', () => {
+  allowNetworkInDescribe()
   it('passes the pinned langPath, so the download never falls back to the floating default', async () => {
     const recordTo = path.join(TMP, `opts-${Math.random().toString(36).slice(2)}.json`)
     setTesseractEntryForTesting(writeRecordingStub(recordTo))

@@ -7,6 +7,8 @@ import * as path from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
+
 import type * as NodeFsModule from 'node:fs'
 
 import { closeAllDbs, getDb } from '../src/db.js'
@@ -134,6 +136,8 @@ it('sqlite-vec is not installed-but-broken, which would skip the suite below whi
 })
 
 describe.skipIf(!canExerciseRealEmbed)('the embed backlog a stopped worker drops', () => {
+  // The real model is fetched when the isolated home has no copy, so these rows need the network the suite defaults off.
+  allowNetworkInDescribe()
   it('is picked up by the next worker and embedded, with nothing touching the file', async () => {
     await parsedButNeverEmbedded()
     const sha = getDb(DB_PATH).prepare('SELECT sha FROM files').pluck().get() as string

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js';
 import { EventEmitter } from 'events';
 import type * as HttpModule from 'http';
 import type * as HttpsModule from 'https';
@@ -306,6 +307,7 @@ describe('webfetch', () => {
 });
 
   describe('ssrfPinnedLookup (M45: SSRF TOCTOU)', () => {
+    allowNetworkInDescribe()
     it('resolves a public-looking hostname to the same address it validated (single lookup, no separate check-then-fetch gap)', async () => {
       dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
         callback(null, [{ address: '93.184.216.34', family: 4 }]);
@@ -456,6 +458,7 @@ describe('webfetch', () => {
   });
 
   describe('performHttpFetch timeout coverage (m7: slow-loris body download)', () => {
+    allowNetworkInDescribe()
     it('bounds a response that sends headers quickly then never sends a body', async () => {
       const fakeReq = makeFakeReq();
       fakeReq.destroy = vi.fn(() => fakeReq.emit('error', new Error('destroyed')));
@@ -493,6 +496,7 @@ describe('webfetch', () => {
   });
 
   describe('performHttpFetch literal-IP SSRF check (regression: Node never invokes the custom `lookup` option for a literal IPv4 hostname, so ssrfPinnedLookup alone silently let http://127.0.0.1/... and http://169.254.169.254/... through, on both the initial request and every redirect hop)', () => {
+    allowNetworkInDescribe()
     it('rejects a loopback literal IPv4 URL before ever attempting a connection', async () => {
       httpRequestMock.mockClear();
       await expect(
@@ -550,6 +554,7 @@ describe('webfetch', () => {
   });
 
   describe('performHttpFetch conditional revalidation (m8)', () => {
+    allowNetworkInDescribe()
     it('forwards If-None-Match/If-Modified-Since onto the real HTTP request', async () => {
       let capturedHeaders: Record<string, string> | undefined;
       httpRequestMock.mockImplementationOnce((options) => {
@@ -583,6 +588,7 @@ describe('webfetch', () => {
   });
 
   describe('performHttpFetch cross-origin redirect header stripping (regression: performHttpFetch recursed with {...opts} on redirect, forwarding requestHeaders verbatim to whatever host the Location pointed at, which would leak an Authorization/API-key header cross-origin)', () => {
+    allowNetworkInDescribe()
     function respondWith(fakeReq: FakeClientRequest, statusCode: number, headers: Record<string, string>): void {
       fakeReq.end = vi.fn(() => {
         const fakeRes = makeFakeRes();

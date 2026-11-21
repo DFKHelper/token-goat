@@ -45,6 +45,8 @@ describe('doctor auto-repair and embedding model checks', () => {
     vi.stubEnv('USERPROFILE', userHome)
     // The suite pins embeddings off through the environment; the repair's job here is the config layer, and an env-held switch is exercised by its own test.
     vi.stubEnv('TOKEN_GOAT_EMBEDDINGS_ENABLED', undefined)
+    // The offline default is an env switch that would mask the config layer under test, so it is cleared here.
+    vi.stubEnv('TOKEN_GOAT_OFFLINE', undefined)
     vi.stubEnv('CLAUDE_CONFIG_DIR', path.join(userHome, '.claude'))
     vi.stubEnv('COPILOT_HOME', path.join(userHome, '.copilot'))
     fs.mkdirSync(path.join(userHome, '.claude'))

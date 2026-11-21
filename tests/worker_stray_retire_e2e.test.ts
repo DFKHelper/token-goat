@@ -83,7 +83,8 @@ beforeEach(async () => {
   const npmCli = path.join(work, 'npm-cli.js')
   fs.writeFileSync(npmCli, FAKE_NPM)
   const isolated = (base: string): NodeJS.ProcessEnv => {
-    return strayWorkerEnv(base, { npm_execpath: npmCli, NPM_CONFIG_REGISTRY: registryUrl })
+    // upgrade asks the registry this file serves on loopback, so these children opt out of offline.
+    return strayWorkerEnv(base, { npm_execpath: npmCli, NPM_CONFIG_REGISTRY: registryUrl, TOKEN_GOAT_OFFLINE: '0' })
   }
   env = isolated(dataBase)
   envB = isolated(dataBaseB)

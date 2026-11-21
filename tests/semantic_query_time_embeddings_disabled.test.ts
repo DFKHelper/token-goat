@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
+
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
 import type { indexFileSync as IndexFileSync } from '../src/parser.js'
@@ -49,6 +51,8 @@ afterEach(() => {
 })
 
 describe('runSemantic query-time embeddings_enabled gate', () => {
+  // searchSemantic is mocked, so nothing here fetches; the opt-out lets the flag-on row reach that mock.
+  allowNetworkInDescribe()
   it('never reaches searchSemantic (and therefore never reaches embedTexts / the model download) when the flag is off, even with the runtime available, and still answers from BM25', async () => {
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'false'
     const file = join(root, 'gated.ts')

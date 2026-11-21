@@ -14,6 +14,7 @@ import {
 } from '../src/screenshot.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { ensureChromeProfileTree } from './helpers/chrome_profile_tree.js'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 
 const PRIVATE_MARKER = 'SECRET_REBOUND_INTERNAL_MARKER_8871'
 const SANDBOXED_ENV_KEYS = ['LOCALAPPDATA', 'XDG_DATA_HOME', 'HOME', 'USERPROFILE'] as const
@@ -89,6 +90,7 @@ const browserPath = (() => {
 const describeWithBrowser = browserPath ? describe : describe.skip
 
 describeWithBrowser('takeScreenshot DNS rebinding', () => {
+  allowNetworkInDescribe()
   let server: http.Server
   let tmpDir: string
   let extraLaunchArgs: string[]

@@ -11,6 +11,7 @@ import { modelDir } from '../src/embed_model.js'
 import { nodeFetchHonoursEnvProxy } from '../src/env_proxy.js'
 import { canonicalize } from '../src/project.js'
 import { indexableDir } from './helpers/temp-config.js'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type * as ParserModule from '../src/parser.js'
@@ -94,6 +95,7 @@ async function runCli(args: string[], dir: string = TMP): Promise<{ warnings: st
 }
 
 describe.skipIf(!nodeFetchHonoursEnvProxy())('semantic with a proxy the process cannot use and no model yet', () => {
+  allowNetworkInDescribe()
   beforeEach(() => {
     searchSemantic.mockClear()
     ensureWorkerAlive.mockClear()

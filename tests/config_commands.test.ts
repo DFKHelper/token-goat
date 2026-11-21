@@ -11,6 +11,7 @@ import type * as ImageShrinkModule from '../src/image_shrink.js'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BUNDLE } from './helpers/bundle.js'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 
 const performHttpFetchMock = vi.hoisted(() => vi.fn())
 const shrinkImageMock = vi.hoisted(() => vi.fn())
@@ -1683,6 +1684,7 @@ describe('cmdCompactDoc extractive sidecar pipeline', () => {
 // ── fetch-image (fetchBuffer redirect cap) ────────────────────────────────────
 
 describe('cmdFetchImage security hardening (regression: fetchBuffer now routes through webfetch.ts\'s SSRF/size/redirect-capped performHttpFetch instead of a bare, unguarded http.get)', () => {
+  allowNetworkInDescribe()
   it('rejects a loopback/private-IP URL with a clear SSRF error, using the real (unmocked) SSRF check', async () => {
     const out = path.join(tmpHome, 'ssrf-blocked.bin')
     await expect(cmdFetchImage({ url: 'http://127.0.0.1:1/image.png', out })).rejects.toThrow(/blocked by ssrf safety check/i)

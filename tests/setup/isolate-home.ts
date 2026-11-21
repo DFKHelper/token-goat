@@ -122,6 +122,10 @@ installGitNoFsmonitor()
 
 // A token-goat setting exported in the launching shell reaches the product under test the same way: with bash output compression switched off in the shell to read raw output, three guards failed locally that pass in CI. So every token-goat variable goes except the ones tooling sets on purpose (tests/helpers/token-goat-env.ts), and it goes before the pins below, which also clears what an earlier file left in a reused fork.
 scrubTokenGoatUserEnv(process.env)
+// Offline by default: a test that reaches the network by accident fails with "Offline mode is on" instead of passing on a fast connection. An inherited value wins; a test that needs a fetch sets its own off value.
+if (!process.env['TOKEN_GOAT_OFFLINE']) {
+  process.env['TOKEN_GOAT_OFFLINE'] = '1'
+}
 
 // Embeddings generation (indexing.embeddings_enabled) defaults to true in production so a real `token-goat index` populates chunks/chunk_vectors for `token-goat semantic` out of the box, but that means every test in this suite that touches indexFileSync/cmdIndex/the worker drain would otherwise load a real transformer model and run real inference on every index call - slow, and a hard network dependency on a machine without the model already cached (e.g. a fresh CI checkout). Force it off by default for the whole suite, exactly like TOKEN_GOAT_HOME above: a test that sets this env var itself (e.g. the embeddings-in-index regression tests, which additionally gate on the real optional deps being available) still wins, because that assignment runs after this file's setup.
 if (!process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']) {

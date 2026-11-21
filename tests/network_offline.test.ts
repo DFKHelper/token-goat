@@ -93,6 +93,21 @@ describe('performHttpFetch under offline mode', () => {
   })
 })
 
+describe('the suite runs offline unless a test opts out', () => {
+  // HAND-DERIVED: the message is the one src/webfetch.ts throws at line 245; the default is isolate-home.ts's.
+  it('refuses a loopback fetch when the test sets no opt-out', async () => {
+    await expect(
+      performHttpFetch('http://127.0.0.1:9/thing', {
+        deadlineAt: Date.now() + 5000,
+        timeoutSec: 5,
+        maxSizeBytes: 1024,
+        requestHeaders: {},
+        redirectsLeft: 0,
+      }),
+    ).rejects.toThrow(/Offline mode is on \(network\.offline\)/)
+  })
+})
+
 describe('ocrBlockedOffline', () => {
   // Both directions matter. Blocking whenever offline is set would break an air-gapped machine that already has the language file, which is the install most likely to have set the flag.
   it('does not block when offline mode is off, whatever the cache holds', () => {
