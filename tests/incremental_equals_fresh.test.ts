@@ -237,7 +237,10 @@ describe('an incremental drain equals a fresh index', () => {
     // Initial population: about twenty files, drained in one batch.
     const firstFree = freeRels()
     for (let i = 0; i < INITIAL_FILES; i++) {
-      const rel = firstFree.splice(Math.floor(rng() * firstFree.length), 1)[0] as string
+      // The first file is always markdown, and the delete branch below never removes the last one, so every seed ends with headings.
+      const pool = i === 0 ? firstFree.filter((r) => extOf(r) === 'md') : firstFree
+      const rel = pick(pool)
+      firstFree.splice(firstFree.indexOf(rel), 1)
       write(rel, newSpec(stemOf(rel), extOf(rel)))
       enqueue(rel)
     }
@@ -285,7 +288,8 @@ describe('an incremental drain equals a fresh index', () => {
           enqueue(rel, to)
           edits.push(`rename ${rel} -> ${to}`)
         } else {
-          const rel = pick(lives)
+          const lastMd = lives.filter((r) => extOf(r) === 'md').length === 1
+          const rel = pick(lastMd ? lives.filter((r) => extOf(r) !== 'md') : lives)
           fs.rmSync(path.join(PROJ, rel))
           plan.live.delete(rel)
           enqueue(rel)
@@ -307,6 +311,7 @@ describe('an incremental drain equals a fresh index', () => {
 
     // Independent oracle: the model's own unit names must be indexed for every live file, and no row may name a path the tree no longer has.
     const live = [...plan.live.keys()].sort()
+    expect(live.filter((rel) => extOf(rel) === 'md').length, msg('the generator left no markdown file in the final tree, so no seed may rely on headings being present')).toBeGreaterThan(0)
     const incrementalFiles = getDb(path.join(DATA, 'global.db')).prepare('SELECT path FROM files ORDER BY path').pluck().all() as string[]
     expect(incrementalFiles, msg('files rows differ from the files the model says are live')).toEqual(live.map(abs).sort())
     for (const rel of live) {
