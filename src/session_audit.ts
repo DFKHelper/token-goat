@@ -181,7 +181,7 @@ export interface SessionAuditSummary {
   /** Cold cache re-writes by tool and command class, main sessions and subagents apart (see cold_gap.ts). */
   coldGap: ColdGapCensus
   /** Already-read deny claims, checked against same-epoch Read deliveries; other hosts are skipped. */
-  alreadyReadClaims: { transcriptsChecked: number; transcriptsSkipped: number; checked: number; falseClaims: number; uncheckedNoPath: number; examples: Array<{ transcript: string; line: number }> }
+  alreadyReadClaims: { transcriptsChecked: number; transcriptsSkipped: number; checked: number; falseClaims: number; uncheckedNoPath: number; unmarkedMatches: number; examples: Array<{ transcript: string; line: number }> }
 }
 
 /** One deny's measured real-world outcome, tested in this fixed order so the six buckets partition every deny exactly once: a later re-read after a compaction boundary is correct by design and must never fall through to 'retried'; a shell command (sed/grep/cat/...) that reads the denied file's basename is 'shell_read' -- a real substitute the agent found on its own, not an escape from the census -- and is tested after 'substituted' so a `node <path>/token-goat.mjs` invocation (also a shell command) is never miscounted as a plain shell read; and a transcript that ends too soon to observe 3 calls is 'unresolved' rather than the misleadingly final-sounding 'abandoned'. */
@@ -263,10 +263,10 @@ export interface ReadInterceptionRollup {
   /** Non-diverted Read results above 10 KiB: the pool surgical reads exist to shrink. */
   fullServesOver10k: number
   fullServeBytesOver10k: number
-  /** Same normalized path, one transcript file; subagent lanes share the cache: UNDER-counts, never over. */
   /** Full serves whose path had no earlier Read tool_use in the transcript: the pool the re-read divert excludes by design. */
   fullServesFirstRead: number
   /** Full serves of a path already targeted by an earlier Read tool_use in the transcript: candidates the re-read divert could have caught. */
+  /** Same normalized path within one transcript file; subagent lanes share the cache, so this UNDER-counts. */
   fullServesRepeat: number
   repeatBytes: number
   /** Repeats whose own call carried an offset or limit parameter: deliberate paging, not a divert miss. */
@@ -379,7 +379,6 @@ const CACHE_WRITE_MULTIPLIER = 1.25
 /** Prompt-cache read discount against the base input rate (Anthropic pricing: 0.1x). */
 const CACHE_READ_MULTIPLIER = 0.1
 
-/** Total UTF-8 bytes of every string nested anywhere inside a JSON value. */
 /** token-goat's deny/serve templates (hooks_read.ts); counts only with is_error true (summary.json). */
 /** Kept narrow: a match under READ_DIVERT_MAX_BYTES is a diverted read; drift under-counts, never over. */
 const READ_DIVERT_MARKER_RE = /(?:(?:was|were) already read this session|Already read |You've already read|(?:Use|Run) `token-goat (?:section|read|bash-output|config-get|skeleton|json-query|yaml-query)|token-goat bash-output --file)/
@@ -929,6 +928,9 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                   }
                 }
               }
+            } else if (denyTemplate !== undefined && ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
+              // Wording without the is_error marker: a quote, counted apart and never as a claim (Ruling 39).
+              s.alreadyReadClaims.unmarkedMatches += 1
             }
           }
           if (name === 'Read') {
@@ -1261,7 +1263,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     runtimeMs: 0,
     measured: emptyMeasured(),
     measuredSidechain: emptyMeasured(),
-    alreadyReadClaims: { transcriptsChecked: 0, transcriptsSkipped: 0, checked: 0, falseClaims: 0, uncheckedNoPath: 0, examples: [] },
+    alreadyReadClaims: { transcriptsChecked: 0, transcriptsSkipped: 0, checked: 0, falseClaims: 0, uncheckedNoPath: 0, unmarkedMatches: 0, examples: [] },
     estimated: {
       userTurns: emptyCategory(),
       toolResults: emptyCategory(),

@@ -149,7 +149,7 @@ describe('DENY_TEMPLATES classification', () => {
   })
 })
 
-// Skill: census 66 of 66 is_error true (summary.json). Grep: FORMAT-DERIVED, no census match.
+// Skill: census 66 of 66 is_error true (summary.json). Grep: FORMAT-DERIVED; no Grep deny captured.
 describe('Skill and Grep denies count only with is_error true', () => {
   let dir = ''
 

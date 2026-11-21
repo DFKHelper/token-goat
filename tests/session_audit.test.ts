@@ -528,10 +528,9 @@ describe('already-read claims in the corpus audit', () => {
     const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 0, uncheckedNoPath: 0 })
     expect(s.denyOutcomes).toEqual([])
-    expect(formatSessionAudit(s)).not.toContain('seen by text')
   })
 
-  // CAPTURE (shape): summary.json divert_read is_error true 121 (e.g. line 202964); wording FORMAT-DERIVED.
+  // CAPTURE (shape): summary.json divert_read is_error true 121, absent 21; wording FORMAT-DERIVED.
   it('counts a divert marker as diverted only when its own is_error is true', async () => {
     const absent = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY)]) })
     expect(absent.readInterception.divertedByMarker).toBe(0)
@@ -539,10 +538,18 @@ describe('already-read claims in the corpus audit', () => {
     expect(marked.readInterception.divertedByMarker).toBe(1)
   })
 
-  it('prints no such line once a claim was checked', async () => {
+  it('checks only the marked claim and counts the unmarked match apart', async () => {
     const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
-    expect(s.alreadyReadClaims.checked).toBe(1)
-    expect(formatSessionAudit(s)).not.toContain('none carried the transcript error marker')
+    expect(s.alreadyReadClaims).toMatchObject({ checked: 1, unmarkedMatches: 1 })
+  })
+
+  it('prints one unmarked-match line for a quoted claim and nothing extra without one', async () => {
+    const quoted = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY)]) })
+    expect(quoted.alreadyReadClaims.unmarkedMatches).toBe(1)
+    expect(formatSessionAudit(quoted)).toContain('1 more matched the wording but carried no error marker (not counted)')
+    const marked = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_DENIED('r1', ALREADY_READ_DENY)]) })
+    expect(marked.alreadyReadClaims.unmarkedMatches).toBe(0)
+    expect(formatSessionAudit(marked)).not.toContain('more matched the wording')
   })
 
   it('never records a claim deny as a delivery, whatever its size', async () => {
