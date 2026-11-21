@@ -11,7 +11,7 @@ const use = (id: string, name: string, input: Record<string, unknown>): string =
   JSON.stringify({ type: 'assistant', message: { id: `msg_use_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
 const result = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
-// FORMAT-DERIVED (Read): tool_result is_error shape, as read by src/session_audit.ts isErrorResult.
+// CAPTURE is_error shape: dbbf6b4b-2366-4086-84af-e082e79212ee.jsonl call_c70d852691fb4925aab97c1c.
 const errorResult = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] } })
 

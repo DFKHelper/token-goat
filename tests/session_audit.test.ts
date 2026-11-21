@@ -203,9 +203,10 @@ describe('session-audit via the built bundle', () => {
 /** Attachment-kind census fixture, derived by hand from the literals below, independently of the implementation. Call sequence (main lane): A1 at call 0, C1, A2 at call 1, C2, compact boundary (flushes A1: 5 tok x 2 calls = 10, A2: 4 tok x 1 = 4), A3 at call 2 (identical to A1), H2 at call 2, C3, end of file (flushes A3: 5 x 1 = 5, H2: 1 x 1 = 1). Sidechain lane: SA at side call 0, S1, end of file (flushes SA: 2 tok x 1 side call = 2). The sidechain attachment is the lane control: merged into the main call sequence it would sit at main call 0 and flush at the main boundary as 2 tok x 2 calls = 4, not 2. Visible bytes deep-sum every string in the visible fields, so A2's block discriminator value "text" counts (6 content + 4 = 10). Est-tokens are bytes/3+1 on paper: 12 -> 5, 10 -> 4, 3 -> 2, 2 -> 1. Billed equivalents on paper: round(1.25 x est + 0.1 x reread) = 14, 5, 3, 1. */
 /** Sidechain-lane and Read-interception fixture, expected values derived by hand from the literals. Lane 1: first usage 100+900+0 = 1000 prefix tokens, 2 distinct calls, brief "please do X" = 11 bytes; billed-equiv on paper: round(1000 x (1.25 + 0.1 x 1)) = 1350. Lane 2 carries no usage at all: it must count in laneFiles but stay OUT of every mean (counting it as prefix 0 would drag meanFirstCallPrefixTokens to 500). Reads, main file: R1 is a 52-byte divert message (counted); R2 is a 12,000-byte full serve (counted, and its trailing marker-like text must not divert it because it is over the size cap); R3 is a 5-byte ordinary result (neither); R4 is a 3,000-byte body mentioning a token-goat command (neither: over the divert cap, under the full-serve floor). */
 describe('sidechain lane and read interception census', () => {
+  // DIVERT_TEXT wording FORMAT-DERIVED.
   const DIVERT_TEXT = 'a.md was already read this session. Use the cache.'
   const R_USE = (id: string): string => `{"type":"assistant","message":{"id":"msg_ru_${id}","role":"assistant","content":[{"type":"tool_use","id":"${id}","name":"Read","input":{"file_path":"a.md"}}]}}`
-  // FORMAT-DERIVED (shape): is_error per src/session_audit.ts isErrorResult; wording FORMAT-DERIVED.
+  // CAPTURE is_error shape: dbbf6b4b-2366-4086-84af-e082e79212ee.jsonl call_c70d852691fb4925aab97c1c.
   const R1 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r1","is_error":true,"content":"${DIVERT_TEXT}"}]}}`
   const BIG = 'A'.repeat(11950) + ' Use `token-goat section "a.md::H"' + 'B'.repeat(16)
   const R2 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r2","content":"${BIG.replace(/"/g, '\\"')}"}]}}`
@@ -472,8 +473,9 @@ describe('redacted_thinking blocks in the corpus audit', () => {
 // Already-read claims: a deny is true only if a Read result for its path came earlier in the same epoch. Provenance: tool_use and tool_result shapes match this file's existing rows (format, not a capture). Provenance: deny wording FORMAT-DERIVED from src/hooks_read.ts:1246 (emitter text, not a capture). Provenance: compact_boundary CAPTURE per tests/resident_context.test.ts header (read off real transcripts). Provenance: sequences HAND-DERIVED from the epoch rule; non-Claude-Code record HAND-DERIVED (response_item).
 const READ_USE = (id: string, file: string, top: Record<string, unknown> = {}): string => JSON.stringify({ ...top, type: 'assistant', message: { id: `msg_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: file } }] } })
 const READ_SERVED = (id: string, text: string, top: Record<string, unknown> = {}): string => JSON.stringify({ ...top, type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text }] } })
-// Deny marker is_error: true (CAPTURE: session_audit_tool_errors.test.ts:27, :45).
+// Deny marker is_error: true (CAPTURE: session_audit_tool_errors.test.ts:27, :45 Glob/Skill; :17, :33 Read).
 const READ_DENIED = (id: string, text: string, top: Record<string, unknown> = {}): string => JSON.stringify({ ...top, type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: text }] } })
+// The Read deny form (ALREADY_READ_DENY) is FORMAT-DERIVED.
 const ALREADY_READ_DENY = 'Lines 1..40 of this file were already read this session. Use `token-goat section "a.ts::Heading"` to extract a part.'
 const COMPACT_BOUNDARY_LINE = '{"type":"system","subtype":"compact_boundary"}'
 
@@ -530,7 +532,7 @@ describe('already-read claims in the corpus audit', () => {
     expect(s.denyOutcomes).toEqual([])
   })
 
-  // FORMAT-DERIVED (shape): is_error per src/session_audit.ts isErrorResult; wording FORMAT-DERIVED.
+  // CAPTURE is_error shape: dbbf6b4b-2366-4086-84af-e082e79212ee.jsonl call_c70d852691fb4925aab97c1c.
   it('counts a divert marker as diverted only when its own is_error is true', async () => {
     const absent = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY)]) })
     expect(absent.readInterception.divertedByMarker).toBe(0)

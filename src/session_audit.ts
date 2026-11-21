@@ -254,7 +254,7 @@ export interface SidechainLaneRollup {
   prefixBilledEquivTokens: number
 }
 
-/** Read-interception census over every Read tool_result in the corpus. */
+/** Read-interception census over every Read tool_result in the corpus; repeats match on normalized path. */
 export interface ReadInterceptionRollup {
   readResults: number
   /** Under READ_DIVERT_MAX_BYTES, is_error true, matching a divert template; UNDER-counts on drift. */
@@ -265,7 +265,7 @@ export interface ReadInterceptionRollup {
   fullServeBytesOver10k: number
   /** Full serves whose path had no earlier Read tool_use in the transcript: the pool the re-read divert excludes by design. */
   fullServesFirstRead: number
-  /** Repeat full serves per path and transcript: divert candidates; subagent lanes share cache, UNDER-count. */
+  /** Repeats: an earlier Read tool_use in the transcript; divert candidates; subagent lanes UNDER-count. */
   fullServesRepeat: number
   repeatBytes: number
   /** Repeats whose own call carried an offset or limit parameter: deliberate paging, not a divert miss. */
@@ -523,6 +523,7 @@ function normalizeReadPath(p: string): string {
   return p.replace(/\\/g, '/').toLowerCase()
 }
 
+/** Total UTF-8 bytes of every string nested anywhere inside a JSON value. */
 function deepStringBytes(value: unknown): number {
   if (typeof value === 'string') return Buffer.byteLength(value, 'utf8')
   if (Array.isArray(value)) return value.reduce((acc: number, v) => acc + deepStringBytes(v), 0)
@@ -936,7 +937,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             // A non-error body is a delivery even if it quotes a deny template; is_error marks a deny.
             const deliveredPath = readPathById.get(id)
             if (!isErrorResult(block) && deliveredPath !== undefined) deliveredReadEpoch.set(deliveryKey(obj, deliveredPath), compactEpoch)
-            // Divert needs is_error true; an absent marker is a quote (summary.json divert_read).
+            // Divert needs is_error true; without it, a quoted deny template is a served file, not a divert.
             if (bytes < READ_DIVERT_MAX_BYTES && isErrorResult(block) && READ_DIVERT_MARKER_RE.test(text)) {
               s.readInterception.divertedByMarker += 1
               s.readInterception.divertedBytes += bytes
