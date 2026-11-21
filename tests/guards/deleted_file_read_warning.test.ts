@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { beforeAll, describe, expect, it } from 'vitest'
+import { ROOT } from '../helpers/bundle.js'
 
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+const BUNDLE = join(ROOT, 'dist', 'token-goat.mjs')
 const DELETED_MARKER = '⚠ DELETED'
 const STALE_MARKER = '⚠ STALE'
 

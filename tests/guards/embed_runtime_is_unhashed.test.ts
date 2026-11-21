@@ -5,8 +5,8 @@ import * as path from 'node:path'
 
 import { embedFingerprintSources, extractionSources } from '../../scripts/parser-fingerprint.mjs'
 import { pinnedPopulation } from './population.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const ROOT = process.cwd()
 const RUNTIME = 'src/embed_runtime.ts'
 const PINNED_FILE = 'src/pinned_file.ts'
 /** The two modules behind a dynamic import that do the placing, downloading and starting: as free of the fingerprint as the modules that load them. */

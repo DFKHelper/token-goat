@@ -2,8 +2,9 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { ROOT } from '../helpers/bundle.js'
 
-const src = (f: string): string => fs.readFileSync(path.join(process.cwd(), 'src', f), 'utf8')
+const src = (f: string): string => fs.readFileSync(path.join(ROOT, 'src', f), 'utf8')
 
 describe('hook eager set', () => {
   const forbidden: Array<[string, string]> = [

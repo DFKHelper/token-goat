@@ -12,8 +12,9 @@ import { normalizePath } from '../../src/paths.js'
 import { indexedPathSpellingIsStale } from '../../src/parser.js'
 import { findGlobalDb } from '../helpers/find_global_db.js'
 import { releaseFixture } from '../helpers/release_fixture.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+const BUNDLE = join(ROOT, 'dist', 'token-goat.mjs')
 
 function run(projectDir: string, homeDir: string, args: string[]): { status: number; out: string } {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {

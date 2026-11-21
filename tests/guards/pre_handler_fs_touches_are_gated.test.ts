@@ -190,8 +190,11 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['pending_context.ts::readPending', 'the read half of the same pair: it only ever opens the path commitPendingContext and peekPendingContext computed, with that same sanitization'],
   ['call_streak.ts::readState', 'relayInProcess calls applyCallStreak AFTER runHook, the same position as pending_context.ts::commitPendingContext above. The path is sessionSidecarPath(sessionStateKey(event), ...) under tokenGoatHome(): env-derived root, and the payload-derived session and agent ids are sanitized to a stem and containment-checked inside that helper before they become a path'],
   ['call_streak.ts::writeState', 'the write half of the same pair: it only ever writes the path readState was given, with that same sanitization'],
+  // allow-cwd: provenance text naming a code path, not a root lookup
   ['config_project.ts::readConfigSource', 'reached only through call_streak.ts::trackedLine -> hint_stats.ts::applyHintTracking -> config.ts::loadConfig, after runHook; it reads configPath() (env-derived) and projectConfigPath(resolveConfigProjectRoot()), whose root is found from process.cwd(), never from the hook payload'],
+  // allow-cwd: provenance text naming a code path, not a root lookup
   ['project.ts::markerExists', 'reached only through config_project.ts::resolveConfigProjectRoot -> project.ts::findProject(process.cwd()) on the same loadConfig path as readConfigSource above: the directories it probes are process.cwd() and its ancestors, never a path from the hook payload'],
+  // allow-cwd: provenance text naming a code path, not a root lookup
   ['project.ts::isRepoContainer', 'the same findProject(process.cwd()) walk as markerExists, with the same provenance'],
   ['db.ts::getDb','reached from relayInProcess via recordStat -> getGlobalDb (Batch S hook-latency timing); the dbPath it existsSync-checks is always dataDir()/dataDirForHome(homeDir) + \'global.db\', never a value from the hook payload'],
   ['db.ts::writeRefusal', 'getDb\'s read-only fallback probe: runs only after allowReadOnlyIndex, which the CLI read commands call and no hook does, and on getDb\'s own dbPath, the same dataDir()-derived global.db as the getDb entry above'],

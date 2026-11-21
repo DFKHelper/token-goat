@@ -6,8 +6,9 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const SRC = path.join(process.cwd(), 'src')
+const SRC = path.join(ROOT, 'src')
 /** A call site is an interpolation inside a SQL template literal, never a bare mention. */
 const CALL_SITE = '${pathEqClause('
 const CALL_SITE_RE = /\$\{pathEqClause\(/g
@@ -44,7 +45,7 @@ function sitesIn(file: string): Site[] {
   const src = fs.readFileSync(file, 'utf8')
   if (!src.includes(CALL_SITE)) return []
   const foldedIds = new Set([...src.matchAll(/const\s+(\w+)\s*=\s*foldPath\(/g)].map((m) => m[1]))
-  const rel = path.relative(process.cwd(), file).replace(/\\/g, '/')
+  const rel = path.relative(ROOT, file).replace(/\\/g, '/')
   return [...src.matchAll(CALL_SITE_RE)].map((m) => {
     const from = m.index ?? 0
     // `.pluck()` and `.raw()` sit between the prepare and the execution, so match the execution by name rather than by taking the next chained call.

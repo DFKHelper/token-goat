@@ -11,7 +11,8 @@ import { _resetDataDirCacheForTesting, globalDbPath } from '../../src/constants.
 import { closeAllDbs } from '../../src/db.js'
 import { recordIndexedRoot } from '../../src/indexed_roots.js'
 import { indexFileSync } from '../../src/parser.js'
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+import { ROOT } from '../helpers/bundle.js'
+const BUNDLE = join(ROOT, 'dist', 'token-goat.mjs')
 const DELETED_MARKER = '⚠ DELETED'
 
 let base: string

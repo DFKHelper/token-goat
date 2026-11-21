@@ -14,6 +14,7 @@ import { clearModuleCaches } from '../../src/reset.js'
 import { tempDir } from '../helpers/temp-config.js'
 
 describe('project-root caches are cleared by clearModuleCaches', () => {
+  // allow-cwd: the directory this test chdirs into and restores, not a repo root
   const cwdBefore = process.cwd()
   afterEach(() => {
     process.chdir(cwdBefore)

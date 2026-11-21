@@ -8,8 +8,9 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 import { commandsWithRowLimit } from '../registry.js'
 import { SESSION_TRUNCATION_COMMANDS } from './session_truncation_commands.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+const BUNDLE = join(ROOT, 'dist', 'token-goat.mjs')
 
 /** Distinct files each defining `dup` and referencing both target symbols, so every row-producing command has more than a handful of results to cut. */
 const FILES = 8

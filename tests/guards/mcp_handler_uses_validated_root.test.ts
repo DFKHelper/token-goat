@@ -4,10 +4,11 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
+import { ROOT } from '../helpers/bundle.js'
 
 describe('mcp handlers use the gate-validated root', () => {
   it('no handler forwards the caller-supplied projectRoot instead of the validated root', () => {
-    const src = fs.readFileSync(path.join(process.cwd(), 'src', 'mcp_server.ts'), 'utf8')
+    const src = fs.readFileSync(path.join(ROOT, 'src', 'mcp_server.ts'), 'utf8')
     const offenders = src
       .split('\n')
       .map((line, i) => ({ line: line.trim(), no: i + 1 }))
@@ -25,7 +26,7 @@ describe('mcp handlers use the gate-validated root', () => {
   })
 
   it('the validated-root form is actually present, so the guard cannot pass vacuously', () => {
-    const src = fs.readFileSync(path.join(process.cwd(), 'src', 'mcp_server.ts'), 'utf8')
+    const src = fs.readFileSync(path.join(ROOT, 'src', 'mcp_server.ts'), 'utf8')
     const validated = src.match(/projectRoot:\s*root\b/g) ?? []
     expect(validated.length, 'No handler passes `projectRoot: root`, so the guard above would pass against a file that lost the pattern entirely -- check src/mcp_server.ts still wires handlers this way.').toBeGreaterThan(5)
   })

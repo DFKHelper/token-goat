@@ -61,6 +61,7 @@ function stringsIn(value: unknown): string[] {
 }
 
 function bashEvent(command: string, session: string): Record<string, unknown> {
+  // allow-cwd: hook payload cwd simulates the session's launch directory, not a repo root
   return { session_id: 'ps-parse-' + session, cwd: process.cwd(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }
 }
 
