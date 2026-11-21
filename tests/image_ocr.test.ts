@@ -7,6 +7,8 @@ import type * as ChildProcess from 'node:child_process'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
+
 // Wraps the real `spawn` so call counts are observable without breaking the actual subprocess round trip other tests in this file rely on -- Node's built-in ESM module namespace can't be spied on directly (its exports are non-configurable), so this is the only way to assert "no second spawn happened" as behavior instead of falling back to a wall-clock race.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof ChildProcess>()
@@ -70,6 +72,8 @@ describe('formatOcrSummary', () => {
 })
 
 describe('ocrImage', () => {
+  // The child runs the stub tesseract.js module each row writes, never the real engine or the language-model CDN; offline mode (the suite default) declines on the empty model cache before the stub child is spawned.
+  allowNetworkInDescribe()
   it('returns null immediately when tesseract.js cannot be resolved (optional dep skipped)', async () => {
     setTesseractEntryForTesting(null)
     const result = await ocrImage(Buffer.from('not a real image'))

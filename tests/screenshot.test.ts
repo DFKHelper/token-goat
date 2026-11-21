@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveBrowserExecutablePath, takeScreenshot } from '../src/screenshot.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { shrinkImage } from '../src/image_shrink.js'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 
 // Stub out the real browser drive so takeScreenshot's own extension/path-correction logic can be exercised without an actual Chrome install or network access. The captured "PNG" bytes are arbitrary; what matters is that shrinkImage (mocked below) reports a format change and takeScreenshot reacts to it correctly.
 vi.mock('puppeteer-core', () => ({
@@ -115,6 +116,8 @@ describe('resolveBrowserExecutablePath', () => {
 })
 
 describe('takeScreenshot', () => {
+  // The browser is the puppeteer-core stub above and the host is pinned to a literal, so nothing leaves the machine; offline mode (the suite default) would refuse before the stub is reached.
+  allowNetworkInDescribe()
   // Regression: shrinkImage may re-encode the PNG capture to JPEG/WebP when it exceeds the shrink threshold, but the shrunk bytes were written verbatim under the originally requested (e.g. `.png`) destPath -- silently mislabeling the file's real format -- and the success result still reported that same requested path.
   it('renames the destination extension to match a format-changing shrink and reports the actual saved path', async () => {
     const dir = makeTmpDir()

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { takeScreenshot } from '../src/screenshot.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 
 interface ScriptedRequest {
   url: string
@@ -105,6 +106,8 @@ afterEach(() => {
 })
 
 describe('takeScreenshot address pinning', () => {
+  // Both the resolver (node:dns/promises) and the browser (puppeteer-core) are stubbed above, so nothing leaves the machine; offline mode (the suite default) would refuse before the stubs are reached.
+  allowNetworkInDescribe()
   it('pins the validated address into Chromium so it cannot resolve the host a second time', async () => {
     const dir = makeTmpDir()
     state.dns.set('public.example', ['93.184.216.34'])

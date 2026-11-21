@@ -8,6 +8,7 @@ import sharp, { type CreateRaw } from 'sharp'
 import { runImageMeta, runImageText } from '../src/read_commands.js'
 import { run } from '../src/cli.js'
 import { resetOcrStateForTesting, setTesseractEntryForTesting } from '../src/image_ocr.js'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-image-meta-text-'))
 
@@ -195,6 +196,8 @@ describe('runImageMeta', () => {
 })
 
 describe('runImageText', () => {
+  // Every OCR row runs a stub tesseract.js module, never the real engine or the language-model CDN; offline mode (the suite default) declines on the empty model cache before the stub is reached.
+  allowNetworkInDescribe()
   it('rejects a nonexistent file with the same wording as the pdf family', async () => {
     await expect(runImageText(path.join(TMP, 'nope.png'))).rejects.toThrow(`Could not read: "${path.join(TMP, 'nope.png')}"`)
   })
@@ -305,6 +308,8 @@ describe('runImageText', () => {
 })
 
 describe('image-text fences OCR text it lifts out of an image', () => {
+  // The OCR engine is the stub from ocrStub below, never the real engine or the language-model CDN; offline mode (the suite default) declines on the empty model cache before the stub is reached.
+  allowNetworkInDescribe()
   // OCR is the one extraction path where the attacker controls the *pixels*: text placed in a screenshot, a scanned document, or a photographed sign is lifted verbatim into the model context by this command. That is the same provenance argument that got the thirteen document-extraction commands fenced (see tests/cli_doc_extract_fencing.test.ts) -- naming a local path is not authoring its content -- and it applies at least as strongly here, since an image carries no format-level hint that its text was authored by someone else.
   //
   // These cases previously required a positive injection-pattern match before fencing, on the reasoning that an always-on fence is boilerplate rather than signal. That position is reversed deliberately: the pattern list is small and trivially reworded, so gating on it left an unfenced channel to anyone who phrases the same instruction differently, and a scanner miss was silent. The fence is now unconditional and carries its own tag, matching what fenceUntrustedFileContent already did for file bytes. What the pattern scan still does is record the injection_detected statistic; it no longer decides whether the fence appears.

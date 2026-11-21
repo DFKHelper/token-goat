@@ -11,6 +11,7 @@ import { run } from '../src/cli.js'
 import { summarize } from '../src/stats.js'
 import { buildDocxFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
 import { resetOcrStateForTesting, setTesseractEntryForTesting } from '../src/image_ocr.js'
+import { allowNetworkInDescribe } from './helpers/network_opt_out.js'
 
 // Minimal hand-authored single-page PDF (Helvetica text object), same fixture shape as tests/helpers/matrix_cases.ts' MINIMAL_PDF.
 const MINIMAL_PDF = '%PDF-1.4\n' +
@@ -102,15 +103,26 @@ describe('document-extraction CLI stat recording', () => {
     ['xlsx-sheets --json', () => ['xlsx-sheets', join(root, 'book.xlsx'), '--json'], 'xlsx_sheets'],
     ['pdf-meta --json', () => ['pdf-meta', join(root, 'doc.pdf'), '--json'], 'pdf_meta'],
     ['image-meta', () => ['image-meta', join(root, 'pic.png')], 'image_meta'],
-    ['image-text', () => ['image-text', join(root, 'pic.png')], 'image_text'],
   ] as const)('`token-goat %s` records a %s stat row through the real global stats DB', async (_cmd, argsFn, kind) => {
+    await expectStatRecorded(argsFn(), kind)
+  })
+
+  // Only this row needs the opt-out: it runs the stub tesseract.js module from beforeAll, never the real engine or the language-model CDN, and offline mode (the suite default) declines on the empty model cache before the stub is reached.
+  describe('image-text', () => {
+    allowNetworkInDescribe()
+    it('`token-goat image-text` records a image_text stat row through the real global stats DB', async () => {
+      await expectStatRecorded(['image-text', join(root, 'pic.png')], 'image_text')
+    })
+  })
+
+  async function expectStatRecorded(args: readonly string[], kind: string): Promise<void> {
     const before = summarize(30).by_kind[kind]
     const beforeEvents = before?.events ?? 0
 
-    await run(['node', 'token-goat', ...argsFn()])
+    await run(['node', 'token-goat', ...args])
 
     const after = summarize(30).by_kind[kind]
     expect(after).toBeDefined()
     expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
-  })
+  }
 })
