@@ -518,29 +518,26 @@ interface ReplaceEmit {
   preWriteStat: fs.Stats | undefined
   /** The success phrase after the verb, e.g. `3 occurrences in <file>`. */
   done: string
+  /** Optional trailing remark appended after the receipt, e.g. that the heal path normalized line endings. */
+  note?: string
   dryRun: boolean
 }
 
-// A dry run writes and queues nothing; the receipt still reports what the write would have changed.
+// One line, written or previewed: a dry run writes and queues nothing, so it reports `index not queued`.
 function emitReplace(emit: ReplaceEmit): void {
+  const receipt = buildReplaceReceipt(emit.before, emit.after, emit.edit)
   if (emit.dryRun) {
-    out(`dry run: would replace ${emit.done}; nothing was written`)
-    printReplaceReceipt(emit, 'skipped (dry run)')
+    out(replaceReceiptLine('would replace', emit, receipt, 'not queued'))
     return
   }
   const queued = writeReplacedBuffer(emit.file, emit.after, emit.preWriteStat)
-  out(`replaced ${emit.done}`)
-  printReplaceReceipt(emit, queued ? 'queued' : 'not queued')
-}
-
-function printReplaceReceipt(emit: ReplaceEmit, reindex: ReindexStatus): void {
-  for (const line of replaceReceiptLines(buildReplaceReceipt(emit.before, emit.after, emit.edit), reindex)) out(line)
+  out(replaceReceiptLine('replaced', emit, receipt, queued ? 'queued' : 'not queued'))
 }
 
 // Receipt for a replace write: changed lines, lines added and removed, line endings before and after.
 type EolStyle = 'LF' | 'CRLF' | 'CR' | 'mixed' | 'none'
 
-type ReindexStatus = 'queued' | 'not queued' | 'skipped (dry run)'
+type ReindexStatus = 'queued' | 'not queued'
 
 // Spans start at ascending offsets in the before-bytes; each is oldLength bytes and becomes newLength bytes.
 interface ReplaceEdit {
@@ -634,24 +631,18 @@ function buildReplaceReceipt(before: Buffer, after: Buffer, edit: ReplaceEdit): 
   }
 }
 
-function replaceReceiptLines(receipt: ReplaceReceipt, reindex: ReindexStatus): string[] {
-  const pureDelete = receipt.changedLines.length === 0
-  const listed = pureDelete ? receipt.deletedAt : receipt.changedLines
+// The one receipt line: `<verb> <done> at line N (+A -R lines, B bytes), line endings kept (CRLF), index queued`. A pure deletion names the line the text was removed from; B is the size of the file after the edit.
+function replaceReceiptLine(verb: string, emit: ReplaceEmit, receipt: ReplaceReceipt, reindex: ReindexStatus): string {
+  const listed = receipt.changedLines.length === 0 ? receipt.deletedAt : receipt.changedLines
   const shown = listed.slice(0, RECEIPT_LINE_LIMIT).map(String)
   const hidden = listed.length - shown.length
   if (hidden > 0) shown.push(`+${hidden} more`)
-  const noun = receipt.deletedAt.length === 1 ? 'line' : 'lines'
-  const changed = pureDelete
-    ? `none (${receipt.linesRemoved} removed at ${noun} ${shown.join(', ')})`
-    : shown.join(', ')
+  const noun = listed.length === 1 ? 'line' : 'lines'
   const eol = receipt.eolBefore === receipt.eolAfter
-    ? `${receipt.eolAfter} (kept)`
+    ? `kept (${receipt.eolAfter})`
     : `${receipt.eolBefore} -> ${receipt.eolAfter}`
-  return [
-    `  lines changed: ${changed} (+${receipt.linesAdded} -${receipt.linesRemoved})`,
-    `  line endings: ${eol}`,
-    `  reindex: ${reindex}`,
-  ]
+  const note = emit.note === undefined ? '' : ` ${emit.note}`
+  return `${verb} ${emit.done} at ${noun} ${shown.join(', ')} (+${receipt.linesAdded} -${receipt.linesRemoved} lines, ${emit.after.length} bytes), line endings ${eol}, index ${reindex}${note}`
 }
 
 const MAX_CLOSEST_MATCH_COMPARISONS = 2_000_000
@@ -745,7 +736,8 @@ export function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: str
         after: healedBuf,
         edit: { matches: [span.start], oldLength: span.end - span.start, newLength: healedNewBytes.length },
         preWriteStat,
-        done: `1 occurrence in ${file} (line-ending normalized to match the file at that location)`,
+        done: `1 occurrence in ${file}`,
+        note: '(line-ending normalized to match the file at that location)',
         dryRun: opts.dryRun === true,
       })
       return

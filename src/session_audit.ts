@@ -181,7 +181,7 @@ export interface SessionAuditSummary {
   /** Cold cache re-writes by tool and command class, main sessions and subagents apart (see cold_gap.ts). */
   coldGap: ColdGapCensus
   /** Already-read deny claims, checked against same-epoch Read deliveries; other hosts are skipped. */
-  alreadyReadClaims: { transcriptsChecked: number; transcriptsSkipped: number; checked: number; falseClaims: number; uncheckedNoPath: number; examples: Array<{ transcript: string; line: number; path: string }> }
+  alreadyReadClaims: { transcriptsChecked: number; transcriptsSkipped: number; checked: number; falseClaims: number; uncheckedNoPath: number; examples: Array<{ transcript: string; line: number }> }
 }
 
 /** One deny's measured real-world outcome, tested in this fixed order so the six buckets partition every deny exactly once: a later re-read after a compaction boundary is correct by design and must never fall through to 'retried'; a shell command (sed/grep/cat/...) that reads the denied file's basename is 'shell_read' -- a real substitute the agent found on its own, not an escape from the census -- and is tested after 'substituted' so a `node <path>/token-goat.mjs` invocation (also a shell command) is never miscounted as a plain shell read; and a transcript that ends too soon to observe 3 calls is 'unresolved' rather than the misleadingly final-sounding 'abandoned'. */
@@ -666,7 +666,6 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   const readCallById = new Map<string, { wasSeenBefore: boolean; hasRange: boolean; afterCompaction: boolean }>()
   // tool_use id -> normalized file_path, so a deny-outcome row opened at tool_result time (which only carries the tool_use_id) can recover the path it denied.
   const readPathById = new Map<string, string>()
-  const readShownById = new Map<string, string>()
   // Edit tool_use id -> normalized file_path, so the Edit-error canary can tell whether an Edit targeted the exact denied path.
   const editPathById = new Map<string, string>()
   // Edit tool_use id -> true once its tool_result carries is_error: true. Populated at tool_result time; read back once at end-of-file finalization, by which point every Edit in this file has resolved.
@@ -828,7 +827,6 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 const priorEpoch = readPathEpoch.get(readNorm)
                 readCallById.set(block['id'], { wasSeenBefore: priorEpoch !== undefined, hasRange: input['offset'] !== undefined || input['limit'] !== undefined, afterCompaction: priorEpoch !== undefined && compactEpoch > priorEpoch })
                 readPathById.set(block['id'], readNorm)
-                readShownById.set(block['id'], input['file_path'])
                 readPathEpoch.set(readNorm, compactEpoch)
               } else if (name === 'Grep' && typeof input['path'] === 'string') {
                 readPathById.set(block['id'], normalizeReadPath(input['path']))
@@ -920,7 +918,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                   s.alreadyReadClaims.checked += 1
                   if (deliveredReadEpoch.get(deliveryKey(obj, path)) !== compactEpoch) {
                     s.alreadyReadClaims.falseClaims += 1
-                    if (s.alreadyReadClaims.examples.length < ALREADY_READ_EXAMPLE_MAX) s.alreadyReadClaims.examples.push({ transcript: transcriptName, line: fileLines, path: readShownById.get(id) ?? path })
+                    if (s.alreadyReadClaims.examples.length < ALREADY_READ_EXAMPLE_MAX) s.alreadyReadClaims.examples.push({ transcript: transcriptName, line: fileLines })
                   }
                 }
               }

@@ -497,7 +497,7 @@ describe('already-read claims in the corpus audit', () => {
 
   it('counts a claim as false when no Read of the path was delivered in the transcript', async () => {
     const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
-    expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1, examples: [{ transcript: 'session-claims.jsonl', line: 2, path: '/p/a.ts' }] })
+    expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1, examples: [{ transcript: 'session-claims.jsonl', line: 2 }] })
   })
 
   it('counts a claim as false when the only Read of the path came before a compaction boundary', async () => {
@@ -589,12 +589,13 @@ describe('already-read claims in the corpus audit', () => {
     expect(rel.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
   })
 
-  it('prints an example path as the transcript spelled it, not lower-cased', async () => {
+  // HAND-DERIVED: src/session_audit.ts's Privacy contract says the output never carries file paths from inside sessions, so an example names the transcript and line only.
+  it('names a false-claim example by transcript and line, never by the path', async () => {
     const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/Proj/Mixed.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
-    expect(s.alreadyReadClaims.examples).toEqual([{ transcript: 'session-claims.jsonl', line: 2, path: '/Proj/Mixed.ts' }])
-    const claimLine = formatSessionAudit(s).split('\n').find((l) => l.includes('false claim:'))
-    expect(claimLine).toContain('path /Proj/Mixed.ts')
-    expect(claimLine).not.toContain('lower-cased')
+    expect(s.alreadyReadClaims.examples).toEqual([{ transcript: 'session-claims.jsonl', line: 2 }])
+    const text = formatSessionAudit(s)
+    expect(text.split('\n').find((l) => l.includes('false claim:'))).toBe('  false claim: session-claims.jsonl line 2')
+    expect(text).not.toContain('Mixed.ts')
   })
 
   it('matches a path spelled with backslashes or another case', async () => {
@@ -626,14 +627,15 @@ describe('already-read claims in the corpus audit', () => {
 
   it('names the real line of a claim that follows an unparseable line', async () => {
     const s = await auditSessionCorpus({ dir: corpusOf(['{not json', READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
-    expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1, examples: [{ transcript: 'session-claims.jsonl', line: 3, path: '/p/a.ts' }] })
+    expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1, examples: [{ transcript: 'session-claims.jsonl', line: 3 }] })
   })
 
-  it('prints a path containing a newline on one report line', async () => {
+  it('keeps a false claim on one report line and leaves a newline-bearing path out of it', async () => {
     const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/p/a\nb.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
-    const claimLines = formatSessionAudit(s).split('\n').filter((l) => l.includes('false claim:'))
+    const text = formatSessionAudit(s)
+    const claimLines = text.split('\n').filter((l) => l.includes('false claim:'))
     expect(claimLines).toHaveLength(1)
-    expect(claimLines[0]).toContain('/p/a\\nb.ts')
+    expect(text).not.toContain('b.ts')
   })
 
   it('says the check was skipped for a non-Claude-Code transcript and never reports zero false claims', async () => {

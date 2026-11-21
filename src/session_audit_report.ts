@@ -25,11 +25,11 @@ function formatAlreadyReadClaims(c: SessionAuditSummary['alreadyReadClaims'], de
   // A claim needs the transcript's error marker, whose Read form is format-derived rather than captured: when the census matched already-read wording and not one result carried the marker, 0 checked would read as a clean result.
   const seen = denies.filter((d) => ALREADY_READ_CLAIM_KINDS.has(d.kind)).reduce((sum, d) => sum + d.count, 0)
   if (c.checked === 0 && c.uncheckedNoPath === 0 && seen > 0) out.push(`${countNoun(seen, 'already-read deny', 'already-read denies')} seen by text, but none carried the transcript error marker, so none was checked.`)
-  for (const ex of c.examples) out.push(`  false claim: ${displaySafeText(ex.transcript)} line ${fmt(ex.line)}, path ${displaySafeText(ex.path)}`)
+  for (const ex of c.examples) out.push(`  false claim: ${displaySafeText(ex.transcript)} line ${fmt(ex.line)}`)
   return out
 }
 
-/** Render the plain-text report: aggregates, plus a few already-read examples by transcript line and path. */
+/** Render the plain-text report: aggregates, plus a few already-read examples by transcript line, never the path (session_audit.ts Privacy contract). */
 export function formatSessionAudit(s: SessionAuditSummary): string {
   const lines: string[] = []
   lines.push('# Session corpus audit')

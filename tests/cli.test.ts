@@ -838,10 +838,8 @@ describe('token-goat CLI', () => {
       try {
         const r = await run(['replace', file, '--old-b64', replaceB64('needle'), '--new-b64', replaceB64('thread')])
         expect(r.status, r.stderr).toBe(0)
-        expect(r.stdout.split('\n')[0]).toBe(`replaced 1 occurrence in ${file}`)
-        expect(r.stdout).toContain('  lines changed: 2 (+1 -1)')
-        expect(r.stdout).toContain('  line endings: LF (kept)')
-        expect(r.stdout).toContain('  reindex: queued')
+        // 'alpha\nbeta thread\ngamma\n' is 6 + 12 + 6 = 24 bytes.
+        expect(r.stdout).toBe(`replaced 1 occurrence in ${file} at line 2 (+1 -1 lines, 24 bytes), line endings kept (LF), index queued\n`)
         expect(dirtyQueueText()).toContain(path.basename(file))
       } finally {
         fs.rmSync(file, { force: true })
@@ -856,9 +854,8 @@ describe('token-goat CLI', () => {
         const r = await run(['replace', file, '--old-b64', replaceB64('beta\r\ngamma'), '--new-b64', replaceB64('BETA\r\nGAMMA\r\nDELTA')])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(file).equals(Buffer.from('alpha\r\nBETA\r\nGAMMA\r\nDELTA\r\n', 'utf8'))).toBe(true)
-        expect(r.stdout).toContain('  lines changed: 2, 3, 4 (+3 -2)')
-        expect(r.stdout).toContain('  line endings: CRLF (kept)')
-        expect(r.stdout).toContain('  reindex: queued')
+        expect(r.stdout).toContain(' at lines 2, 3, 4 (+3 -2 lines, ')
+        expect(r.stdout).toContain(', line endings kept (CRLF), index queued')
       } finally {
         fs.rmSync(file, { force: true })
       }
@@ -872,8 +869,8 @@ describe('token-goat CLI', () => {
         const r = await run(['replace', file, '--old-b64', replaceB64('beta'), '--new-b64', replaceB64('b1\nb2')])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(file).equals(Buffer.from('alpha\r\nb1\nb2\r\n', 'utf8'))).toBe(true)
-        expect(r.stdout).toContain('  lines changed: 2, 3 (+2 -1)')
-        expect(r.stdout).toContain('  line endings: CRLF -> mixed')
+        expect(r.stdout).toContain(' at lines 2, 3 (+2 -1 lines, ')
+        expect(r.stdout).toContain(', line endings CRLF -> mixed, index queued')
       } finally {
         fs.rmSync(file, { force: true })
       }
@@ -887,7 +884,7 @@ describe('token-goat CLI', () => {
         const r = await run(['replace', file, '--old-b64', replaceB64('b\n'), '--new-b64', replaceB64('')])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(file, 'utf8')).toBe('a\n')
-        expect(r.stdout).toContain('  lines changed: none (1 removed at line 2) (+0 -1)')
+        expect(r.stdout).toContain(' at line 2 (+0 -1 lines, ')
       } finally {
         fs.rmSync(file, { force: true })
       }
@@ -901,7 +898,7 @@ describe('token-goat CLI', () => {
         const r = await run(['replace', file, '--old-b64', replaceB64('b\n'), '--new-b64', replaceB64('')])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(file, 'utf8')).toBe('a\nc\n')
-        expect(r.stdout).toContain('  lines changed: none (1 removed at line 2) (+0 -1)')
+        expect(r.stdout).toContain(' at line 2 (+0 -1 lines, ')
       } finally {
         fs.rmSync(file, { force: true })
       }
@@ -915,8 +912,7 @@ describe('token-goat CLI', () => {
         const r = await run(['replace', file, '--old-b64', replaceB64('b'), '--new-b64', replaceB64('B')])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(file).equals(Buffer.from('a\rB\rc\r', 'utf8'))).toBe(true)
-        expect(r.stdout).toContain('  lines changed: 2 (+1 -1)')
-        expect(r.stdout).toContain('  line endings: CR (kept)')
+        expect(r.stdout).toContain(' at line 2 (+1 -1 lines, 6 bytes), line endings kept (CR)')
       } finally {
         fs.rmSync(file, { force: true })
       }
@@ -930,8 +926,9 @@ describe('token-goat CLI', () => {
         const r = await run(['replace', file, '--all', '--old-b64', replaceB64('x'), '--new-b64', replaceB64('y')])
         expect(r.status, r.stderr).toBe(0)
         const first20 = Array.from({ length: 20 }, (_, i) => i + 1).join(', ')
-        expect(r.stdout).toContain(`  lines changed: ${first20}, +5 more (+25 -25)`)
-        expect(r.stdout).toContain('  reindex: not queued')
+        expect(r.stdout).toContain(` at lines ${first20}, +5 more (+25 -25 lines, 50 bytes)`)
+        expect(r.stdout).toContain(', index not queued')
+        expect(r.stdout.trimEnd().split('\n')).toHaveLength(1)
       } finally {
         fs.rmSync(file, { force: true })
       }
@@ -945,12 +942,41 @@ describe('token-goat CLI', () => {
       try {
         const r = await run(['replace', file, '--dry-run', '--old-b64', replaceB64('needle'), '--new-b64', replaceB64('thread')])
         expect(r.status, r.stderr).toBe(0)
-        expect(r.stdout.split('\n')[0]).toBe(`dry run: would replace 1 occurrence in ${file}; nothing was written`)
-        expect(r.stdout).toContain('  lines changed: 2 (+1 -1)')
-        expect(r.stdout).toContain('  reindex: skipped (dry run)')
+        // 'alpha\nbeta thread\ngamma\n' is 24 bytes.
+        expect(r.stdout).toBe(`would replace 1 occurrence in ${file} at line 2 (+1 -1 lines, 24 bytes), line endings kept (LF), index not queued\n`)
         expect(fs.readFileSync(file).equals(original)).toBe(true)
         // Other tests share this queue, so assert on this file's unique name rather than on the whole text.
         expect(dirtyQueueText()).not.toContain(path.basename(file))
+      } finally {
+        fs.rmSync(file, { force: true })
+      }
+    })
+
+    // HAND-DERIVED: the line, the byte count and the CRLF-only check are computed from the scratch input here, not from the implementation. Named cases: the LF-to-CRLF flip and the literal $&.
+    it('replace on line 4 of a 6-line CRLF file keeps CRLF only and a literal $&, and --dry-run only previews', async () => {
+      const file = path.join(indexableDir(), `rpl-doc-crlf-${process.pid}-${Date.now()}.txt`)
+      const original = Buffer.from(['one', 'two', 'three', 'four OLDTEXT end', 'five', 'six'].map((l) => `${l}\r\n`).join(''), 'utf8')
+      const replacement = 'NEW $& NEW'
+      const expected = Buffer.from(['one', 'two', 'three', `four ${replacement} end`, 'five', 'six'].map((l) => `${l}\r\n`).join(''), 'utf8')
+      fs.writeFileSync(file, original)
+      try {
+        const dry = await run(['replace', file, '--dry-run', '--old-b64', replaceB64('OLDTEXT'), '--new-b64', replaceB64(replacement)])
+        expect(dry.status, dry.stderr).toBe(0)
+        expect(dry.stdout.startsWith('would replace')).toBe(true)
+        expect(dry.stdout).toContain('at line 4')
+        expect(dry.stdout.trimEnd().split('\n')).toHaveLength(1)
+        expect(fs.readFileSync(file).equals(original)).toBe(true)
+
+        const r = await run(['replace', file, '--old-b64', replaceB64('OLDTEXT'), '--new-b64', replaceB64(replacement)])
+        expect(r.status, r.stderr).toBe(0)
+        expect(r.stdout).toContain('at line 4')
+        expect(r.stdout).toContain('CRLF')
+        expect(r.stdout).toContain(`${expected.length} bytes`)
+        expect(r.stdout.trimEnd().split('\n')).toHaveLength(1)
+        const written = fs.readFileSync(file)
+        expect(written.equals(expected)).toBe(true)
+        expect(written.toString('utf8').replace(/\r\n/g, '')).not.toMatch(/[\r\n]/)
+        expect(written.toString('utf8')).toContain('NEW $& NEW')
       } finally {
         fs.rmSync(file, { force: true })
       }
