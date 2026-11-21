@@ -13,7 +13,7 @@ const use = (id: string, name: string, input: Record<string, unknown>): string =
   JSON.stringify({ type: 'assistant', message: { id: `msg_use_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
 const result = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
-// CAPTURE (Read): transcript dbbf6b4b-2366-4086-84af-e082e79212ee, tool_use call_c70d852691fb4925aab97c1c
+// FORMAT-DERIVED (Read): tool_result is_error shape, as read by src/session_audit.ts isErrorResult.
 const errorResult = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] } })
 const COMPACT = '{"type":"system","subtype":"compact_boundary"}'
@@ -149,7 +149,7 @@ describe('DENY_TEMPLATES classification', () => {
   })
 })
 
-// Skill: census 66 of 66 is_error true (summary.json). Grep: FORMAT-DERIVED; no Grep deny captured.
+// Skill and Grep denies count only with is_error true. Grep: FORMAT-DERIVED; no Grep deny captured.
 describe('Skill and Grep denies count only with is_error true', () => {
   let dir = ''
 

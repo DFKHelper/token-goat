@@ -265,8 +265,7 @@ export interface ReadInterceptionRollup {
   fullServeBytesOver10k: number
   /** Full serves whose path had no earlier Read tool_use in the transcript: the pool the re-read divert excludes by design. */
   fullServesFirstRead: number
-  /** Full serves of a path already targeted by an earlier Read tool_use in the transcript: candidates the re-read divert could have caught. */
-  /** Same normalized path within one transcript file; subagent lanes share the cache, so this UNDER-counts. */
+  /** Repeat full serves per path and transcript: divert candidates; subagent lanes share cache, UNDER-count. */
   fullServesRepeat: number
   repeatBytes: number
   /** Repeats whose own call carried an offset or limit parameter: deliberate paging, not a divert miss. */
@@ -379,8 +378,7 @@ const CACHE_WRITE_MULTIPLIER = 1.25
 /** Prompt-cache read discount against the base input rate (Anthropic pricing: 0.1x). */
 const CACHE_READ_MULTIPLIER = 0.1
 
-/** token-goat's deny/serve templates (hooks_read.ts); counts only with is_error true (summary.json). */
-/** Kept narrow: a match under READ_DIVERT_MAX_BYTES is a diverted read; drift under-counts, never over. */
+/** hooks_read.ts templates, is_error true only; under READ_DIVERT_MAX_BYTES a divert; drift under-counts. */
 const READ_DIVERT_MARKER_RE = /(?:(?:was|were) already read this session|Already read |You've already read|(?:Use|Run) `token-goat (?:section|read|bash-output|config-get|skeleton|json-query|yaml-query)|token-goat bash-output --file)/
 /** A divert message is a short pointer; a matching result at or above this size is a real file body that merely mentions a token-goat command, not a divert. */
 const READ_DIVERT_MAX_BYTES = 2500
@@ -929,7 +927,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 }
               }
             } else if (denyTemplate !== undefined && ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
-              // Wording without the is_error marker: a quote, counted apart and never as a claim (Ruling 39).
+              // Unmarked match: counted only as unmarkedMatches, else quoted refusal text inflates deny stats.
               s.alreadyReadClaims.unmarkedMatches += 1
             }
           }
