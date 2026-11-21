@@ -2,7 +2,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-export const PROBE_DIR = path.resolve('.vitest-probe')
+export const PROBE_DIR = path.resolve(import.meta.dirname, '..', '..', '.vitest-probe')
 
 /** Writes `lines` to `.vitest-probe/<name>` and returns the file's absolute path. */
 export function writeProbe(name: string, lines: readonly string[]): string {

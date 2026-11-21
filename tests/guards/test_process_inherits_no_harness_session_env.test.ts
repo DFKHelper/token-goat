@@ -28,7 +28,7 @@ function claudeNamesReadBySrc(): string[] {
       else if (entry.name.endsWith('.ts')) for (const m of fs.readFileSync(full, 'utf8').matchAll(/['"`](CLAUDE(?:CODE|_[A-Z0-9_]*[A-Z0-9]))['"`]/g)) names.add(m[1] as string)
     }
   }
-  walk(path.resolve('src'))
+  walk(path.resolve(import.meta.dirname, '..', '..', 'src'))
   return [...names].sort()
 }
 
@@ -91,8 +91,9 @@ describe('the test process inherits no Claude Code session', () => {
     // CAPTURE: CLAUDECODE, CLAUDE_CODE_ENTRYPOINT and CLAUDE_CODE_SESSION_ATTENDED as a Claude Code 2.1.x Bash call on Windows carried them (2026-10-06; session id and pid replaced by same-shaped stand-ins). FORMAT-DERIVED: CLAUDE_CODE_VERSION and TERM_PROGRAM=claude-code, which that call did not carry, from src/bridges/registry.ts::detectHarness, which reads them.
     const session = { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: '2ab49bbf-0000-4000-8000-000000000000', CLAUDE_PID: '4242', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_VERSION: '2.1.289', CLAUDE_CODE_SESSION_ATTENDED: '1', TERM_PROGRAM: 'claude-code' }
     const copilot = { COPILOT_AGENT_SESSION_ID: 'session', COPILOT_CLI: '1', COPILOT_CLI_PATH: 'cli-path', COPILOT_ALLOW_ALL: 'true' }
-    const res = spawnSync(process.execPath, [path.resolve('node_modules', 'vitest', 'vitest.mjs'), 'run', probe], {
+    const res = spawnSync(process.execPath, [path.resolve(import.meta.dirname, '..', '..', 'node_modules', 'vitest', 'vitest.mjs'), 'run', probe], {
       encoding: 'utf8',
+      cwd: path.resolve(import.meta.dirname, '..', '..'),
       // The bundle build this config runs in globalSetup would race the outer run's readers of the same artifact.
       env: { ...process.env, CI: '', ...session, ...copilot, TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD: '1' },
     })

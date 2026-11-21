@@ -10,13 +10,15 @@ import { pinnedPopulation } from './population.js'
 // Provenance: HAND-DERIVED. The file list is read from disk at run time; no list is copied into this file.
 const GUARD_DIR = path.join(ROOT, 'tests', 'guards')
 const SELF = 'guards_resolve_root_from_own_location.test.ts'
-const ALLOW = /\ballow-cwd:\s*\S/
+const ALLOW = /\/\/\s*allow-cwd:\s*(\S.*)$/
 // Strings stay (a call inside a string literal still counts); comments are blanked to the same width so offsets hold.
 const STRING_OR_COMMENT = /('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g
 const LAUNCH_DIR_SHAPES: readonly RegExp[] = [
-  /(?<![\w$])process\s*\.\s*cwd\s*\(\s*\)/g,
+  /(?<![\w$])process\s*\??\.\s*cwd\s*(?:\?\.)?\s*(?:\.\s*call\s*)?\(/g,
   /(?<![\w$])process\s*\[\s*(['"`])cwd\1\s*\]\s*\(\s*\)/g,
-  /(?<![\w$])path\s*\.\s*resolve\s*\(\s*(?:(['"`])\.\1\s*)?\)/g,
+  /(?<![\w$])path\s*\.\s*resolve\s*\(\s*['"`)]/g,
+  /(?<![\w$])require\s*\(\s*['"](?:node:)?path['"]\s*\)\s*\.\s*resolve\s*\(/g,
+  /(?<![\w$])process\s*\.\s*env\s*(?:\.\s*INIT_CWD\b|\[\s*(['"`])INIT_CWD\1\s*\])/g,
 ]
 const DESTRUCTURED_FROM_PROCESS = /\{[^{}]*\bcwd\b[^{}]*\}\s*=\s*process\b/
 const BARE_CWD_CALL = /(?<![\w$.])cwd\s*\(\s*\)/g
@@ -51,29 +53,36 @@ function launchDirHits(name: string): string[] {
   return [...hits]
 }
 
-/** allow-cwd lines per guard file, excluding this file, whose own regexes quote the token. */
-function excuseCounts(files: readonly string[]): Map<string, number> {
-  const counts = new Map<string, number>()
+type Excuse = { line: number; reason: string }
+
+/** allow-cwd excuses per guard file, this file included: each line number and the reason text after the marker. */
+function excuseReasons(files: readonly string[]): Map<string, Excuse[]> {
+  const found = new Map<string, Excuse[]>()
   for (const name of files) {
-    if (name === SELF) continue
-    const n = fs.readFileSync(path.join(GUARD_DIR, name), 'utf8').split(/\r?\n/).filter((l) => ALLOW.test(l)).length
-    if (n > 0) counts.set(name, n)
+    const excuses = fs.readFileSync(path.join(GUARD_DIR, name), 'utf8').split(/\r?\n/).flatMap((text, i): Excuse[] => {
+      const reason = ALLOW.exec(text)?.[1]
+      return reason === undefined ? [] : [{ line: i + 1, reason: reason.trim() }]
+    })
+    if (excuses.length > 0) found.set(name, excuses)
   }
-  return counts
+  return found
 }
 
-// Pinned by file and line count. A new or moved excuse fails until its entry is added here with its reason.
-const PINNED_EXCUSES: Readonly<Record<string, number>> = {
-  // hook payload cwd simulates the session's launch directory, not a repo root
-  'hint_suggestions_parse_as_one_powershell_statement.test.ts': 1,
-  // quoted text inside a finding message, not a root lookup
-  'installer_writes_are_contained.test.ts': 1,
-  // the spawned child runs with the fixture root as its cwd, so this path lies inside that root
-  'permission_filter_single_predicate.test.ts': 1,
-  // provenance text naming a code path, not a root lookup
-  'pre_handler_fs_touches_are_gated.test.ts': 3,
-  // the directory this test chdirs into and restores, not a repo root
-  'root_caches_reset.test.ts': 1,
+// Pinned by file, in line order, as each excuse's reason text. A new, moved or reworded excuse fails until it is pinned here.
+const PINNED_EXCUSES: Readonly<Record<string, readonly string[]>> = {
+  'hint_suggestions_parse_as_one_powershell_statement.test.ts': [
+    "hook payload cwd simulates the session's launch directory, not a repo root",
+  ],
+  'installer_writes_are_contained.test.ts': ['quoted text inside a finding message, not a root lookup'],
+  'permission_filter_single_predicate.test.ts': [
+    'the spawned child runs with the fixture root as its cwd, so this path lies inside that root',
+  ],
+  'pre_handler_fs_touches_are_gated.test.ts': [
+    'provenance text naming a code path, not a root lookup',
+    'provenance text naming a code path, not a root lookup',
+    'provenance text naming a code path, not a root lookup',
+  ],
+  'root_caches_reset.test.ts': ['the directory this test chdirs into and restores, not a repo root'],
 }
 
 describe('guard tests resolve the repo from their own location', () => {
@@ -89,19 +98,23 @@ describe('guard tests resolve the repo from their own location', () => {
   it('reads no repo path through the launch directory without an allow-cwd reason', () => {
     expect(
       population().flatMap(launchDirHits),
-      'each of these reads the launch directory as the repo root, so a run from another checkout tests that checkout. Use ROOT from tests/helpers/bundle.ts, or put `// allow-cwd: <why the launch directory is what is under test>` on the line above.',
+      'each of these reads the launch directory as the repo root, so a run from another checkout tests that checkout. Use ROOT from tests/helpers/bundle.ts, or put an allow-cwd comment with the reason on the line above.',
     ).toEqual([])
   })
 
-  it('keeps allow-cwd excuses to the pinned files and line counts', () => {
-    const actual = excuseCounts(population())
+  it('keeps allow-cwd excuses to the pinned files and reason text', () => {
+    const actual = excuseReasons(population())
     const names = [...new Set([...actual.keys(), ...Object.keys(PINNED_EXCUSES)])].sort()
-    const drift = names
-      .filter((n) => (actual.get(n) ?? 0) !== (PINNED_EXCUSES[n] ?? 0))
-      .map((n) => `tests/guards/${n}: ${actual.get(n) ?? 0} allow-cwd line(s), pinned ${PINNED_EXCUSES[n] ?? 0}`)
+    const drift = names.flatMap((n) => {
+      const got = actual.get(n) ?? []
+      const pinned = PINNED_EXCUSES[n] ?? []
+      if (got.length === pinned.length && got.every((e, i) => e.reason === pinned[i])) return []
+      if (got.length === 0) return [`tests/guards/${n}: ${pinned.length} pinned excuse(s), none found`]
+      return got.map((e) => `tests/guards/${n}:${e.line} excuse "${e.reason}" does not match its pin`)
+    })
     expect(
       drift,
-      'a new or changed allow-cwd excuse: add its file to PINNED_EXCUSES in this test with the count and the reason the launch directory is under test, or remove the excuse',
+      'a new, moved or reworded allow-cwd excuse: pin its file and reason text in PINNED_EXCUSES in this test, with the reason the launch directory is under test, or remove the excuse',
     ).toEqual([])
   })
 })

@@ -4,10 +4,10 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { pinnedPopulation } from './population.js'
 
-const TESTS = path.resolve('tests')
+const TESTS = path.resolve(import.meta.dirname, '..')
 
 /** A root the walker reaches tests/ from, in each of the spellings the guards use today. */
-const TESTS_ROOT = /'\.\.', '\.\.', 'tests'|, 'tests'\)|resolve\('tests'\)|resolve\((?:__dirname|HERE), '\.\.'\)/
+const TESTS_ROOT = /'\.\.', '\.\.', 'tests'|, 'tests'\)|resolve\('tests'\)|resolve\((?:__dirname|HERE|import\.meta\.dirname), '\.\.'\)/
 const RECURSIVE_READDIR = /readdirSync\([^)]*withFileTypes|readdirIfPresent\(/
 const DOT_SKIP = /\.name\.startsWith\('\.'\)/
 
