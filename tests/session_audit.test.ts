@@ -205,7 +205,7 @@ describe('session-audit via the built bundle', () => {
 describe('sidechain lane and read interception census', () => {
   const DIVERT_TEXT = 'a.md was already read this session. Use the cache.'
   const R_USE = (id: string): string => `{"type":"assistant","message":{"id":"msg_ru_${id}","role":"assistant","content":[{"type":"tool_use","id":"${id}","name":"Read","input":{"file_path":"a.md"}}]}}`
-  // FORMAT-DERIVED from hooks_read.ts denyOutput; summary.json divert_read: is_error true 121, absent 21.
+  // CAPTURE (shape): summary.json divert_read is_error true 121 (e.g. line 202964); wording FORMAT-DERIVED.
   const R1 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r1","is_error":true,"content":"${DIVERT_TEXT}"}]}}`
   const BIG = 'A'.repeat(11950) + ' Use `token-goat section "a.md::H"' + 'B'.repeat(16)
   const R2 = `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r2","content":"${BIG.replace(/"/g, '\\"')}"}]}}`
@@ -531,7 +531,7 @@ describe('already-read claims in the corpus audit', () => {
     expect(formatSessionAudit(s)).not.toContain('seen by text')
   })
 
-  // FORMAT-DERIVED from hooks_read.ts denyOutput; summary.json divert_read: is_error true 121, absent 21.
+  // CAPTURE (shape): summary.json divert_read is_error true 121 (e.g. line 202964); wording FORMAT-DERIVED.
   it('counts a divert marker as diverted only when its own is_error is true', async () => {
     const absent = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY)]) })
     expect(absent.readInterception.divertedByMarker).toBe(0)

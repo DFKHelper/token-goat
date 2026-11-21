@@ -14,7 +14,6 @@ const use = (id: string, name: string, input: Record<string, unknown>): string =
 const result = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
 // CAPTURE (Read): transcript dbbf6b4b-2366-4086-84af-e082e79212ee, tool_use call_c70d852691fb4925aab97c1c
-// FORMAT-DERIVED (Skill, Grep: is_error not captured)
 const errorResult = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] } })
 const COMPACT = '{"type":"system","subtype":"compact_boundary"}'
@@ -147,6 +146,40 @@ describe('DENY_TEMPLATES classification', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+// Skill: census 66 of 66 is_error true (summary.json). Grep: FORMAT-DERIVED, no census match.
+describe('Skill and Grep denies count only with is_error true', () => {
+  let dir = ''
+
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-sg-'))
+  })
+
+  afterAll(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('leaves a Skill or Grep deny with is_error absent uncounted, and counts the same text once is_error is true', async () => {
+    const skill = DENY_FIXTURES.find((f) => f.kind === 'skill_heading_tree_complete_deny')!
+    const grep = DENY_FIXTURES.find((f) => f.kind === 'inline_symbol_body_deny')!
+    const lines = (ok: (id: string, text: string) => string): string[] => [
+      use('sk', 'Skill', { skill: 'relentless' }), ok('sk', skill.text),
+      use('gr', 'Grep', { pattern: 'def dog_loader', path: 'mod.py' }), ok('gr', grep.text),
+    ]
+    const absentDir = path.join(dir, 'absent')
+    const markedDir = path.join(dir, 'marked')
+    fs.mkdirSync(path.join(absentDir, 'p0'), { recursive: true })
+    fs.mkdirSync(path.join(markedDir, 'p0'), { recursive: true })
+    fs.writeFileSync(path.join(absentDir, 'p0', 'session.jsonl'), lines(result).join('\n') + '\n')
+    fs.writeFileSync(path.join(markedDir, 'p0', 'session.jsonl'), lines(errorResult).join('\n') + '\n')
+
+    const absent = await auditSessionCorpus({ dir: absentDir })
+    const marked = await auditSessionCorpus({ dir: markedDir })
+    // Positive control first: the same fixtures count once is_error is true, so the empty result below is the gate, not an empty corpus.
+    expect(marked.denyOutcomes.map((r) => r.kind).sort()).toEqual(['inline_symbol_body_deny', 'skill_heading_tree_complete_deny'])
+    expect(absent.denyOutcomes).toEqual([])
   })
 })
 
