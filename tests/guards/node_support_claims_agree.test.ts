@@ -134,25 +134,41 @@ describe('vec0 probe', () => {
     expect(run.stdout).toMatch(/^vec0 v\d/m)
   })
 
-  it('exits non-zero with its named message when sqlite-vec cannot be loaded', () => {
-    // Copy of probe and driver; sqlite-vec's load() hands node:sqlite a missing path, so loadExtension fails.
+  /** Runs a probe copy against a stub sqlite-vec whose CJS and ESM entries load a missing file. */
+  function runWithMissingExtension(env: NodeJS.ProcessEnv) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vec0-probe-'))
     try {
       fs.mkdirSync(path.join(dir, 'scripts'))
       fs.mkdirSync(path.join(dir, 'src'))
-      fs.mkdirSync(path.join(dir, 'node_modules', 'sqlite-vec'), { recursive: true })
+      const pkg = path.join(dir, 'node_modules', 'sqlite-vec')
+      fs.mkdirSync(pkg, { recursive: true })
       fs.copyFileSync(probe, path.join(dir, 'scripts', 'check-vec0.mjs'))
       fs.copyFileSync(path.join(repoRoot, 'src', 'sqlite_driver.ts'), path.join(dir, 'src', 'sqlite_driver.ts'))
-      fs.writeFileSync(path.join(dir, 'node_modules', 'sqlite-vec', 'package.json'), JSON.stringify({ name: 'sqlite-vec', type: 'module', main: 'index.mjs' }))
-      const missing = path.join(dir, 'vec0-missing.so')
-      fs.writeFileSync(path.join(dir, 'node_modules', 'sqlite-vec', 'index.mjs'), `export function load(db) { db.loadExtension(${JSON.stringify(missing)}) }\n`)
-      const run = spawnSync(process.execPath, ['--import', tsxLoader, path.join(dir, 'scripts', 'check-vec0.mjs')], { cwd: dir, encoding: 'utf8', windowsHide: true, timeout: 30_000 })
-      expect(run.status, `vec0 probe exited 0 with the extension missing: ${run.stdout}`).not.toBe(0)
-      expect(run.stderr).toContain('vec0 check failed: sqlite-vec did not load or could not create a vec0 table')
-      expect(run.stderr).toContain('ERR_LOAD_SQLITE_EXTENSION')
-      expect(run.stderr).toContain('sqlite_driver.ts')
+      fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'sqlite-vec', type: 'module', main: 'index.cjs', exports: { '.': { require: './index.cjs', import: './index.mjs' } } }))
+      const missing = JSON.stringify(path.join(dir, 'vec0-missing.so'))
+      fs.writeFileSync(path.join(pkg, 'index.cjs'), `exports.load = function load(db) { db.loadExtension(${missing}) }\n`)
+      fs.writeFileSync(path.join(pkg, 'index.mjs'), `export function load(db) { db.loadExtension(${missing}) }\n`)
+      return spawnSync(process.execPath, ['--import', tsxLoader, path.join(dir, 'scripts', 'check-vec0.mjs')], { cwd: dir, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 })
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  }
+
+  it('exits non-zero with its named message when sqlite-vec cannot be loaded', () => {
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    delete env.CI
+    const run = runWithMissingExtension(env)
+    expect(run.status, `vec0 probe exited 0 with the extension missing: ${run.stdout}`).not.toBe(0)
+    expect(run.stderr).toContain('vec0 check failed: sqlite-vec did not load or could not create a vec0 table')
+    expect(run.stderr).toContain('ERR_LOAD_SQLITE_EXTENSION')
+    expect(run.stderr).toContain('sqlite_driver.ts')
+    expect(run.stderr).toContain('TG_PREPUSH_WSL=0')
+  })
+
+  it('omits the TG_PREPUSH_WSL=0 hint when CI is set', () => {
+    const run = runWithMissingExtension({ ...process.env, CI: 'true' })
+    expect(run.status, `vec0 probe exited 0 with the extension missing: ${run.stdout}`).not.toBe(0)
+    expect(run.stderr).toContain('vec0 check failed: sqlite-vec did not load or could not create a vec0 table')
+    expect(run.stderr).not.toContain('TG_PREPUSH_WSL=0')
   })
 })
