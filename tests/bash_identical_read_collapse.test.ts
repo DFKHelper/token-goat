@@ -178,6 +178,10 @@ describe('built bundle: identical file-read collapse survives across processes',
     const replaced = rewrittenBody(parsed.hookSpecificOutput?.updatedToolOutput)
     expect(replaced.length).toBeLessThan(BODY.length)
     expect(replaced).toContain('token-goat bash-output ')
+    expect(replaced).toContain('--grep <pattern>')
+    expect(replaced).toContain('--lines <start-end>')
+    expect(replaced).toContain('use `--full` only if all lines are needed')
+    expect(replaced).not.toMatch(/bash-output \S+ --full/)
   })
 
   it('does not collapse against an identical run from a different session', () => {

@@ -77,7 +77,12 @@ Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of thi
 - For a long document, read a bounded section: `token-goat section "README.md::Install" --max-lines 40`. Add `--grep 'pattern'` to keep matching body lines with their nearest sub-heading.
 - To locate a heading without reading its body, use `token-goat section README.md --list --grep 'Install'`.
 - For Maven POMs, batch-select declared dependencies with `token-goat xml-query pom.xml --xpath '//dependency' --json --head 30`; version placeholders such as `${revision}` stay as written and are not resolved. For Dockerfiles, `token-goat outline Dockerfile` shows `FROM` image references; use `token-goat grep '^\s*FROM\s+' Dockerfile --max-lines 20` when only those lines are needed.
-- When a repeated Bash file read is replaced by a pointer, use its emitted `token-goat bash-output <id> --full` command only when exact content matters. Narrow recall with `--grep`, `--lines`, or `--head` instead of rereading the file.
+- When a repeated Bash file read is replaced by a pointer, recall only the needed slice with
+  `--grep`, `--lines`, `--head`, or `--tail`; use `--full` only when every line matters.
+- After compaction, if the task has a checkpoint or `STATE.md`, read it first and continue from its
+  next action. Revisit earlier findings only when current evidence disagrees.
+- To recover a token-goat session, run `token-goat resume <session-id>`; use
+  `token-goat session-summary --json` to locate the ID.
 
 ### audit — session retrospective
 
