@@ -538,7 +538,7 @@ function printReplaceReceipt(emit: ReplaceEmit, reindex: ReindexStatus): void {
 }
 
 // Receipt for a replace write: changed lines, lines added and removed, line endings before and after.
-type EolStyle = 'LF' | 'CRLF' | 'mixed' | 'none'
+type EolStyle = 'LF' | 'CRLF' | 'CR' | 'mixed' | 'none'
 
 type ReindexStatus = 'queued' | 'not queued' | 'skipped (dry run)'
 
@@ -554,6 +554,8 @@ interface ReplaceReceipt {
   changedLines: number[]
   linesAdded: number
   linesRemoved: number
+  // 1-based before-bytes lines a pure deletion removed text from, ascending; empty for any other edit.
+  deletedAt: number[]
   eolBefore: EolStyle
   eolAfter: EolStyle
 }
@@ -563,22 +565,27 @@ const RECEIPT_LINE_LIMIT = 20
 
 function eolStyleOf(buf: Buffer): EolStyle {
   let crlf = 0
-  let bare = 0
+  let lf = 0
+  let cr = 0
   for (let i = 0; i < buf.length; i++) {
-    if (buf[i] !== 0x0a) continue
-    if (i > 0 && buf[i - 1] === 0x0d) crlf++
-    else bare++
+    if (buf[i] === 0x0a) {
+      if (i > 0 && buf[i - 1] === 0x0d) crlf++
+      else lf++
+    } else if (buf[i] === 0x0d && buf[i + 1] !== 0x0a) cr++
   }
-  if (crlf === 0 && bare === 0) return 'none'
-  if (bare === 0) return 'CRLF'
-  if (crlf === 0) return 'LF'
-  return 'mixed'
+  const kinds = [crlf, lf, cr].filter((n) => n > 0).length
+  if (kinds === 0) return 'none'
+  if (kinds > 1) return 'mixed'
+  if (crlf > 0) return 'CRLF'
+  return lf > 0 ? 'LF' : 'CR'
 }
 
+// A line ends at LF, CRLF or a lone CR: the same breaks textLineStarts counts for the indexer.
 function newlineOffsets(buf: Buffer): number[] {
   const offsets: number[] = []
   for (let i = 0; i < buf.length; i++) {
     if (buf[i] === 0x0a) offsets.push(i)
+    else if (buf[i] === 0x0d && buf[i + 1] !== 0x0a) offsets.push(i)
   }
   return offsets
 }
@@ -606,32 +613,42 @@ function buildReplaceReceipt(before: Buffer, after: Buffer, edit: ReplaceEdit): 
   const newNewlines = newlineOffsets(after)
   const removed = new Set<number>()
   const added = new Set<number>()
+  const deleted = new Set<number>()
   // Bytes after an earlier replacement sit shifted by the length difference of each one before them.
   let shift = 0
   for (const start of edit.matches) {
     addLinesTouched(oldNewlines, start, start + edit.oldLength, removed)
     const newStart = start + shift
-    addLinesTouched(newNewlines, newStart, newStart + edit.newLength, added)
+    // A pure deletion adds no text: no line changed, and the removed line is recorded instead.
+    if (edit.newLength === 0) deleted.add(lineAt(oldNewlines, start))
+    else addLinesTouched(newNewlines, newStart, newStart + edit.newLength, added)
     shift += edit.newLength - edit.oldLength
   }
   return {
     changedLines: [...added].sort((a, b) => a - b),
     linesAdded: added.size,
     linesRemoved: removed.size,
+    deletedAt: [...deleted].sort((a, b) => a - b),
     eolBefore: eolStyleOf(before),
     eolAfter: eolStyleOf(after),
   }
 }
 
 function replaceReceiptLines(receipt: ReplaceReceipt, reindex: ReindexStatus): string[] {
-  const shown = receipt.changedLines.slice(0, RECEIPT_LINE_LIMIT).map(String)
-  const hidden = receipt.changedLines.length - shown.length
+  const pureDelete = receipt.changedLines.length === 0
+  const listed = pureDelete ? receipt.deletedAt : receipt.changedLines
+  const shown = listed.slice(0, RECEIPT_LINE_LIMIT).map(String)
+  const hidden = listed.length - shown.length
   if (hidden > 0) shown.push(`+${hidden} more`)
+  const noun = receipt.deletedAt.length === 1 ? 'line' : 'lines'
+  const changed = pureDelete
+    ? `none (${receipt.linesRemoved} removed at ${noun} ${shown.join(', ')})`
+    : shown.join(', ')
   const eol = receipt.eolBefore === receipt.eolAfter
     ? `${receipt.eolAfter} (kept)`
     : `${receipt.eolBefore} -> ${receipt.eolAfter}`
   return [
-    `  lines changed: ${shown.join(', ')} (+${receipt.linesAdded} -${receipt.linesRemoved})`,
+    `  lines changed: ${changed} (+${receipt.linesAdded} -${receipt.linesRemoved})`,
     `  line endings: ${eol}`,
     `  reindex: ${reindex}`,
   ]

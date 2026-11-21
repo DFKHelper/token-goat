@@ -879,6 +879,49 @@ describe('token-goat CLI', () => {
       }
     })
 
+    // HAND-DERIVED: 'a\nb\n' minus its line 2 leaves 'a\n', so no line is changed and the removed line was line 2.
+    it('replace deleting the last whole line reports no changed line and names the removed line', async () => {
+      const file = path.join(indexableDir(), `rpl-del-eof-${process.pid}-${Date.now()}.txt`)
+      fs.writeFileSync(file, 'a\nb\n', 'utf8')
+      try {
+        const r = await run(['replace', file, '--old-b64', replaceB64('b\n'), '--new-b64', replaceB64('')])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(file, 'utf8')).toBe('a\n')
+        expect(r.stdout).toContain('  lines changed: none (1 removed at line 2) (+0 -1)')
+      } finally {
+        fs.rmSync(file, { force: true })
+      }
+    })
+
+    // HAND-DERIVED: 'a\nb\nc\n' minus line 2 leaves 'a\nc\n'; the 'c' that moves up to line 2 was not changed.
+    it('replace deleting a whole middle line does not report the line that moves into its place as changed', async () => {
+      const file = path.join(indexableDir(), `rpl-del-mid-${process.pid}-${Date.now()}.txt`)
+      fs.writeFileSync(file, 'a\nb\nc\n', 'utf8')
+      try {
+        const r = await run(['replace', file, '--old-b64', replaceB64('b\n'), '--new-b64', replaceB64('')])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(file, 'utf8')).toBe('a\nc\n')
+        expect(r.stdout).toContain('  lines changed: none (1 removed at line 2) (+0 -1)')
+      } finally {
+        fs.rmSync(file, { force: true })
+      }
+    })
+
+    // HAND-DERIVED: 'a\rb\rc\r' is three lines ended by lone CRs with no LF, so its style is CR and 'b' is on line 2.
+    it('replace on a lone-CR file reports line 2 for an edit on line 2 and names the CR style', async () => {
+      const file = path.join(indexableDir(), `rpl-receipt-cr-${process.pid}-${Date.now()}.txt`)
+      fs.writeFileSync(file, Buffer.from('a\rb\rc\r', 'utf8'))
+      try {
+        const r = await run(['replace', file, '--old-b64', replaceB64('b'), '--new-b64', replaceB64('B')])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(file).equals(Buffer.from('a\rB\rc\r', 'utf8'))).toBe(true)
+        expect(r.stdout).toContain('  lines changed: 2 (+1 -1)')
+        expect(r.stdout).toContain('  line endings: CR (kept)')
+      } finally {
+        fs.rmSync(file, { force: true })
+      }
+    })
+
     // HAND-DERIVED: expected lines and bytes are computed from the input, not from the implementation.
     it('replace receipt caps the changed-line list at 20 and says how many more, and a temp file is not queued', async () => {
       const file = path.join(os.tmpdir(), `tg-rpl-receipt-cap-${process.pid}-${Date.now()}.txt`)
