@@ -15,8 +15,10 @@ import { OPENCODE_PLUGIN_SCRIPT } from '../src/bridges/opencode.js'
 import { PI_EXTENSION_SCRIPT } from '../src/bridges/pi.js'
 import type { HarnessName } from '../src/bridges/types.js'
 import { VSCODE_HOOK_FILE_EVENT_KEYS } from '../src/bridges/vscode_install.js'
+import { relayInProcess } from '../src/relay.js'
 import { HOOK_EVENTS, type HookEventName } from '../src/types.js'
 
+import { HARNESS_HOOK_PAYLOADS, type PayloadHarness } from './fixtures/harness_hook_payloads.js'
 import { writeBackdated } from './helpers/backdated_write.js'
 import { BUNDLE, ROOT } from './helpers/bundle.js'
 
@@ -562,4 +564,138 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape -- st
     expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/resp\["decision"\]\s*===\s*"block"/)
     expect(OPENCLAW_PLUGIN_SCRIPT).toMatch(/blockReason:\s*resp\["reason"\]/)
   })
+})
+
+// Read mutations: bases from tests/fixtures/harness_hook_payloads.ts (FORMAT-DERIVED); mutations HAND-DERIVED.
+type PayloadObject = Record<string, unknown>
+type PayloadChange = { readonly set: unknown } | { readonly remove: true }
+
+interface ReadHost {
+  readonly slug: string
+  readonly fixture: { readonly harness: PayloadHarness; readonly name: string }
+  readonly driver: HarnessName
+  readonly path: readonly string[]
+  readonly session: readonly string[]
+  readonly cwd: readonly string[]
+  readonly drop: readonly (readonly string[])[]
+}
+
+// drop: ranged-read keys removed so each read is whole-file, as the deny rows above send them.
+const READ_HOSTS: readonly ReadHost[] = [
+  { slug: 'claudecode', fixture: { harness: 'claudecode', name: 'Read of a project file' }, driver: 'claudecode', path: ['tool_input', 'file_path'], session: ['session_id'], cwd: ['cwd'], drop: [] },
+  { slug: 'grok', fixture: { harness: 'grok', name: 'read_file' }, driver: 'grok', path: ['toolInput', 'target_file'], session: ['sessionId'], cwd: ['cwd'], drop: [] },
+  { slug: 'kimi', fixture: { harness: 'kimi', name: 'Read' }, driver: 'kimi', path: ['tool_input', 'path'], session: ['session_id'], cwd: ['cwd'], drop: [['tool_input', 'line_offset'], ['tool_input', 'n_lines']] },
+  { slug: 'copilot-view', fixture: { harness: 'copilot_cli', name: 'view, remapped to Read with path to file_path' }, driver: 'copilot_cli', path: ['toolArgs', 'path'], session: ['sessionId'], cwd: ['workingDirectory'], drop: [['toolArgs', 'view_range']] },
+  { slug: 'vscode-read-file', fixture: { harness: 'copilot_cli', name: 'VS Code read_file through the Copilot hooks file' }, driver: 'vscode', path: ['tool_input', 'filePath'], session: ['session_id'], cwd: ['cwd'], drop: [['tool_input', 'startLine'], ['tool_input', 'endLine']] },
+]
+
+function withAt(base: PayloadObject, at: readonly string[], change: PayloadChange): PayloadObject {
+  const copy = structuredClone(base)
+  let parent: PayloadObject = copy
+  for (const key of at.slice(0, -1)) parent = parent[key] as PayloadObject
+  const last = at[at.length - 1]
+  if ('remove' in change) delete parent[last]
+  else parent[last] = change.set
+  return copy
+}
+
+function fixtureBase(host: ReadHost, proj: string): PayloadObject {
+  const hit = HARNESS_HOOK_PAYLOADS.find((c) => c.harness === host.fixture.harness && c.name === host.fixture.name)
+  if (hit?.payload === undefined) throw new Error(`harness_hook_payloads.ts has no payload "${host.fixture.name}"`)
+  const text = JSON.stringify(hit.payload)
+    .replaceAll('{{PROJ}}', proj.replaceAll(path.sep, '/'))
+    .replaceAll('{{SID}}', 'readmut-base')
+  return host.drop.reduce((base, at) => withAt(base, at, { remove: true }), JSON.parse(text) as PayloadObject)
+}
+
+function readSetup(host: ReadHost, tag: string): { proj: string; file: string; base: PayloadObject } {
+  const proj = mkIsolated(`tg-readmut-${host.slug}-${tag}-`)
+  const file = path.join(proj, 'large.bin')
+  writeBackdated(file, 'x'.repeat(60 * 1024))
+  const base = withAt(fixtureBase(host, proj), host.path, { set: file })
+  // A session id unique to this row, so in-process rows never share relay session state.
+  return { proj, file, base: withAt(base, host.session, { set: `readmut-${host.slug}-${tag}` }) }
+}
+
+function driveRead(host: ReadHost, payload: PayloadObject, proj: string): RunResult {
+  if (host.driver === 'copilot_cli' || host.driver === 'vscode') {
+    const env = tgEnv(host.driver)
+    // VS Code sets no token-goat override; the shim must tell its payload apart on its own.
+    if (host.driver === 'vscode') delete env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    return runShim(COPILOT_CLI_HOOK_SCRIPT, proj, 'preToolUse', [BUNDLE], payload, env)
+  }
+  return run(['hook', 'pre_tool_use'], tgEnv(host.driver), JSON.stringify(payload))
+}
+
+function isDenied(stdout: string): boolean {
+  const out = JSON.parse(stdout) as PayloadObject & { hookSpecificOutput?: { permissionDecision?: unknown } }
+  return (
+    out.decision === 'block' ||
+    out.decision === 'deny' ||
+    out.permissionDecision === 'deny' ||
+    out.hookSpecificOutput?.permissionDecision === 'deny'
+  )
+}
+
+const RELAY_ENV_KEYS = ['TOKEN_GOAT_HARNESS_OVERRIDE', 'CLAUDE_CODE_SESSION_ID'] as const
+
+// relayInProcess is the entry `hook pre_tool_use` calls (src/relay.ts); the harness override is set for this call only.
+async function relayAs(host: ReadHost, payload: PayloadObject): Promise<string> {
+  const saved = RELAY_ENV_KEYS.map((key) => [key, process.env[key]] as const)
+  process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = host.driver
+  try {
+    return await relayInProcess('pre_tool_use', payload)
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
+function expectFailOpen(stdout: string): void {
+  expect(() => JSON.parse(stdout), `stdout: ${stdout}`).not.toThrow()
+  expect(isDenied(stdout), `denied: ${stdout}`).toBe(false)
+}
+
+describe('hook-event x harness PreToolUse Read payload mutations', () => {
+  for (const host of READ_HOSTS) {
+    describe(host.slug, () => {
+      it('cross-record swap: session B carrying the path session A read is not denied as already read', () => {
+        const { proj, base } = readSetup(host, 'swap')
+        const readerA = withAt(base, host.session, { set: `readmut-a-${host.slug}` })
+        const readerB = withAt(base, host.session, { set: `readmut-b-${host.slug}` })
+        const first = driveRead(host, readerA, proj)
+        expect(first.status, `session A read, stderr: ${first.stderr}`).toBe(0)
+        const swapped = driveRead(host, readerB, proj)
+        expect(swapped.status, `swapped read, stderr: ${swapped.stderr}`).toBe(0)
+        expect(isDenied(swapped.stdout), 'session B was denied a file only session A read').toBe(false)
+        expect(swapped.stdout).not.toMatch(/already read/i)
+      })
+
+      // copilot-view has no in-process null-path rows: relayInProcess gets the raw `view` tool name, which only the shim's remap makes Read.
+      if (host.slug === 'copilot-view') return
+
+      for (const [key, at] of [['path', host.path], ['session', host.session], ['cwd', host.cwd]] as const) {
+        for (const form of ['null', 'deleted'] as const) {
+          it(`${key} key ${form}: fails open, with no throw and no deny`, async () => {
+            const { base } = readSetup(host, `${key}-${form}`)
+            const change: PayloadChange = form === 'null' ? { set: null } : { remove: true }
+            expectFailOpen(await relayAs(host, withAt(base, at, change)))
+          })
+        }
+      }
+
+      const WRONG_TYPES: ReadonlyArray<readonly [string, (file: string) => unknown]> = [
+        ['number', () => 42],
+        ['object', (file) => ({ path: file })],
+      ]
+      for (const [tag, value] of WRONG_TYPES) {
+        it(`path value of wrong type (${tag}): fails open, with no throw and no deny`, async () => {
+          const { file, base } = readSetup(host, `type-${tag}`)
+          expectFailOpen(await relayAs(host, withAt(base, host.path, { set: value(file) })))
+        })
+      }
+    })
+  }
 })
