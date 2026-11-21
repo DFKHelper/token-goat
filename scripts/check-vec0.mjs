@@ -6,13 +6,18 @@ try {
   // The CJS entry src/db.ts loadSqliteVec requires, so a broken CJS entry fails here too.
   const sqliteVec = createRequire(import.meta.url)('sqlite-vec')
   const db = new Database(':memory:')
-  sqliteVec.load(db)
-  db.exec('CREATE VIRTUAL TABLE probe USING vec0(embedding float[384])')
-  console.log('vec0', db.prepare('SELECT vec_version() AS v').get().v)
-  db.close()
+  try {
+    sqliteVec.load(db)
+    db.exec('CREATE VIRTUAL TABLE probe USING vec0(embedding float[384])')
+    console.log('vec0', db.prepare('SELECT vec_version() AS v').get().v)
+  } finally {
+    db.close()
+  }
 } catch (err) {
   // CI runs have no pre-push leg to skip, so the opt-out hint is for local pushes only.
-  const hint = process.env.CI ? '' : ' (pre-push: TG_PREPUSH_WSL=0 skips the Linux leg)'
+  const ci = process.env.CI ?? ''
+  const ciSet = ci !== '' && ci !== '0' && ci !== 'false'
+  const hint = ciSet ? '' : ' (pre-push: TG_PREPUSH_WSL=0 skips the Linux leg)'
   console.error(`vec0 check failed: sqlite-vec did not load or could not create a vec0 table${hint}`)
   console.error(err)
   process.exitCode = 1

@@ -71,6 +71,13 @@ describe.skipIf(BASH === null)('wsl gate', () => {
     expect(r.reason).toContain('tests/helpers/bundle.ts')
   })
 
+  it('selects the WSL leg for a changed vec0 probe under the real pattern file', () => {
+    const real = readFileSync(path.join(process.cwd(), '.lefthook-scripts', 'wsl-paths.txt'), 'utf8')
+    const r = gate('scripts/check-vec0.mjs', real)
+    expect(r.run).toBe('1')
+    expect(r.reason).toContain('scripts/check-vec0.mjs')
+  })
+
   it('leaves a plain test file off the WSL leg under the real pattern file', () => {
     const real = readFileSync(path.join(process.cwd(), '.lefthook-scripts', 'wsl-paths.txt'), 'utf8')
     expect(gate('tests/plain_suite.test.ts', real).run).toBe('0')

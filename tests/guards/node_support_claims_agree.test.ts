@@ -134,7 +134,7 @@ describe('vec0 probe', () => {
     expect(run.stdout).toMatch(/^vec0 v\d/m)
   })
 
-  /** Runs a probe copy against a stub sqlite-vec whose CJS and ESM entries load a missing file. */
+  /** Probe copy against a stub sqlite-vec: CJS entry loads a missing file; ESM entry loads cleanly. */
   function runWithMissingExtension(env: NodeJS.ProcessEnv) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vec0-probe-'))
     try {
@@ -144,10 +144,11 @@ describe('vec0 probe', () => {
       fs.mkdirSync(pkg, { recursive: true })
       fs.copyFileSync(probe, path.join(dir, 'scripts', 'check-vec0.mjs'))
       fs.copyFileSync(path.join(repoRoot, 'src', 'sqlite_driver.ts'), path.join(dir, 'src', 'sqlite_driver.ts'))
+      // FORMAT-DERIVED: node_modules/sqlite-vec/package.json (main index.cjs; exports require, import).
       fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'sqlite-vec', type: 'module', main: 'index.cjs', exports: { '.': { require: './index.cjs', import: './index.mjs' } } }))
       const missing = JSON.stringify(path.join(dir, 'vec0-missing.so'))
       fs.writeFileSync(path.join(pkg, 'index.cjs'), `exports.load = function load(db) { db.loadExtension(${missing}) }\n`)
-      fs.writeFileSync(path.join(pkg, 'index.mjs'), `export function load(db) { db.loadExtension(${missing}) }\n`)
+      fs.writeFileSync(path.join(pkg, 'index.mjs'), `export function load() {}\n`)
       return spawnSync(process.execPath, ['--import', tsxLoader, path.join(dir, 'scripts', 'check-vec0.mjs')], { cwd: dir, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 })
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -170,5 +171,11 @@ describe('vec0 probe', () => {
     expect(run.status, `vec0 probe exited 0 with the extension missing: ${run.stdout}`).not.toBe(0)
     expect(run.stderr).toContain('vec0 check failed: sqlite-vec did not load or could not create a vec0 table')
     expect(run.stderr).not.toContain('TG_PREPUSH_WSL=0')
+  })
+
+  it('keeps the TG_PREPUSH_WSL=0 hint when CI is false', () => {
+    const run = runWithMissingExtension({ ...process.env, CI: 'false' })
+    expect(run.status, `vec0 probe exited 0 with the extension missing: ${run.stdout}`).not.toBe(0)
+    expect(run.stderr).toContain('TG_PREPUSH_WSL=0')
   })
 })
