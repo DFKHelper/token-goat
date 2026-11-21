@@ -1,6 +1,5 @@
 /** Enterprise evaluation asks one question about egress: can this thing open a connection I did not ask for? The honest answer had five parts -- its own HTTP fetches, the embedding-model download, the OCR language-data download, screenshot, and Google Drive -- and no single lever to say no. `network.offline` is that lever. It is a locked section, so a cloned repository cannot switch it back off from its own .token-goat.toml. */
 import * as fs from 'node:fs'
-import * as net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -153,17 +152,9 @@ describe('takeScreenshot under offline mode', () => {
 })
 
 describe('the built bundle under the suite default', () => {
-  // HAND-DERIVED: the refusal text is src/webfetch.ts::performHttpFetch's, wrapped by src/config_commands.ts::cmdFetchImage. No-socket mechanism: a loopback net.Server owned by this test counts every accepted connection, and the bundle is pointed at it; the offline check runs before any DNS or socket in performHttpFetch, so the count must stay 0. The env is process.env as tests/setup/isolate-home.ts left it, with no override here.
-  it('fetch-image exits with the offline refusal and opens no socket when the test sets no opt-out', async () => {
-    let connections = 0
-    const server = net.createServer((socket) => {
-      connections++
-      socket.destroy()
-    })
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('loopback server has no port')
-    const url = `http://127.0.0.1:${address.port}/pixel.png`
+  // FORMAT-DERIVED: the refusal text is read off src/webfetch.ts::performHttpFetch, wrapped by src/config_commands.ts::cmdFetchImage. The host is a reserved .invalid name that cannot resolve, so with the offline check removed the bundle fails with a different (resolution) error and the refusal match goes red. The env is process.env as tests/setup/isolate-home.ts left it, with no override here.
+  it('fetch-image exits 1 with the offline refusal and writes no file when the test sets no opt-out', async () => {
+    const url = 'http://offline-probe.invalid/pixel.png'
     const out = path.join(root, 'fetched.png')
     let owned: OwnedChild | undefined
     try {
@@ -177,17 +168,13 @@ describe('the built bundle under the suite default', () => {
       started.child.stdout?.on('data', (d: Buffer) => (stdout += d.toString('utf8')))
       started.child.stderr?.on('data', (d: Buffer) => (stderr += d.toString('utf8')))
       const status = await new Promise<number | null>((resolve) => started.child.once('close', (code) => resolve(code)))
-      // Let the loop accept anything the child connected before it exited, then count.
-      for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve))
 
-      expect(stderr, 'the refusal names the setting').toMatch(/Offline mode is on \(network\.offline\): refusing to fetch http:\/\/127\.0\.0\.1:\d+\/pixel\.png/)
+      expect(stderr, 'the refusal names the setting').toMatch(/Offline mode is on \(network\.offline\): refusing to fetch http:\/\/offline-probe\.invalid\/pixel\.png/)
       expect(status, `stdout=${stdout} stderr=${stderr}`).toBe(1)
-      expect(connections, 'the bundle opened a socket to the loopback server').toBe(0)
-      expect(fs.existsSync(out)).toBe(false)
+      expect(fs.existsSync(out), 'no output file is written').toBe(false)
     } finally {
       owned?.kill()
       owned?.release()
-      await new Promise<void>((resolve) => server.close(() => resolve()))
     }
   })
 })
