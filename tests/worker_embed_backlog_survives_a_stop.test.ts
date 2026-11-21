@@ -60,7 +60,7 @@ function classifyVec0(): 'working' | 'broken' | 'absent' {
   }
 }
 
-// The pinned model is read from the isolated home or TOKEN_GOAT_MODEL_CACHE_DIR, never downloaded: without a copy these rows skip.
+// The pinned model is read from TOKEN_GOAT_MODEL_CACHE_DIR, never downloaded by a row: tests/setup/seed-embed-model.ts fetches it once before the run (CI warms it with `npm run model:warm`), and without a copy these rows skip.
 const canExerciseRealEmbed = classifyVec0() === 'working' && isAvailable() && modelFilesPresent()
 
 let TMP: string
@@ -133,6 +133,14 @@ async function runLoopUntil(done: () => boolean, maxCycles: number): Promise<voi
 
 it('sqlite-vec is not installed-but-broken, which would skip the suite below while semantic search is dead', () => {
   expect(classifyVec0()).not.toBe('broken')
+})
+
+// CI warms the model, so a skip of the block below there is lost coverage reported as green: it has to fail instead.
+it.runIf(Boolean(process.env['CI']))('CI runs the embed backlog rows instead of skipping them', () => {
+  expect(
+    { vec0: classifyVec0(), runtime: isAvailable(), modelFilesPresent: modelFilesPresent() },
+    'one of these is not working/true, so every row of the embed backlog block skips',
+  ).toEqual({ vec0: 'working', runtime: true, modelFilesPresent: true })
 })
 
 describe.skipIf(!canExerciseRealEmbed)('the embed backlog a stopped worker drops', () => {
@@ -222,7 +230,7 @@ describe.skipIf(!canExerciseRealEmbed)('the embed backlog a stopped worker drops
     expect(chunkCount(), 'the file indexed while embeddings were off stayed out of semantic search').toBeGreaterThan(1)
   })
 
-  // A failed model download holds further tries (model_download_gate.ts), and every embed in that hold would fail the same way. A walk that ran through the hold would queue each file for an embed that cannot happen and then find itself finished, so the files would wait for the next worker start once the network is back. The hold has to count as "not ready", so that lifting it starts the walk again. PROVENANCE: HAND-DERIVED, the failure written through the gate's own recorder with the model files absent from both the data root and the shared cache.
+  // A failed model download holds further tries (model_download_gate.ts), and every embed in that hold would fail the same way. A walk that ran through the hold would queue each file for an embed that cannot happen and then find itself finished, so the files would wait for the next worker start once the network is back. The hold has to count as "not ready", so that lifting it starts the walk again. PROVENANCE: HAND-DERIVED, the failure written through the gate's own recorder with the model files absent from both the data root and the shared cache, which is put back when the hold lifts.
   it('waits out a held model download, then scans once the hold lifts', async () => {
     await parsedButNeverEmbedded()
     const prevCache = process.env['TOKEN_GOAT_MODEL_CACHE_DIR']
@@ -235,6 +243,9 @@ describe.skipIf(!canExerciseRealEmbed)('the embed backlog a stopped worker drops
       await runLoopSwitchingAt(10, () => {
         chunksWhileHeld = chunkCount()
         clearDownloadFailure(url)
+        // The suite is offline, so what the lifted hold lets the embed do is copy the seeded model, never fetch it.
+        if (prevCache === undefined) delete process.env['TOKEN_GOAT_MODEL_CACHE_DIR']
+        else process.env['TOKEN_GOAT_MODEL_CACHE_DIR'] = prevCache
       }, () => chunkCount() > 0, 200)
 
       expect(chunksWhileHeld, 'the worker embedded while the model download was held').toBe(0)
