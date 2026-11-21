@@ -171,6 +171,7 @@ else
 fi
 
 # The sqlite-vec check runs in CI too; here it fails the pre-push run instead of letting the semantic tests skip.
+# A failed sqlite-vec check fails the push (exit 1, not the skip code 75).
 npm run vec0:check
 
 # Tests spawn `python` inside shell commands; Ubuntu ships only python3, so give the run a `python` that is first on PATH, but only when none exists.
