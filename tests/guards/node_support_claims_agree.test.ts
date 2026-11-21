@@ -31,6 +31,18 @@ function workflowNodeVersions(): { where: string; version: number }[] {
   return found
 }
 
+/** Whether dotted version `version` is at or above `floor`, compared segment by segment as numbers, so `22.23.3` clears `22.16.0`. */
+function atLeast(version: string, floor: string): boolean {
+  const a = version.split('.').map(Number)
+  const b = floor.split('.').map(Number)
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0
+    const y = b[i] ?? 0
+    if (x !== y) return x > y
+  }
+  return true
+}
+
 describe('Node support claims', () => {
   const required = Number(/(\d+)/.exec(engines ?? '')?.[1] ?? -1)
   /** The whole floor, not just its major: `>=22.16.0` -> `22.16.0`. */
@@ -38,6 +50,8 @@ describe('Node support claims', () => {
   // How a human writes that floor, which is how the README writes it: trailing zero segments are dropped, so `22.0.0` reads as "22" and `22.16.0` as "22.16". Comparing only the major would have let the README keep saying "Node.js 22" after the node:sqlite driver raised the real floor to 22.16, which is the drift this line exists to catch.
   const label = floor.replace(/(?:\.0)+$/, '')
   const pinned = workflowNodeVersions()
+  // The Node release the WSL pre-push run downloads when the login shell has none new enough; a separate pin from the workflows, so it is read on its own.
+  const wslPin = /^NODE_VERSION="(\d+(?:\.\d+)*)"/m.exec(fs.readFileSync(path.join(repoRoot, '.lefthook-scripts', 'wsl-test.sh'), 'utf8'))?.[1] ?? ''
 
   it('finds the declarations at all, so an empty sweep cannot pass as a clean one', () => {
     expect(required).toBeGreaterThan(0)
@@ -59,6 +73,11 @@ describe('Node support claims', () => {
     const tooOld = pinned.filter((p) => p.version < required).map((p) => `${p.where} pins ${p.version}`)
 
     expect(tooOld, 'these run below the engines floor').toEqual([])
+  })
+
+  it('runs the WSL pre-push suite on a Node at or above the engines floor', () => {
+    expect(wslPin, 'wsl-test.sh has no NODE_VERSION pin to check').not.toBe('')
+    expect(atLeast(wslPin, floor), `wsl-test.sh pins Node ${wslPin}, below the engines floor ${floor}`).toBe(true)
   })
 
   it('does not advertise a tested version that no workflow actually runs', () => {
