@@ -70,6 +70,9 @@ describe('a fixed sleep followed by a read in the same line', () => {
     ['sleep 10; git status'],
     ['sleep 5 && token-goat bash-output --file /tmp/x.output'],
     ['sleep 5 && token-goat read src/app.ts'],
+    ['sleep 5 && token-goat bash-output --tail 5 --file /tmp/x.output'],
+    ['sleep 5 && tg read src/app.ts'],
+    ['sleep 5 && npx token-goat read src/app.ts'],
   ])(
     'gets the note for %s',
     (command) => {
@@ -85,6 +88,9 @@ describe('a fixed sleep followed by a read in the same line', () => {
     ['sleep 5; echo done'],
     ['cat /tmp/x.log; sleep 5'],
     ['sleep 5 && token-goat bash-output abc123'],
+    ['sleep 5 && token-goat bash-output --tail 5 abc123'],
+    ['sleep 5 && token-goat reader src/app.ts'],
+    ['sleep 5 && token-goat bash-output --files /tmp/x.output'],
   ])(
     'gets no note for %s',
     (command) => {
