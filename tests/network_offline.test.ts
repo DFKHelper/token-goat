@@ -1,5 +1,6 @@
 /** Enterprise evaluation asks one question about egress: can this thing open a connection I did not ask for? The honest answer had five parts -- its own HTTP fetches, the embedding-model download, the OCR language-data download, screenshot, and Google Drive -- and no single lever to say no. `network.offline` is that lever. It is a locked section, so a cloned repository cannot switch it back off from its own .token-goat.toml. */
 import * as fs from 'node:fs'
+import * as net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -7,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { PROJECT_LOCKED_SECTIONS, invalidateConfigCache, loadConfig, stripLockedProjectKeys } from '../src/config.js'
 import { ocrBlockedOffline } from '../src/image_ocr.js'
+import { spawnOwned, type OwnedChild } from '../src/process_tree.js'
 import { performHttpFetch } from '../src/webfetch.js'
+import { BUNDLE } from './helpers/bundle.js'
 
 let root: string
 let savedOffline: string | undefined
@@ -146,5 +149,45 @@ describe('takeScreenshot under offline mode', () => {
     await expect(takeScreenshot('https://example.com', path.join(root, 'shot.png'))).rejects.toThrow(
       /Offline mode is on \(network\.offline\)/,
     )
+  })
+})
+
+describe('the built bundle under the suite default', () => {
+  // HAND-DERIVED: the refusal text is src/webfetch.ts::performHttpFetch's, wrapped by src/config_commands.ts::cmdFetchImage. No-socket mechanism: a loopback net.Server owned by this test counts every accepted connection, and the bundle is pointed at it; the offline check runs before any DNS or socket in performHttpFetch, so the count must stay 0. The env is process.env as tests/setup/isolate-home.ts left it, with no override here.
+  it('fetch-image exits with the offline refusal and opens no socket when the test sets no opt-out', async () => {
+    let connections = 0
+    const server = net.createServer((socket) => {
+      connections++
+      socket.destroy()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('loopback server has no port')
+    const url = `http://127.0.0.1:${address.port}/pixel.png`
+    const out = path.join(root, 'fetched.png')
+    let owned: OwnedChild | undefined
+    try {
+      const started = spawnOwned(process.execPath, [BUNDLE, 'fetch-image', url, '--out', out], {
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      owned = started
+      let stdout = ''
+      let stderr = ''
+      started.child.stdout?.on('data', (d: Buffer) => (stdout += d.toString('utf8')))
+      started.child.stderr?.on('data', (d: Buffer) => (stderr += d.toString('utf8')))
+      const status = await new Promise<number | null>((resolve) => started.child.once('close', (code) => resolve(code)))
+      // Let the loop accept anything the child connected before it exited, then count.
+      for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+
+      expect(stderr, 'the refusal names the setting').toMatch(/Offline mode is on \(network\.offline\): refusing to fetch http:\/\/127\.0\.0\.1:\d+\/pixel\.png/)
+      expect(status, `stdout=${stdout} stderr=${stderr}`).toBe(1)
+      expect(connections, 'the bundle opened a socket to the loopback server').toBe(0)
+      expect(fs.existsSync(out)).toBe(false)
+    } finally {
+      owned?.kill()
+      owned?.release()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   })
 })
