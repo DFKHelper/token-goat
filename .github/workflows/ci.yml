@@ -127,14 +127,7 @@ jobs:
       # sqlite-vec is an optional dependency, so a missing or unloadable vec0 would make the semantic tests skip instead of fail; this step fails the job first.
       - name: Check the sqlite-vec extension loads and creates a vec0 table
         shell: bash
-        run: |
-          node -e "
-          const { DatabaseSync } = require('node:sqlite')
-          const db = new DatabaseSync(':memory:', { allowExtension: true })
-          require('sqlite-vec').load(db)
-          db.exec('CREATE VIRTUAL TABLE probe USING vec0(embedding float[384])')
-          console.log('vec0', db.prepare('SELECT vec_version() AS v').get().v)
-          "
+        run: npm run vec0:check
       # The suite's global setup (tests/setup/build-bundle.ts) builds native/tg-hook once with cargo, and every native test fails, rather than skips, where that build could not run. rustup ships on every hosted image; run inside the crate, `rustup toolchain install` with no argument installs the toolchain native/tg-hook/rust-toolchain.toml pins, so the suite builds with that compiler and not the image's default. Explicit, because rustup 1.28 stopped installing it implicitly on first use.
       - name: Install the pinned Rust toolchain
         shell: bash
@@ -225,14 +218,7 @@ jobs:
       # sqlite-vec is an optional dependency, so a missing or unloadable vec0 would make the semantic tests skip instead of fail; this step fails the job first.
       - name: Check the sqlite-vec extension loads and creates a vec0 table
         shell: bash
-        run: |
-          node -e "
-          const { DatabaseSync } = require('node:sqlite')
-          const db = new DatabaseSync(':memory:', { allowExtension: true })
-          require('sqlite-vec').load(db)
-          db.exec('CREATE VIRTUAL TABLE probe USING vec0(embedding float[384])')
-          console.log('vec0', db.prepare('SELECT vec_version() AS v').get().v)
-          "
+        run: npm run vec0:check
       # The suite's global setup (tests/setup/build-bundle.ts) builds native/tg-hook once with cargo, and every native test fails, rather than skips, where that build could not run. rustup ships on every hosted image; run inside the crate, `rustup toolchain install` with no argument installs the toolchain native/tg-hook/rust-toolchain.toml pins, so the suite builds with that compiler and not the image's default. Explicit, because rustup 1.28 stopped installing it implicitly on first use.
       - name: Install the pinned Rust toolchain
         shell: bash
@@ -330,14 +316,7 @@ jobs:
       # sqlite-vec is an optional dependency, so a missing or unloadable vec0 would make the semantic tests skip instead of fail; this step fails the job first.
       - name: Check the sqlite-vec extension loads and creates a vec0 table
         shell: bash
-        run: |
-          node -e "
-          const { DatabaseSync } = require('node:sqlite')
-          const db = new DatabaseSync(':memory:', { allowExtension: true })
-          require('sqlite-vec').load(db)
-          db.exec('CREATE VIRTUAL TABLE probe USING vec0(embedding float[384])')
-          console.log('vec0', db.prepare('SELECT vec_version() AS v').get().v)
-          "
+        run: npm run vec0:check
       # The suite's global setup (tests/setup/build-bundle.ts) builds native/tg-hook once with cargo, and every native test fails, rather than skips, where that build could not run. rustup ships on every hosted image; run inside the crate, `rustup toolchain install` with no argument installs the toolchain native/tg-hook/rust-toolchain.toml pins, so the suite builds with that compiler and not the image's default. Explicit, because rustup 1.28 stopped installing it implicitly on first use.
       - name: Install the pinned Rust toolchain
         shell: bash
@@ -416,14 +395,7 @@ jobs:
       # sqlite-vec is an optional dependency, so a missing or unloadable vec0 would make the semantic tests skip instead of fail; this step fails the job first.
       - name: Check the sqlite-vec extension loads and creates a vec0 table
         shell: bash
-        run: |
-          node -e "
-          const { DatabaseSync } = require('node:sqlite')
-          const db = new DatabaseSync(':memory:', { allowExtension: true })
-          require('sqlite-vec').load(db)
-          db.exec('CREATE VIRTUAL TABLE probe USING vec0(embedding float[384])')
-          console.log('vec0', db.prepare('SELECT vec_version() AS v').get().v)
-          "
+        run: npm run vec0:check
       - name: Build
         run: npm run build
       - name: Retrieval gate

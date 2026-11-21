@@ -27,6 +27,7 @@
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
     "model:warm": "tsx scripts/warm-model-cache.ts",
+    "vec0:check": "node scripts/check-vec0.mjs",
     "eval:hints": "tsx scripts/eval-hints.ts",
     "eval:retrieval": "tsx scripts/eval-retrieval.ts",
     "eval:gate": "tsx scripts/eval-gate.ts",

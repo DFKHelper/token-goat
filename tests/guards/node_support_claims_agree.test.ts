@@ -50,8 +50,10 @@ describe('Node support claims', () => {
   // How a human writes that floor, which is how the README writes it: trailing zero segments are dropped, so `22.0.0` reads as "22" and `22.16.0` as "22.16". Comparing only the major would have let the README keep saying "Node.js 22" after the node:sqlite driver raised the real floor to 22.16, which is the drift this line exists to catch.
   const label = floor.replace(/(?:\.0)+$/, '')
   const pinned = workflowNodeVersions()
-  // The Node release the WSL pre-push run downloads when the login shell has none new enough; a separate pin from the workflows, so it is read on its own.
-  const wslPin = /^NODE_VERSION="(\d+(?:\.\d+)*)"/m.exec(fs.readFileSync(path.join(repoRoot, '.lefthook-scripts', 'wsl-test.sh'), 'utf8'))?.[1] ?? ''
+  // The WSL pre-push run keeps its own Node settings, separate from the workflows: the least login-shell Node it accepts, and the release it downloads when none is new enough.
+  const wslScript = fs.readFileSync(path.join(repoRoot, '.lefthook-scripts', 'wsl-test.sh'), 'utf8')
+  const wslMin = /^NODE_MIN="(\d+(?:\.\d+)*)"/m.exec(wslScript)?.[1] ?? ''
+  const wslPin = /^NODE_VERSION="(\d+(?:\.\d+)*)"/m.exec(wslScript)?.[1] ?? ''
 
   it('finds the declarations at all, so an empty sweep cannot pass as a clean one', () => {
     expect(required).toBeGreaterThan(0)
@@ -75,7 +77,18 @@ describe('Node support claims', () => {
     expect(tooOld, 'these run below the engines floor').toEqual([])
   })
 
-  it('runs the WSL pre-push suite on a Node at or above the engines floor', () => {
+  it.each([
+    ['22.9.0', false],
+    ['22', false],
+    ['22.16', true],
+    ['22.23.3', true],
+  ])('compares Node version %s to 22.16.0 as numbers, not text', (version, expected) => {
+    expect(atLeast(version, '22.16.0')).toBe(expected)
+  })
+
+  it('runs the WSL pre-push suite only on a Node at or above the engines floor', () => {
+    expect(wslMin, 'wsl-test.sh has no NODE_MIN login-shell minimum to check').not.toBe('')
+    expect(wslMin, `wsl-test.sh accepts a login-shell Node from ${wslMin}, not the engines floor ${floor}`).toBe(floor)
     expect(wslPin, 'wsl-test.sh has no NODE_VERSION pin to check').not.toBe('')
     expect(atLeast(wslPin, floor), `wsl-test.sh pins Node ${wslPin}, below the engines floor ${floor}`).toBe(true)
   })
