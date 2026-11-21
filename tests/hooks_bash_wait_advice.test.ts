@@ -64,7 +64,13 @@ describe('a follow-mode tail piped into a first-match grep', () => {
 })
 
 describe('a fixed sleep followed by a read in the same line', () => {
-  it.each([['sleep 30; cat /tmp/x.log'], ['sleep 5 && tail /tmp/x.log'], ['sleep 10; git status']])(
+  it.each([
+    ['sleep 30; cat /tmp/x.log'],
+    ['sleep 5 && tail /tmp/x.log'],
+    ['sleep 10; git status'],
+    ['sleep 5 && token-goat bash-output --file /tmp/x.output'],
+    ['sleep 5 && token-goat read src/app.ts'],
+  ])(
     'gets the note for %s',
     (command) => {
       const out = run(command)
@@ -74,7 +80,12 @@ describe('a fixed sleep followed by a read in the same line', () => {
     },
   )
 
-  it.each([['sleep 5'], ['sleep 5; echo done'], ['cat /tmp/x.log; sleep 5']])(
+  it.each([
+    ['sleep 5'],
+    ['sleep 5; echo done'],
+    ['cat /tmp/x.log; sleep 5'],
+    ['sleep 5 && token-goat bash-output abc123'],
+  ])(
     'gets no note for %s',
     (command) => {
       expect(run(command).hookType, command).toBe('pass')
