@@ -437,7 +437,8 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' |
 export const DENY_TEMPLATE_KINDS: readonly string[] = DENY_TEMPLATES.map((t) => t.kind)
 
 /** Deny kinds whose wording says a file was already read or served this session: the claims to check. */
-const ALREADY_READ_CLAIM_KINDS: ReadonlySet<string> = new Set(['read_served_deny', 'range_reread_deny', 'markdown_already_read_deny', 'generic_reread_deny', 'memory_md_reread_deny', 'improve_state_reread_deny', 'env_reread_deny', 'session_artifact_generic_reread_deny'])
+const ALREADY_READ_CLAIM_KINDS: ReadonlySet<string> = new Set(['read_served_deny', 'range_reread_deny', 'markdown_already_read_deny', 'generic_reread_deny', 'memory_md_reread_deny', 'improve_state_reread_deny', 'env_reread_deny', 'session_artifact_generic_reread_deny', 'doc_unchanged_deny', 'session_artifact_unchanged_deny'])
+// Excluded: truncated_* x2 (partial), *_diff_* x2 (changed), read_count (a count, not a held copy).
 /** How many false already-read claims the report names, each with its transcript line. */
 const ALREADY_READ_EXAMPLE_MAX = 5
 
@@ -506,6 +507,11 @@ export function commandHead(raw: string): string {
   const base = tok.split(/[\\/]/).pop() ?? ''
   const head = base.replace(/\.exe$/i, '').toLowerCase()
   return head === '' ? '(none)' : head
+}
+
+// A relative file_path resolves against the record's own cwd, so it matches the absolute path a later deny names.
+function resolveReadPath(filePath: string, cwd: unknown): string {
+  return typeof cwd === 'string' && !path.isAbsolute(filePath) ? path.join(cwd, filePath) : filePath
 }
 
 /** Normalizes a Read file_path for repeat detection only: forward slashes, lowercase (Windows paths are case-insensitive and the corpus mixes spellings). Never emitted. */
@@ -666,8 +672,10 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   // Normalized path -> compact-boundary count at its last Read tool_use, so a repeat can tell whether a compaction intervened (the boundary count is file-wide, not per lane; reads are overwhelmingly main-chain).
   const readPathEpoch = new Map<string, number>()
   let compactEpoch = 0
-  // Normalized path -> epoch of its last delivered Read result (a pointer or a deny delivers nothing).
+  // Lane and path (deliveryKey) -> epoch of the last delivered Read result; a deny delivers nothing.
   const deliveredReadEpoch = new Map<string, number>()
+  // A sidechain Read never supports a main-lane claim, nor the reverse.
+  const deliveryKey = (line: Record<string, unknown>, filePath: string): string => `${line['isSidechain'] === true ? 1 : 0}:${filePath}`
   // 1-based line number in this transcript, counting blank lines, so an example names the real line.
   let fileLines = 0
   // Set by a user or assistant record with a message object; a transcript without one is another host's.
@@ -814,7 +822,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 bashHeadById.set(block['id'], commandHead(input['command']))
                 bashCommandById.set(block['id'], input['command'])
               } else if (name === 'Read' && typeof input['file_path'] === 'string') {
-                readNorm = normalizeReadPath(input['file_path'])
+                readNorm = normalizeReadPath(resolveReadPath(input['file_path'], obj['cwd']))
                 const priorEpoch = readPathEpoch.get(readNorm)
                 readCallById.set(block['id'], { wasSeenBefore: priorEpoch !== undefined, hasRange: input['offset'] !== undefined || input['limit'] !== undefined, afterCompaction: priorEpoch !== undefined && compactEpoch > priorEpoch })
                 readPathById.set(block['id'], readNorm)
@@ -906,7 +914,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                   s.alreadyReadClaims.uncheckedNoPath += 1
                 } else {
                   s.alreadyReadClaims.checked += 1
-                  if (deliveredReadEpoch.get(path) !== compactEpoch) {
+                  if (deliveredReadEpoch.get(deliveryKey(obj, path)) !== compactEpoch) {
                     s.alreadyReadClaims.falseClaims += 1
                     if (s.alreadyReadClaims.examples.length < ALREADY_READ_EXAMPLE_MAX) s.alreadyReadClaims.examples.push({ transcript: transcriptName, line: fileLines, path })
                   }
@@ -916,10 +924,10 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
           }
           if (name === 'Read') {
             s.readInterception.readResults += 1
-            // A small deny or pointer delivers no content; a *_served sidecar does.
-            const isPointer = bytes < READ_DIVERT_MAX_BYTES && (READ_DIVERT_MARKER_RE.test(text) || DENY_TEMPLATES.some((t) => t.tool === 'Read' && !t.kind.endsWith('_served') && t.re.test(text)))
+            // Judged by the deny classifier, not size or marker text; a *_served sidecar carries its body.
+            const isDeny = DENY_TEMPLATES.some((t) => t.tool === 'Read' && !t.kind.endsWith('_served') && t.re.test(text))
             const deliveredPath = readPathById.get(id)
-            if (block['is_error'] !== true && !isPointer && deliveredPath !== undefined) deliveredReadEpoch.set(deliveredPath, compactEpoch)
+            if (block['is_error'] !== true && !isDeny && deliveredPath !== undefined) deliveredReadEpoch.set(deliveryKey(obj, deliveredPath), compactEpoch)
             if (bytes < READ_DIVERT_MAX_BYTES && READ_DIVERT_MARKER_RE.test(text)) {
               s.readInterception.divertedByMarker += 1
               s.readInterception.divertedBytes += bytes
