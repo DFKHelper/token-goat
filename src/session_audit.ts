@@ -509,9 +509,10 @@ export function commandHead(raw: string): string {
   return head === '' ? '(none)' : head
 }
 
-// A relative file_path resolves against the record's own cwd, so it matches the absolute path a later deny names.
+// A relative file_path resolves against the record's cwd; absoluteness is read from the path's form, never the host.
 function resolveReadPath(filePath: string, cwd: unknown): string {
-  return typeof cwd === 'string' && !path.isAbsolute(filePath) ? path.join(cwd, filePath) : filePath
+  const absoluteForm = /^(?:[A-Za-z]:[\\/]|[\\/])/.test(filePath)
+  return typeof cwd === 'string' && !absoluteForm ? path.join(cwd, filePath) : filePath
 }
 
 /** Normalizes a Read file_path for repeat detection only: forward slashes, lowercase (Windows paths are case-insensitive and the corpus mixes spellings). Never emitted. */
@@ -665,6 +666,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
   const readCallById = new Map<string, { wasSeenBefore: boolean; hasRange: boolean; afterCompaction: boolean }>()
   // tool_use id -> normalized file_path, so a deny-outcome row opened at tool_result time (which only carries the tool_use_id) can recover the path it denied.
   const readPathById = new Map<string, string>()
+  const readShownById = new Map<string, string>()
   // Edit tool_use id -> normalized file_path, so the Edit-error canary can tell whether an Edit targeted the exact denied path.
   const editPathById = new Map<string, string>()
   // Edit tool_use id -> true once its tool_result carries is_error: true. Populated at tool_result time; read back once at end-of-file finalization, by which point every Edit in this file has resolved.
@@ -826,6 +828,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 const priorEpoch = readPathEpoch.get(readNorm)
                 readCallById.set(block['id'], { wasSeenBefore: priorEpoch !== undefined, hasRange: input['offset'] !== undefined || input['limit'] !== undefined, afterCompaction: priorEpoch !== undefined && compactEpoch > priorEpoch })
                 readPathById.set(block['id'], readNorm)
+                readShownById.set(block['id'], input['file_path'])
                 readPathEpoch.set(readNorm, compactEpoch)
               } else if (name === 'Grep' && typeof input['path'] === 'string') {
                 readPathById.set(block['id'], normalizeReadPath(input['path']))
@@ -909,14 +912,15 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 compactEpochAtWindow: null,
                 toolCalls: [],
               })
-              if (ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
+              // Claim only on the is_error deny marker; a non-error body that quotes a template is a delivery.
+              if (block['is_error'] === true && ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
                 if (path === '') {
                   s.alreadyReadClaims.uncheckedNoPath += 1
                 } else {
                   s.alreadyReadClaims.checked += 1
                   if (deliveredReadEpoch.get(deliveryKey(obj, path)) !== compactEpoch) {
                     s.alreadyReadClaims.falseClaims += 1
-                    if (s.alreadyReadClaims.examples.length < ALREADY_READ_EXAMPLE_MAX) s.alreadyReadClaims.examples.push({ transcript: transcriptName, line: fileLines, path })
+                    if (s.alreadyReadClaims.examples.length < ALREADY_READ_EXAMPLE_MAX) s.alreadyReadClaims.examples.push({ transcript: transcriptName, line: fileLines, path: readShownById.get(id) ?? path })
                   }
                 }
               }
@@ -924,10 +928,9 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
           }
           if (name === 'Read') {
             s.readInterception.readResults += 1
-            // Judged by the deny classifier, not size or marker text; a *_served sidecar carries its body.
-            const isDeny = DENY_TEMPLATES.some((t) => t.tool === 'Read' && !t.kind.endsWith('_served') && t.re.test(text))
+            // A non-error body is a delivery even if it quotes a deny template; is_error marks a deny.
             const deliveredPath = readPathById.get(id)
-            if (block['is_error'] !== true && !isDeny && deliveredPath !== undefined) deliveredReadEpoch.set(deliveryKey(obj, deliveredPath), compactEpoch)
+            if (block['is_error'] !== true && deliveredPath !== undefined) deliveredReadEpoch.set(deliveryKey(obj, deliveredPath), compactEpoch)
             if (bytes < READ_DIVERT_MAX_BYTES && READ_DIVERT_MARKER_RE.test(text)) {
               s.readInterception.divertedByMarker += 1
               s.readInterception.divertedBytes += bytes

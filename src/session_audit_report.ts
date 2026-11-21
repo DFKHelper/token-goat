@@ -22,7 +22,7 @@ function formatAlreadyReadClaims(c: SessionAuditSummary['alreadyReadClaims']): s
   const out = [`Already-read claims: ${fmt(c.checked)} checked, ${fmt(c.falseClaims)} with no Read of the path delivered earlier in the same compaction epoch (${scope})`]
   if (c.transcriptsSkipped > 0) out.push(`Skipped ${countNoun(c.transcriptsSkipped, 'transcript')} not recognised as Claude Code; their claims were not checked.`)
   if (c.uncheckedNoPath > 0) out.push(`${countNoun(c.uncheckedNoPath, 'claim')} named no path and were not checked.`)
-  for (const ex of c.examples) out.push(`  false claim: ${displaySafeText(ex.transcript)} line ${fmt(ex.line)}, path ${displaySafeText(ex.path)} (path lower-cased)`)
+  for (const ex of c.examples) out.push(`  false claim: ${displaySafeText(ex.transcript)} line ${fmt(ex.line)}, path ${displaySafeText(ex.path)}`)
   return out
 }
 

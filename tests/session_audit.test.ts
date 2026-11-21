@@ -471,6 +471,8 @@ describe('redacted_thinking blocks in the corpus audit', () => {
 // Already-read claims: a deny is true only if a Read result for its path came earlier in the same epoch. Provenance: tool_use and tool_result shapes match this file's existing rows (format, not a capture). Provenance: deny wording FORMAT-DERIVED from src/hooks_read.ts:1246 (emitter text, not a capture). Provenance: compact_boundary CAPTURE per tests/resident_context.test.ts header (read off real transcripts). Provenance: sequences HAND-DERIVED from the epoch rule; non-Claude-Code record HAND-DERIVED (response_item).
 const READ_USE = (id: string, file: string, top: Record<string, unknown> = {}): string => JSON.stringify({ ...top, type: 'assistant', message: { id: `msg_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: file } }] } })
 const READ_SERVED = (id: string, text: string, top: Record<string, unknown> = {}): string => JSON.stringify({ ...top, type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text }] } })
+// Deny marker is_error: true (CAPTURE: session_audit_tool_errors.test.ts:27, :45; the Read form is FORMAT-DERIVED).
+const READ_DENIED = (id: string, text: string, top: Record<string, unknown> = {}): string => JSON.stringify({ ...top, type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: text }] } })
 const ALREADY_READ_DENY = 'Lines 1..40 of this file were already read this session. Use `token-goat section "a.ts::Heading"` to extract a part.'
 const COMPACT_BOUNDARY_LINE = '{"type":"system","subtype":"compact_boundary"}'
 
@@ -489,62 +491,68 @@ describe('already-read claims in the corpus audit', () => {
   })
 
   it('counts a claim as true when a Read of the same path was delivered earlier in the epoch', async () => {
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ transcriptsChecked: 1, transcriptsSkipped: 0, checked: 1, falseClaims: 0, examples: [] })
   })
 
   it('counts a claim as false when no Read of the path was delivered in the transcript', async () => {
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1, examples: [{ transcript: 'session-claims.jsonl', line: 2, path: '/p/a.ts' }] })
   })
 
   it('counts a claim as false when the only Read of the path came before a compaction boundary', async () => {
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), COMPACT_BOUNDARY_LINE, READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), COMPACT_BOUNDARY_LINE, READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1 })
   })
 
   it('does not let a delivered Read of another path support the claim', async () => {
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/b.ts'), READ_SERVED('r1', 'export const b = 2\n'), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/b.ts'), READ_SERVED('r1', 'export const b = 2\n'), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1 })
   })
 
   it('counts a small Read that quotes a divert phrase as a delivery, so a later claim is true', async () => {
     const quoted = 'Use `token-goat section "a.ts::Heading"` to extract a part.\n'
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', quoted), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', quoted), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
+    expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
+  })
+
+  it('counts a non-error Read that quotes a deny template as a delivery, so a later claim is true', async () => {
+    const quotesDeny = 'Markdown file already read this session.\n'
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', quotesDeny), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
   })
 
   it('never records a claim deny as a delivery, whatever its size', async () => {
     const bigDeny = ALREADY_READ_DENY + ' ' + 'x'.repeat(2600)
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', bigDeny), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_DENIED('r1', bigDeny), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 2, falseClaims: 2 })
   })
 
   it('does not let a sidechain Read support a main-lane claim', async () => {
     const side = { isSidechain: true }
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts', side), READ_SERVED('r1', 'export const a = 1\n', side), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts', side), READ_SERVED('r1', 'export const a = 1\n', side), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1 })
   })
 
   it('does not let a main-lane Read support a sidechain claim', async () => {
     const side = { isSidechain: true }
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts', side), READ_SERVED('r2', ALREADY_READ_DENY, side)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts', side), READ_DENIED('r2', ALREADY_READ_DENY, side)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1 })
   })
 
   it('counts a compact sidecar served in place of the file as a delivery', async () => {
     // Provenance: sidecar wording FORMAT-DERIVED from src/hooks_read.ts:824 (emitter text, not a capture).
     const sidecar = 'Serving the extractive compact sidecar in place of the full file (source unchanged since the last `compact-doc` build):\n\nexport const a = 1\n'
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', sidecar), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', sidecar), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
   })
 
   it('counts an unchanged-since-last-read deny as a claim, true only when that read was delivered', async () => {
     // Provenance: unchanged wording FORMAT-DERIVED from src/hooks_read.ts:132 (snapshot emitter, not a capture).
     const unchanged = 'a.ts is unchanged since last read. Use `token-goat section "a.ts::Heading"` to extract a part.'
-    const held = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', unchanged)]) })
+    const held = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', unchanged)]) })
     expect(held.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
-    const unheld = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', unchanged)]) })
+    const unheld = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', unchanged)]) })
     expect(unheld.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1 })
   })
 
@@ -555,46 +563,61 @@ describe('already-read claims in the corpus audit', () => {
   })
 
   it('resolves a relative Read path against the record cwd, in both directions', async () => {
-    const relativeRead = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', 'a.ts', { cwd: '/p' }), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const relativeRead = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', 'a.ts', { cwd: '/p' }), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(relativeRead.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
-    const relativeClaim = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', 'a.ts', { cwd: '/p' }), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const relativeClaim = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', 'a.ts', { cwd: '/p' }), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(relativeClaim.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
   })
 
+  it('keeps a Windows-form Read path as written on any host, and still joins a relative one onto a Windows cwd', async () => {
+    const abs = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', 'C:\\P\\A.ts', { cwd: '/p' }), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', 'c:/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
+    expect(abs.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
+    const rel = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', 'A.ts', { cwd: 'C:\\P' }), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', 'c:/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
+    expect(rel.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
+  })
+
+  it('prints an example path as the transcript spelled it, not lower-cased', async () => {
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/Proj/Mixed.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
+    expect(s.alreadyReadClaims.examples).toEqual([{ transcript: 'session-claims.jsonl', line: 2, path: '/Proj/Mixed.ts' }])
+    const claimLine = formatSessionAudit(s).split('\n').find((l) => l.includes('false claim:'))
+    expect(claimLine).toContain('path /Proj/Mixed.ts')
+    expect(claimLine).not.toContain('lower-cased')
+  })
+
   it('matches a path spelled with backslashes or another case', async () => {
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', 'C:\\P\\A.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', 'c:/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', 'C:\\P\\A.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', 'c:/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
   })
 
   it('counts a partial-range Read as delivering the file, since the match is by path', async () => {
     const ranged = JSON.stringify({ type: 'assistant', message: { id: 'msg_r1', role: 'assistant', content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/p/a.ts', offset: 1, limit: 5 } }] } })
-    const s = await auditSessionCorpus({ dir: corpusOf([ranged, READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([ranged, READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
   })
 
   it('does not count an errored Read as a delivery', async () => {
     const errored = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r1', is_error: true, content: 'File does not exist.' }] } })
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), errored, READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), errored, READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1 })
   })
 
   it('counts a claim as true when a boundary opens the transcript and the Read follows it', async () => {
-    const s = await auditSessionCorpus({ dir: corpusOf([COMPACT_BOUNDARY_LINE, READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([COMPACT_BOUNDARY_LINE, READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
   })
 
   it('counts a claim as false when several compaction boundaries separate it from the Read', async () => {
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), COMPACT_BOUNDARY_LINE, COMPACT_BOUNDARY_LINE, READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', 'export const a = 1\n'), COMPACT_BOUNDARY_LINE, COMPACT_BOUNDARY_LINE, READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1 })
   })
 
   it('names the real line of a claim that follows an unparseable line', async () => {
-    const s = await auditSessionCorpus({ dir: corpusOf(['{not json', READ_USE('r2', '/p/a.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf(['{not json', READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 1, examples: [{ transcript: 'session-claims.jsonl', line: 3, path: '/p/a.ts' }] })
   })
 
   it('prints a path containing a newline on one report line', async () => {
-    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/p/a\nb.ts'), READ_SERVED('r2', ALREADY_READ_DENY)]) })
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r2', '/p/a\nb.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     const claimLines = formatSessionAudit(s).split('\n').filter((l) => l.includes('false claim:'))
     expect(claimLines).toHaveLength(1)
     expect(claimLines[0]).toContain('/p/a\\nb.ts')
