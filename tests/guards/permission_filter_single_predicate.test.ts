@@ -31,7 +31,7 @@ describe('permission source filter', () => {
       const probe = [
         "const f = globalThis[Symbol.for('token-goat.permission-source-filter')]",
         "const reg = f('registry:HKLM' + String.fromCharCode(92) + 'SOFTWARE' + String.fromCharCode(92) + 'Policies')",
-        // allow-cwd: fixture source handed to a predicate as text, not a root lookup
+        // allow-cwd: the spawned child runs with the fixture root as its cwd, so this path lies inside that root
         "const inside = f(require('node:path').join(process.cwd(), 'x', 'settings.json'))",
         'process.stdout.write(JSON.stringify({ reg, inside }))',
       ].join(';')
