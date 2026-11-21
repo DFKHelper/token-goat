@@ -98,3 +98,29 @@ describe('a fixed sleep followed by a read in the same line', () => {
     },
   )
 })
+
+describe('a fixed sleep followed by a read on the next line or after a fraction', () => {
+  it.each([
+    ['sleep 0.5 && tail /tmp/x.log'],
+    ['sleep 5\ntail /tmp/x.log'],
+    ['sleep 5\ntg read src/app.ts'],
+  ])('gets the note for %s', (command) => {
+    const out = run(command)
+    expect(out.hookType, command).toBe('context')
+    expect(ctx(out), command).toContain('fixed sleep')
+    expect(ctx(out), command).toContain("command's own completion or exit status")
+  })
+
+  it.each([['sleep 5.']])('gets no note for %s', (command) => {
+    expect(run(command).hookType, command).toBe('pass')
+  })
+})
+
+describe('a fixed sleep before a cat of a repo source file', () => {
+  it('gets the note through preBashHandler', () => {
+    const out = run('sleep 30; cat src/hooks_bash.ts')
+    expect(out.hookType, 'sleep 30; cat src/hooks_bash.ts').toBe('context')
+    expect(ctx(out)).toContain('fixed sleep')
+    expect(ctx(out)).toContain("command's own completion or exit status")
+  })
+})
