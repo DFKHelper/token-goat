@@ -522,6 +522,19 @@ describe('already-read claims in the corpus audit', () => {
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, falseClaims: 0 })
   })
 
+  // PROVENANCE: HAND-DERIVED. One already-read deny sentence in a Read result without is_error, so the census matches its wording and the claim check, which needs the marker, never runs.
+  it('says denies were seen but none was checked when no result carried the error marker', async () => {
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY)]) })
+    expect(s.alreadyReadClaims).toMatchObject({ checked: 0, uncheckedNoPath: 0 })
+    expect(formatSessionAudit(s)).toContain('1 already-read deny seen by text, but none carried the transcript error marker, so none was checked.')
+  })
+
+  it('prints no such line once a claim was checked', async () => {
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
+    expect(s.alreadyReadClaims.checked).toBe(1)
+    expect(formatSessionAudit(s)).not.toContain('none carried the transcript error marker')
+  })
+
   it('never records a claim deny as a delivery, whatever its size', async () => {
     const bigDeny = ALREADY_READ_DENY + ' ' + 'x'.repeat(2600)
     const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_DENIED('r1', bigDeny), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })

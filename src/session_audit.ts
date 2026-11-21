@@ -437,7 +437,7 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' |
 export const DENY_TEMPLATE_KINDS: readonly string[] = DENY_TEMPLATES.map((t) => t.kind)
 
 /** Deny kinds whose wording says a file was already read or served this session: the claims to check. */
-const ALREADY_READ_CLAIM_KINDS: ReadonlySet<string> = new Set(['read_served_deny', 'range_reread_deny', 'markdown_already_read_deny', 'generic_reread_deny', 'memory_md_reread_deny', 'improve_state_reread_deny', 'env_reread_deny', 'session_artifact_generic_reread_deny', 'doc_unchanged_deny', 'session_artifact_unchanged_deny'])
+export const ALREADY_READ_CLAIM_KINDS: ReadonlySet<string> = new Set(['read_served_deny', 'range_reread_deny', 'markdown_already_read_deny', 'generic_reread_deny', 'memory_md_reread_deny', 'improve_state_reread_deny', 'env_reread_deny', 'session_artifact_generic_reread_deny', 'doc_unchanged_deny', 'session_artifact_unchanged_deny'])
 // Excluded: truncated_* x2 (partial), *_diff_* x2 (changed), read_count (a count, not a held copy).
 /** How many false already-read claims the report names, each with its transcript line. */
 const ALREADY_READ_EXAMPLE_MAX = 5
