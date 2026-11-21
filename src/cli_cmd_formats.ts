@@ -655,6 +655,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
       '--normalize-newlines',
       'convert the old/new text\'s line endings (CRLF/LF) to match the target file\'s dominant line ending before matching, instead of requiring a byte-exact line-ending match',
     )
+    .option('--dry-run', 'print the receipt (changed lines, line endings) without writing the file or queueing it for reindexing')
     .action(guard(cmdReplace))
 
   program

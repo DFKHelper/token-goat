@@ -5,8 +5,11 @@ import * as path from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
+import { dataDir } from '../src/constants.js'
+import { dirtyQueuePathFor } from '../src/dirty_queue.js'
 import { BUNDLE, runCli, type RunResult } from './helpers/bundle.js'
 import { runBatched, stopBatchCli } from './helpers/batch-cli.js'
+import { indexableDir } from './helpers/temp-config.js'
 
 // Batched against one long-lived bundle process (see tests/text_commands.test.ts for the same pattern and tests/batch_serve_equivalence.test.ts for the byte-for-byte equivalence guard). Calls carrying stdin still spawn for real: the batch protocol passes argv, cwd and env, not a stdin stream.
 async function run(args: string[], input?: string): Promise<RunResult> {
@@ -14,6 +17,16 @@ async function run(args: string[], input?: string): Promise<RunResult> {
     return runCli(args, input)
   }
   return runBatched(args)
+}
+
+function replaceB64(text: string): string {
+  return Buffer.from(text, 'utf8').toString('base64')
+}
+
+// The dirty queue the real CLI appends to, read from the same isolated data dir the batched bundle uses.
+function dirtyQueueText(): string {
+  const queue = dirtyQueuePathFor(dataDir())
+  return fs.existsSync(queue) ? fs.readFileSync(queue, 'utf8') : ''
 }
 
 describe('token-goat CLI', () => {
@@ -816,6 +829,101 @@ describe('token-goat CLI', () => {
       const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
       expect(r.status).toBe(1)
       expect(r.stderr).toContain('not found')
+    })
+
+    // HAND-DERIVED: expected lines and bytes are computed from the input, not from the implementation.
+    it('replace prints a receipt with the changed line, its counts, the line endings and the queue status', async () => {
+      const file = path.join(indexableDir(), `rpl-receipt-lf-${process.pid}-${Date.now()}.txt`)
+      fs.writeFileSync(file, 'alpha\nbeta needle\ngamma\n', 'utf8')
+      try {
+        const r = await run(['replace', file, '--old-b64', replaceB64('needle'), '--new-b64', replaceB64('thread')])
+        expect(r.status, r.stderr).toBe(0)
+        expect(r.stdout.split('\n')[0]).toBe(`replaced 1 occurrence in ${file}`)
+        expect(r.stdout).toContain('  lines changed: 2 (+1 -1)')
+        expect(r.stdout).toContain('  line endings: LF (kept)')
+        expect(r.stdout).toContain('  reindex: queued')
+        expect(dirtyQueueText()).toContain(path.basename(file))
+      } finally {
+        fs.rmSync(file, { force: true })
+      }
+    })
+
+    // HAND-DERIVED: expected lines and bytes are computed from the input, not from the implementation.
+    it('replace receipt on a CRLF file counts a multi-line span and reports CRLF kept', async () => {
+      const file = path.join(indexableDir(), `rpl-receipt-crlf-${process.pid}-${Date.now()}.txt`)
+      fs.writeFileSync(file, Buffer.from('alpha\r\nbeta\r\ngamma\r\n', 'utf8'))
+      try {
+        const r = await run(['replace', file, '--old-b64', replaceB64('beta\r\ngamma'), '--new-b64', replaceB64('BETA\r\nGAMMA\r\nDELTA')])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(file).equals(Buffer.from('alpha\r\nBETA\r\nGAMMA\r\nDELTA\r\n', 'utf8'))).toBe(true)
+        expect(r.stdout).toContain('  lines changed: 2, 3, 4 (+3 -2)')
+        expect(r.stdout).toContain('  line endings: CRLF (kept)')
+        expect(r.stdout).toContain('  reindex: queued')
+      } finally {
+        fs.rmSync(file, { force: true })
+      }
+    })
+
+    // HAND-DERIVED: expected lines and bytes are computed from the input, not from the implementation.
+    it('replace receipt reports CRLF -> mixed when LF text lands in a CRLF file', async () => {
+      const file = path.join(indexableDir(), `rpl-receipt-mixed-${process.pid}-${Date.now()}.txt`)
+      fs.writeFileSync(file, Buffer.from('alpha\r\nbeta\r\n', 'utf8'))
+      try {
+        const r = await run(['replace', file, '--old-b64', replaceB64('beta'), '--new-b64', replaceB64('b1\nb2')])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(file).equals(Buffer.from('alpha\r\nb1\nb2\r\n', 'utf8'))).toBe(true)
+        expect(r.stdout).toContain('  lines changed: 2, 3 (+2 -1)')
+        expect(r.stdout).toContain('  line endings: CRLF -> mixed')
+      } finally {
+        fs.rmSync(file, { force: true })
+      }
+    })
+
+    // HAND-DERIVED: expected lines and bytes are computed from the input, not from the implementation.
+    it('replace receipt caps the changed-line list at 20 and says how many more, and a temp file is not queued', async () => {
+      const file = path.join(os.tmpdir(), `tg-rpl-receipt-cap-${process.pid}-${Date.now()}.txt`)
+      fs.writeFileSync(file, 'x\n'.repeat(25), 'utf8')
+      try {
+        const r = await run(['replace', file, '--all', '--old-b64', replaceB64('x'), '--new-b64', replaceB64('y')])
+        expect(r.status, r.stderr).toBe(0)
+        const first20 = Array.from({ length: 20 }, (_, i) => i + 1).join(', ')
+        expect(r.stdout).toContain(`  lines changed: ${first20}, +5 more (+25 -25)`)
+        expect(r.stdout).toContain('  reindex: not queued')
+      } finally {
+        fs.rmSync(file, { force: true })
+      }
+    })
+
+    // HAND-DERIVED: expected lines and bytes are computed from the input, not from the implementation.
+    it('replace --dry-run prints the receipt and leaves the file bytes and the dirty queue untouched', async () => {
+      const file = path.join(indexableDir(), `rpl-dryrun-${process.pid}-${Date.now()}.txt`)
+      const original = Buffer.from('alpha\nbeta needle\ngamma\n', 'utf8')
+      fs.writeFileSync(file, original)
+      try {
+        const r = await run(['replace', file, '--dry-run', '--old-b64', replaceB64('needle'), '--new-b64', replaceB64('thread')])
+        expect(r.status, r.stderr).toBe(0)
+        expect(r.stdout.split('\n')[0]).toBe(`dry run: would replace 1 occurrence in ${file}; nothing was written`)
+        expect(r.stdout).toContain('  lines changed: 2 (+1 -1)')
+        expect(r.stdout).toContain('  reindex: skipped (dry run)')
+        expect(fs.readFileSync(file).equals(original)).toBe(true)
+        // Other tests share this queue, so assert on this file's unique name rather than on the whole text.
+        expect(dirtyQueueText()).not.toContain(path.basename(file))
+      } finally {
+        fs.rmSync(file, { force: true })
+      }
+    })
+
+    // HAND-DERIVED: regression pin only, cmdReplace splices Buffers, so String.replace's $ patterns never apply here.
+    it('replace keeps a literal $& and $$ in the new text on a plain match', async () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-dollar-plain-${process.pid}-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'price: PLACEHOLDER\n', 'utf8')
+      try {
+        const r = await run(['replace', tmp, '--old-b64', replaceB64('PLACEHOLDER'), '--new-b64', replaceB64('cost $5, $$, and $&')])
+        expect(r.status, r.stderr).toBe(0)
+        expect(fs.readFileSync(tmp).equals(Buffer.from('price: cost $5, $$, and $&\n', 'utf8'))).toBe(true)
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
     })
 
     // regression: cmdReplace read the whole file, computed the snippet replacement in memory, then rewrote the WHOLE file via atomicWriteBuffer. The snippet match only protects the matched region -- a concurrent write to any OTHER part of the file between the initial read and the final rename was silently lost (last-writer-wins over the entire file), even though the snippet match itself succeeded and reported no error. This forces that window open with the TOKEN_GOAT_TEST_REPLACE_DELAY_MS test-only seam (same pattern as config_commands.ts's TOKEN_GOAT_TEST_RMW_DELAY_MS), races a real concurrent write into it from this test process, and asserts replace aborts instead of clobbering the concurrent change.

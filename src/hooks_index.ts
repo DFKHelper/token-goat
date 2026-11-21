@@ -31,8 +31,8 @@ export function appendDirtyPath(normalizedPath: string): void {
 }
 
 /** Enqueue `filePath` for background reindexing, never letting a queue-append failure block the write/read it follows. Pass `alreadyResolved: true` when the caller has already run the path through {@link resolveIndexPath} (avoids re-resolving); omitted or `false` resolves it here. A path under the OS temp dir is dropped here, once, for every caller: nothing there should become a permanent index row (see isUnderSystemTemp), and when only the edit hook refused it, shell redirects, `tee` and `sed -i` into scratch files filled one real index with 3,186 of them. */
-export function enqueueDirtyPathSafe(filePath: string, opts?: { alreadyResolved?: boolean }): void {
-  enqueueDirtyPathsSafe([filePath], opts)
+export function enqueueDirtyPathSafe(filePath: string, opts?: { alreadyResolved?: boolean }): number {
+  return enqueueDirtyPathsSafe([filePath], opts)
 }
 
 /** Batch form of {@link enqueueDirtyPathSafe}: the same `resolveIndexPath` + `isUnderSystemTemp` filter over the whole array, then one queue append and one `ensureWorkerAlive()` for the set rather than one of each per path. `reconcileProject` fans a whole sweep's changed/added/removed set through here. Calling the single-path form in a loop made the append cost grow with the queue it was filling. `opts.dir` names the data directory whose queue is appended to, for the worker sweeping on behalf of the directory it drains; omitted, it is {@link dataDir}. Returns how many paths reached the queue, which is fewer than were passed whenever the temp-dir filter dropped some and zero when the append failed: a caller reporting a count reports what the worker will drain, not what it offered. */

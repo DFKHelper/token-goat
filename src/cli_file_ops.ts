@@ -479,7 +479,7 @@ function localEolStyle(buf: Buffer, span: { start: number; end: number }, wholeF
   return crlf > lfOnly ? '\r\n' : '\n'
 }
 
-function writeReplacedBuffer(file: string, replacedBuf: Buffer, preWriteStat: fs.Stats | undefined): void {
+function writeReplacedBuffer(file: string, replacedBuf: Buffer, preWriteStat: fs.Stats | undefined): boolean {
   if (preWriteStat !== undefined) {
     const testDelayMs = Number(process.env['TOKEN_GOAT_TEST_REPLACE_DELAY_MS'] ?? '')
     if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
@@ -507,7 +507,134 @@ function writeReplacedBuffer(file: string, replacedBuf: Buffer, preWriteStat: fs
   } catch (e) {
     mapFsError(e, undefined, file)
   }
-  enqueueDirtyPathSafe(file)
+  return enqueueDirtyPathSafe(file) > 0
+}
+
+interface ReplaceEmit {
+  file: string
+  before: Buffer
+  after: Buffer
+  edit: ReplaceEdit
+  preWriteStat: fs.Stats | undefined
+  /** The success phrase after the verb, e.g. `3 occurrences in <file>`. */
+  done: string
+  dryRun: boolean
+}
+
+// A dry run writes and queues nothing; the receipt still reports what the write would have changed.
+function emitReplace(emit: ReplaceEmit): void {
+  if (emit.dryRun) {
+    out(`dry run: would replace ${emit.done}; nothing was written`)
+    printReplaceReceipt(emit, 'skipped (dry run)')
+    return
+  }
+  const queued = writeReplacedBuffer(emit.file, emit.after, emit.preWriteStat)
+  out(`replaced ${emit.done}`)
+  printReplaceReceipt(emit, queued ? 'queued' : 'not queued')
+}
+
+function printReplaceReceipt(emit: ReplaceEmit, reindex: ReindexStatus): void {
+  for (const line of replaceReceiptLines(buildReplaceReceipt(emit.before, emit.after, emit.edit), reindex)) out(line)
+}
+
+// Receipt for a replace write: changed lines, lines added and removed, line endings before and after.
+type EolStyle = 'LF' | 'CRLF' | 'mixed' | 'none'
+
+type ReindexStatus = 'queued' | 'not queued' | 'skipped (dry run)'
+
+// Spans start at ascending offsets in the before-bytes; each is oldLength bytes and becomes newLength bytes.
+interface ReplaceEdit {
+  matches: readonly number[]
+  oldLength: number
+  newLength: number
+}
+
+interface ReplaceReceipt {
+  // 1-based line numbers in the after-bytes that hold replaced text, ascending.
+  changedLines: number[]
+  linesAdded: number
+  linesRemoved: number
+  eolBefore: EolStyle
+  eolAfter: EolStyle
+}
+
+// At most this many changed line numbers are printed; the rest collapse to `+N more`.
+const RECEIPT_LINE_LIMIT = 20
+
+function eolStyleOf(buf: Buffer): EolStyle {
+  let crlf = 0
+  let bare = 0
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] !== 0x0a) continue
+    if (i > 0 && buf[i - 1] === 0x0d) crlf++
+    else bare++
+  }
+  if (crlf === 0 && bare === 0) return 'none'
+  if (bare === 0) return 'CRLF'
+  if (crlf === 0) return 'LF'
+  return 'mixed'
+}
+
+function newlineOffsets(buf: Buffer): number[] {
+  const offsets: number[] = []
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x0a) offsets.push(i)
+  }
+  return offsets
+}
+
+// 1-based line holding byte `pos`: one plus the newlines that end before it.
+function lineAt(newlines: readonly number[], pos: number): number {
+  let lo = 0
+  let hi = newlines.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (newlines[mid]! < pos) lo = mid + 1
+    else hi = mid
+  }
+  return lo + 1
+}
+
+function addLinesTouched(newlines: readonly number[], start: number, end: number, into: Set<number>): void {
+  const last = Math.max(start, end - 1)
+  for (let line = lineAt(newlines, start); line <= lineAt(newlines, last); line++) into.add(line)
+}
+
+// Pure over the before and after bytes, so `--dry-run` and a real write print the same receipt.
+function buildReplaceReceipt(before: Buffer, after: Buffer, edit: ReplaceEdit): ReplaceReceipt {
+  const oldNewlines = newlineOffsets(before)
+  const newNewlines = newlineOffsets(after)
+  const removed = new Set<number>()
+  const added = new Set<number>()
+  // Bytes after an earlier replacement sit shifted by the length difference of each one before them.
+  let shift = 0
+  for (const start of edit.matches) {
+    addLinesTouched(oldNewlines, start, start + edit.oldLength, removed)
+    const newStart = start + shift
+    addLinesTouched(newNewlines, newStart, newStart + edit.newLength, added)
+    shift += edit.newLength - edit.oldLength
+  }
+  return {
+    changedLines: [...added].sort((a, b) => a - b),
+    linesAdded: added.size,
+    linesRemoved: removed.size,
+    eolBefore: eolStyleOf(before),
+    eolAfter: eolStyleOf(after),
+  }
+}
+
+function replaceReceiptLines(receipt: ReplaceReceipt, reindex: ReindexStatus): string[] {
+  const shown = receipt.changedLines.slice(0, RECEIPT_LINE_LIMIT).map(String)
+  const hidden = receipt.changedLines.length - shown.length
+  if (hidden > 0) shown.push(`+${hidden} more`)
+  const eol = receipt.eolBefore === receipt.eolAfter
+    ? `${receipt.eolAfter} (kept)`
+    : `${receipt.eolBefore} -> ${receipt.eolAfter}`
+  return [
+    `  lines changed: ${shown.join(', ')} (+${receipt.linesAdded} -${receipt.linesRemoved})`,
+    `  line endings: ${eol}`,
+    `  reindex: ${reindex}`,
+  ]
 }
 
 const MAX_CLOSEST_MATCH_COMPARISONS = 2_000_000
@@ -535,7 +662,7 @@ function findClosestLineWindow(targetText: string, oldText: string): { lineStart
   return { lineStart: bestIdx + 1, region: targetLines.slice(bestIdx, bestIdx + windowSize).join('\n') }
 }
 
-export function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean; normalizeNewlines?: boolean }): void {
+export function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean; normalizeNewlines?: boolean; dryRun?: boolean }): void {
   // Refused before any read: the not-found diff and the heading listing both print the file's own text.
   assertReadAllowed(file)
   validateWritablePath(file, 'target file')
@@ -595,8 +722,15 @@ export function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: str
       const span = eolMatches[0]!
       const healedNewBytes = convertEolTo(normalizedNewBytes, localEolStyle(targetBuf, span, targetBuf))
       const healedBuf = Buffer.concat([targetBuf.subarray(0, span.start), healedNewBytes, targetBuf.subarray(span.end)])
-      writeReplacedBuffer(file, healedBuf, preWriteStat)
-      out(`replaced 1 occurrence in ${file} (line-ending normalized to match the file at that location)`)
+      emitReplace({
+        file,
+        before: targetBuf,
+        after: healedBuf,
+        edit: { matches: [span.start], oldLength: span.end - span.start, newLength: healedNewBytes.length },
+        preWriteStat,
+        done: `1 occurrence in ${file} (line-ending normalized to match the file at that location)`,
+        dryRun: opts.dryRun === true,
+      })
       return
     }
     if (eolMatches.length > 1) {
@@ -631,8 +765,15 @@ export function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: str
   parts.push(targetBuf.subarray(prevEnd))
   const replacedBuf = Buffer.concat(parts)
 
-  writeReplacedBuffer(file, replacedBuf, preWriteStat)
-  out(`replaced ${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${file}`)
+  emitReplace({
+    file,
+    before: targetBuf,
+    after: replacedBuf,
+    edit: { matches, oldLength: normalizedOldBytes.length, newLength: normalizedNewBytes.length },
+    preWriteStat,
+    done: `${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${file}`,
+    dryRun: opts.dryRun === true,
+  })
 }
 
 export function cmdInsertSection(file: string, opts: { after: string; contentFrom?: string; contentB64?: string }): void {
