@@ -102,6 +102,7 @@ describe('Node support claims', () => {
   it.skipIf(POSIX_SH === null)('compares Node versions by number in the shipped wsl-test.sh function, not as text', () => {
     const sh: string = POSIX_SH ?? ''
     expect(wslPin, 'wsl-test.sh has no NODE_VERSION pin to check').not.toBe('')
+    // HAND-DERIVED: expected results follow numeric semver order, not version_at_least.
     const cases: [string, boolean][] = [
       ['22.9.0', false],
       ['22', false],
@@ -171,6 +172,18 @@ describe('vec0 probe', () => {
     expect(run.status, `vec0 probe exited 0 with the extension missing: ${run.stdout}`).not.toBe(0)
     expect(run.stderr).toContain('vec0 check failed: sqlite-vec did not load or could not create a vec0 table')
     expect(run.stderr).not.toContain('TG_PREPUSH_WSL=0')
+  })
+
+  it('keeps the TG_PREPUSH_WSL=0 hint when CI is empty', () => {
+    const run = runWithMissingExtension({ ...process.env, CI: '' })
+    expect(run.status, `vec0 probe exited 0 with the extension missing: ${run.stdout}`).not.toBe(0)
+    expect(run.stderr).toContain('TG_PREPUSH_WSL=0')
+  })
+
+  it('keeps the TG_PREPUSH_WSL=0 hint when CI is 0', () => {
+    const run = runWithMissingExtension({ ...process.env, CI: '0' })
+    expect(run.status, `vec0 probe exited 0 with the extension missing: ${run.stdout}`).not.toBe(0)
+    expect(run.stderr).toContain('TG_PREPUSH_WSL=0')
   })
 
   it('keeps the TG_PREPUSH_WSL=0 hint when CI is false', () => {
