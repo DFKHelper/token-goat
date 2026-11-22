@@ -254,8 +254,7 @@ export interface SidechainLaneRollup {
   prefixBilledEquivTokens: number
 }
 
-/** Read-interception census over every Read tool_result in the corpus; repeats match on normalized path. */
-/** Divert counts UNDER-count on template drift; repeat counts on a per-file split; neither over-counts. */
+/** Read interception over every Read result; repeats match on normalized path. Never over-counts. */
 export interface ReadInterceptionRollup {
   readResults: number
   /** Under READ_DIVERT_MAX_BYTES, is_error true, matching a divert template; UNDER-counts on drift. */
@@ -379,8 +378,8 @@ const CACHE_WRITE_MULTIPLIER = 1.25
 /** Prompt-cache read discount against the base input rate (Anthropic pricing: 0.1x). */
 const CACHE_READ_MULTIPLIER = 0.1
 
-/** hooks_read.ts templates, is_error true only; under READ_DIVERT_MAX_BYTES a divert; drift under-counts. */
-const READ_DIVERT_MARKER_RE = /(?:(?:was|were) already read this session|Already read |You've already read|(?:Use|Run) `token-goat (?:section|read|bash-output|config-get|skeleton|json-query|yaml-query)|token-goat bash-output --file)/
+/** hooks_read.ts templates on line one; is_error true; under READ_DIVERT_MAX_BYTES; drift under-counts. */
+const READ_DIVERT_MARKER_RE = /^[^\n]*?(?:(?:was|were) already read this session|Already read |You've already read|(?:Use|Run) `token-goat (?:section|read|bash-output|config-get|skeleton|json-query|yaml-query)|token-goat bash-output --file)/
 /** A divert message is a short pointer; a matching result at or above this size is a real file body that merely mentions a token-goat command, not a divert. */
 const READ_DIVERT_MAX_BYTES = 2500
 /** The is_error read every tool_result gate shares: only a literal true counts. */

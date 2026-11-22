@@ -540,6 +540,12 @@ describe('already-read claims in the corpus audit', () => {
     expect(marked.readInterception.divertedByMarker).toBe(1)
   })
 
+  it('does not count an error result whose divert wording sits past its first line', async () => {
+    const later = 'Read failed for a.ts.\nUse `token-goat section "a.ts::Heading"` to extract a part.'
+    const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_DENIED('r1', later)]) })
+    expect(s.readInterception.divertedByMarker).toBe(0)
+  })
+
   it('checks only the marked claim and counts the unmarked match apart', async () => {
     const s = await auditSessionCorpus({ dir: corpusOf([READ_USE('r1', '/p/a.ts'), READ_SERVED('r1', ALREADY_READ_DENY), READ_USE('r2', '/p/a.ts'), READ_DENIED('r2', ALREADY_READ_DENY)]) })
     expect(s.alreadyReadClaims).toMatchObject({ checked: 1, unmarkedMatches: 1 })
