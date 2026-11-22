@@ -11,6 +11,9 @@ const use = (id: string, name: string, input: Record<string, unknown>): string =
   JSON.stringify({ type: 'assistant', message: { id: `msg_use_${id}`, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
 const result = (id: string, content: string): string =>
   JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
+// CAPTURE is_error shape: dbbf6b4b-2366-4086-84af-e082e79212ee.jsonl call_c70d852691fb4925aab97c1c.
+const errorResult = (id: string, content: string): string =>
+  JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: true }] } })
 
 // FORMAT-DERIVED: hooks_read.ts, denyOutput, large-file deny branch (toKB, util.ts) + describeSliceAdvice() + editAnywayHint()
 const LARGE_FILE_DENY_TEXT = 'big.ts is very large (523KB). Use token-goat read/section/symbol to re-read surgically. Use Read with offset/limit to sample specific sections. To edit it anyway, use `token-goat replace "big.ts" --old-b64 <base64> --new-b64 <base64>`.'
@@ -33,11 +36,29 @@ afterAll(() => {
 })
 
 describe('session-audit --json deny-outcome census (built bundle)', () => {
+  it('does not count a deny-wording Read result that carries no is_error marker', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-audit-quoted-'))
+    try {
+      writeProject(dir, 'quoted-deny', [
+        use('q1', 'Read', { file_path: 'big.ts' }),
+        result('q1', LARGE_FILE_DENY_TEXT),
+        use('q2', 'Read', { file_path: 'big.ts' }),
+        result('q2', 'function myFunc() { ... }'),
+      ])
+      const res = runCli(['session-audit', '--dir', dir, '--json'])
+      expect(res.status, `session-audit failed: ${res.stderr}`).toBe(0)
+      const summary = JSON.parse(res.stdout) as { denyOutcomes: unknown[] }
+      expect(summary.denyOutcomes).toEqual([])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('produces non-empty denyOutcomes array with partition invariant and non-abandoned outcomes', () => {
     // Create a small fixture corpus with two deny outcomes: 1. "retried": a deny followed by a retry of the same Read (non-abandoned outcome) 2. "unresolved": a deny with only 2 tool calls following it (fewer than 3, so unresolved)
     writeProject(testDir, 'retried-outcome', [
       use('d1', 'Read', { file_path: 'big.ts' }),
-      result('d1', LARGE_FILE_DENY_TEXT),
+      errorResult('d1', LARGE_FILE_DENY_TEXT),
       // Retry the same Read
       use('d2', 'Read', { file_path: 'big.ts' }),
       result('d2', 'function myFunc() { ... }'),
@@ -45,7 +66,7 @@ describe('session-audit --json deny-outcome census (built bundle)', () => {
 
     writeProject(testDir, 'unresolved-outcome', [
       use('d3', 'Read', { file_path: 'big.ts' }),
-      result('d3', LARGE_FILE_DENY_TEXT),
+      errorResult('d3', LARGE_FILE_DENY_TEXT),
       // Only 2 calls following the deny (fewer than 3), so outcome is unresolved
       use('d4', 'Edit', { file_path: 'other.ts', old_string: 'x', new_string: 'y' }),
       result('d4', 'ok'),

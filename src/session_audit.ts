@@ -181,7 +181,7 @@ export interface SessionAuditSummary {
   /** Cold cache re-writes by tool and command class, main sessions and subagents apart (see cold_gap.ts). */
   coldGap: ColdGapCensus
   /** Already-read deny claims, checked against same-epoch Read deliveries; other hosts are skipped. */
-  alreadyReadClaims: { transcriptsChecked: number; transcriptsSkipped: number; checked: number; falseClaims: number; uncheckedNoPath: number; examples: Array<{ transcript: string; line: number }> }
+  alreadyReadClaims: { transcriptsChecked: number; transcriptsSkipped: number; checked: number; falseClaims: number; uncheckedNoPath: number; unmarkedMatches: number; examples: Array<{ transcript: string; line: number }> }
 }
 
 /** One deny's measured real-world outcome, tested in this fixed order so the six buckets partition every deny exactly once: a later re-read after a compaction boundary is correct by design and must never fall through to 'retried'; a shell command (sed/grep/cat/...) that reads the denied file's basename is 'shell_read' -- a real substitute the agent found on its own, not an escape from the census -- and is tested after 'substituted' so a `node <path>/token-goat.mjs` invocation (also a shell command) is never miscounted as a plain shell read; and a transcript that ends too soon to observe 3 calls is 'unresolved' rather than the misleadingly final-sounding 'abandoned'. */
@@ -254,16 +254,18 @@ export interface SidechainLaneRollup {
   prefixBilledEquivTokens: number
 }
 
-/** Read-interception census over every Read tool_result in the corpus. divertedByMarker counts results short enough to be a divert (under READ_DIVERT_MAX_BYTES) that match token-goat's own deny/serve message templates, so it UNDER-counts if those templates drift. fullServesOver10k counts non-diverted Read results above 10 KiB: the pool surgical reads exist to shrink. The first/repeat split keys each full serve on whether an earlier Read tool_use in the SAME transcript file targeted the same normalized path; the session read-cache can span a session's subagent lane files, so a per-file split UNDER-counts repeats, never over-counts. */
+/** Read-interception census over every Read tool_result in the corpus; repeats match on normalized path. */
 export interface ReadInterceptionRollup {
   readResults: number
+  /** Under READ_DIVERT_MAX_BYTES, is_error true, matching a divert template; UNDER-counts on drift. */
   divertedByMarker: number
   divertedBytes: number
+  /** Non-diverted Read results above 10 KiB: the pool surgical reads exist to shrink. */
   fullServesOver10k: number
   fullServeBytesOver10k: number
   /** Full serves whose path had no earlier Read tool_use in the transcript: the pool the re-read divert excludes by design. */
   fullServesFirstRead: number
-  /** Full serves of a path already targeted by an earlier Read tool_use in the transcript: candidates the re-read divert could have caught. */
+  /** Repeats: an earlier Read tool_use in the transcript; divert candidates; subagent lanes UNDER-count. */
   fullServesRepeat: number
   repeatBytes: number
   /** Repeats whose own call carried an offset or limit parameter: deliberate paging, not a divert miss. */
@@ -376,11 +378,12 @@ const CACHE_WRITE_MULTIPLIER = 1.25
 /** Prompt-cache read discount against the base input rate (Anthropic pricing: 0.1x). */
 const CACHE_READ_MULTIPLIER = 0.1
 
-/** Total UTF-8 bytes of every string nested anywhere inside a JSON value. */
-/** Matches token-goat's own pre-read deny/serve message templates (hooks_read.ts). A Read tool_result matching this AND smaller than READ_DIVERT_MAX_BYTES is a diverted read: token-goat replaced the file body with a pointer. Kept deliberately narrow; template drift makes this under-count, never over-count. */
+/** hooks_read.ts templates, is_error true only; under READ_DIVERT_MAX_BYTES a divert; drift under-counts. */
 const READ_DIVERT_MARKER_RE = /(?:(?:was|were) already read this session|Already read |You've already read|(?:Use|Run) `token-goat (?:section|read|bash-output|config-get|skeleton|json-query|yaml-query)|token-goat bash-output --file)/
 /** A divert message is a short pointer; a matching result at or above this size is a real file body that merely mentions a token-goat command, not a divert. */
 const READ_DIVERT_MAX_BYTES = 2500
+/** The is_error read every tool_result gate shares: only a literal true counts. */
+const isErrorResult = (block: Record<string, unknown>): boolean => block['is_error'] === true
 /** Non-diverted Read results at or above this size are counted as the full-serve pool surgical reads exist to shrink. */
 const READ_FULL_SERVE_MIN_BYTES = 10240
 
@@ -520,6 +523,7 @@ function normalizeReadPath(p: string): string {
   return p.replace(/\\/g, '/').toLowerCase()
 }
 
+/** Total UTF-8 bytes of every string nested anywhere inside a JSON value. */
 function deepStringBytes(value: unknown): number {
   if (typeof value === 'string') return Buffer.byteLength(value, 'utf8')
   if (Array.isArray(value)) return value.reduce((acc: number, v) => acc + deepStringBytes(v), 0)
@@ -885,19 +889,20 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
           }
           roll.resultBytes += bytes
           roll.resultEstTokens += estimateTokensFromLength(bytes)
-          if (block['is_error'] === true) {
+          if (isErrorResult(block)) {
             const denialKind = obj['toolDenialKind']
             const command = bashCommandById.get(id)
             toolErrorAcc.countError(name, modelById.get(id), text, { ...(typeof denialKind === 'string' ? { denialKind } : {}), ...(command !== undefined ? { command } : {}) })
           }
-          if (name === 'Edit' && block['is_error'] === true) {
+          if (name === 'Edit' && isErrorResult(block)) {
             s.editErrorBaseline.totalErrors += 1
             editErrorById.set(id, true)
           }
           // Deny-outcome census: orthogonal to the Read-only divert/full-serve split below -- a deny template match opens a new pending row that watches the calls following it in this same file. Each template names the tool whose result can carry its wording and matches only that tool, so a Read of a file which merely quotes a deny is not counted as one. Skill denies from hooks_skill.ts have no path, so readPathById.get(id) misses and path/basename fall back to '', which safely never matches the path-keyed isReadSamePath/isEditSamePath/isSurgicalSamePath checks further down -- and with the tool gate in place those three outcomes are now unreachable for a Skill row rather than reachable only by contamination.
           if (name === 'Read' || name === 'Skill' || name === 'Grep') {
             const denyTemplate = DENY_TEMPLATES.find((t) => t.tool === name && t.re.test(text))
-            if (denyTemplate !== undefined) {
+            // Counted only when is_error is true: a non-error body that quotes a template is a delivery.
+            if (denyTemplate !== undefined && isErrorResult(block)) {
               const path = readPathById.get(id) ?? ''
               const lastSlash = path.lastIndexOf('/')
               openDenies.push({
@@ -911,7 +916,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 toolCalls: [],
               })
               // Claim only on the is_error deny marker; a non-error body that quotes a template is a delivery.
-              if (block['is_error'] === true && ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
+              if (ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
                 if (path === '') {
                   s.alreadyReadClaims.uncheckedNoPath += 1
                 } else {
@@ -922,14 +927,18 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                   }
                 }
               }
+            } else if (denyTemplate !== undefined && ALREADY_READ_CLAIM_KINDS.has(denyTemplate.kind)) {
+              // Unmarked match: counted only as unmarkedMatches, else quoted refusal text inflates deny stats.
+              s.alreadyReadClaims.unmarkedMatches += 1
             }
           }
           if (name === 'Read') {
             s.readInterception.readResults += 1
             // A non-error body is a delivery even if it quotes a deny template; is_error marks a deny.
             const deliveredPath = readPathById.get(id)
-            if (block['is_error'] !== true && deliveredPath !== undefined) deliveredReadEpoch.set(deliveryKey(obj, deliveredPath), compactEpoch)
-            if (bytes < READ_DIVERT_MAX_BYTES && READ_DIVERT_MARKER_RE.test(text)) {
+            if (!isErrorResult(block) && deliveredPath !== undefined) deliveredReadEpoch.set(deliveryKey(obj, deliveredPath), compactEpoch)
+            // Divert needs is_error true; without it, a quoted deny template is a served file, not a divert.
+            if (bytes < READ_DIVERT_MAX_BYTES && isErrorResult(block) && READ_DIVERT_MARKER_RE.test(text)) {
               s.readInterception.divertedByMarker += 1
               s.readInterception.divertedBytes += bytes
             } else if (bytes >= READ_FULL_SERVE_MIN_BYTES) {
@@ -1253,7 +1262,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     runtimeMs: 0,
     measured: emptyMeasured(),
     measuredSidechain: emptyMeasured(),
-    alreadyReadClaims: { transcriptsChecked: 0, transcriptsSkipped: 0, checked: 0, falseClaims: 0, uncheckedNoPath: 0, examples: [] },
+    alreadyReadClaims: { transcriptsChecked: 0, transcriptsSkipped: 0, checked: 0, falseClaims: 0, uncheckedNoPath: 0, unmarkedMatches: 0, examples: [] },
     estimated: {
       userTurns: emptyCategory(),
       toolResults: emptyCategory(),

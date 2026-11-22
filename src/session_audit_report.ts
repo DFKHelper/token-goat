@@ -2,7 +2,7 @@
 
 import { formatColdGap } from './cold_gap.js'
 import { displaySafeText } from './paths.js'
-import { ALREADY_READ_CLAIM_KINDS, BASH_SMALL_RESULT_MAX_BYTES, type EstimatedCategory, type SessionAuditSummary } from './session_audit.js'
+import { BASH_SMALL_RESULT_MAX_BYTES, type EstimatedCategory, type SessionAuditSummary } from './session_audit.js'
 import { countNoun } from './util.js'
 
 function fmt(n: number): string {
@@ -14,7 +14,7 @@ function pct(part: number, whole: number): string {
 }
 
 /** The already-read section: Claude Code only; another host's transcript is named as skipped, not as clean. */
-function formatAlreadyReadClaims(c: SessionAuditSummary['alreadyReadClaims'], denies: SessionAuditSummary['denyOutcomes']): string[] {
+function formatAlreadyReadClaims(c: SessionAuditSummary['alreadyReadClaims']): string[] {
   const scope = 'Claude Code transcripts only'
   if (c.transcriptsChecked === 0) {
     return [`Already-read claims: not checked (${scope}; ${countNoun(c.transcriptsSkipped, 'transcript')} not recognised as Claude Code and skipped)`]
@@ -22,9 +22,7 @@ function formatAlreadyReadClaims(c: SessionAuditSummary['alreadyReadClaims'], de
   const out = [`Already-read claims: ${fmt(c.checked)} checked, ${fmt(c.falseClaims)} with no Read of the path delivered earlier in the same compaction epoch (${scope})`]
   if (c.transcriptsSkipped > 0) out.push(`Skipped ${countNoun(c.transcriptsSkipped, 'transcript')} not recognised as Claude Code; their claims were not checked.`)
   if (c.uncheckedNoPath > 0) out.push(`${countNoun(c.uncheckedNoPath, 'claim')} named no path and were not checked.`)
-  // A claim needs the transcript's error marker, whose Read form is format-derived rather than captured: when the census matched already-read wording and not one result carried the marker, 0 checked would read as a clean result.
-  const seen = denies.filter((d) => ALREADY_READ_CLAIM_KINDS.has(d.kind)).reduce((sum, d) => sum + d.count, 0)
-  if (c.checked === 0 && c.uncheckedNoPath === 0 && seen > 0) out.push(`${countNoun(seen, 'already-read deny', 'already-read denies')} seen by text, but none carried the transcript error marker, so none was checked.`)
+  if (c.unmarkedMatches > 0) out.push(`${fmt(c.unmarkedMatches)} more matched the wording but carried no error marker (not counted)`)
   for (const ex of c.examples) out.push(`  false claim: ${displaySafeText(ex.transcript)} line ${fmt(ex.line)}`)
   return out
 }
@@ -50,7 +48,7 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
   lines.push('')
   lines.push(...formatColdGap(s.coldGap))
   lines.push('')
-  lines.push(...formatAlreadyReadClaims(s.alreadyReadClaims, s.denyOutcomes))
+  lines.push(...formatAlreadyReadClaims(s.alreadyReadClaims))
   lines.push('')
   lines.push('## Estimated content attribution (chars/3 heuristic; NOT billed units)')
   const e = s.estimated
