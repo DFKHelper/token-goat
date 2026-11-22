@@ -14,7 +14,7 @@ const ALLOW = /\/\/\s*allow-cwd:\s*(\S.*)$/
 // Strings stay (a call inside a string literal still counts); comments are blanked to the same width so offsets hold.
 const STRING_OR_COMMENT = /('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g
 const LAUNCH_DIR_SHAPES: readonly RegExp[] = [
-  /(?<![\w$])process\s*\??\.\s*cwd\s*(?:\?\.)?\s*(?:\.\s*call\s*)?\(/g,
+  /(?<![\w$])process\s*\??\.\s*cwd\s*(?:\?\.)?\s*(?:\.\s*(?:call|apply|bind)\s*)?\(/g,
   /(?<![\w$])process\s*\[\s*(['"`])cwd\1\s*\]\s*\(\s*\)/g,
   /(?<![\w$])path\s*\.\s*resolve\s*\(\s*['"`)]/g,
   /(?<![\w$])require\s*\(\s*['"](?:node:)?path['"]\s*\)\s*\.\s*resolve\s*\(/g,
@@ -23,7 +23,7 @@ const LAUNCH_DIR_SHAPES: readonly RegExp[] = [
 const DESTRUCTURED_FROM_PROCESS = /\{[^{}]*\bcwd\b[^{}]*\}\s*=\s*process\b/
 const BARE_CWD_CALL = /(?<![\w$.])cwd\s*\(\s*\)/g
 const RESOLVE_FROM_NODE_PATH = /\bimport\s*\{[^}]*\bresolve\b[^}]*\}\s*from\s*['"](?:node:)?path['"]/
-const BARE_RESOLVE_CALL = /(?<![\w$.])resolve\s*\(\s*(?:(['"`])\.\1\s*)?\)/g
+const BARE_RESOLVE_CALL = /(?<![\w$.])resolve\s*\(\s*(?:['"`]|\))/g
 
 function maskComments(text: string): string {
   return text.replace(STRING_OR_COMMENT, (match: string, literal?: string) =>
@@ -37,7 +37,11 @@ function excused(lines: readonly string[], i: number): boolean {
 
 /** Each launch-directory read in one guard file, as file:line, unless its line or the line above carries an allow-cwd. */
 function launchDirHits(name: string): string[] {
-  const raw = fs.readFileSync(path.join(GUARD_DIR, name), 'utf8')
+  return launchDirHitsIn(fs.readFileSync(path.join(GUARD_DIR, name), 'utf8'), name)
+}
+
+/** The same scan over in-memory source text, so a positive control can feed a known-bad fixture. */
+function launchDirHitsIn(raw: string, name: string): string[] {
   const code = maskComments(raw)
   const shapes: RegExp[] = [...LAUNCH_DIR_SHAPES]
   if (DESTRUCTURED_FROM_PROCESS.test(code)) shapes.push(BARE_CWD_CALL)
@@ -100,6 +104,20 @@ describe('guard tests resolve the repo from their own location', () => {
       population().flatMap(launchDirHits),
       'each of these reads the launch directory as the repo root, so a run from another checkout tests that checkout. Use ROOT from tests/helpers/bundle.ts, or put an allow-cwd comment with the reason on the line above.',
     ).toEqual([])
+  })
+
+  // Fixtures are joined from fragments: a literal fixture would be flagged by the very scan it tests.
+  const fixtureHits = (text: string): string[] => launchDirHitsIn(text, 'fixture.test.ts')
+  it('the matcher flags a bare launch-directory call in an in-memory fixture', () => {
+    expect(fixtureHits(`const root = ${['process', '.cwd()'].join('')}\n`)).toEqual(['tests/guards/fixture.test.ts:1'])
+  })
+  it('flags the bind() form of the launch-directory call, which the call shapes did not match', () => {
+    expect(fixtureHits(`const f = ${['process', '.cwd.bind(process)'].join('')}\n`)).toEqual(['tests/guards/fixture.test.ts:1'])
+  })
+  it('flags a literal-argument resolve after a named node:path import, but not one with ROOT first', () => {
+    const imp = "import { resolve } from 'node:path'\n"
+    expect(fixtureHits(`${imp}const r = ${'resolve'}('src')\n`)).toEqual(['tests/guards/fixture.test.ts:2'])
+    expect(fixtureHits(`${imp}const r = ${'resolve'}(ROOT, 'src')\n`)).toEqual([])
   })
 
   it('keeps allow-cwd excuses to the pinned files and reason text', () => {

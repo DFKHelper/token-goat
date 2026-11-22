@@ -109,7 +109,7 @@ afterAll(() => {
 describe('reporter against the real vitest API', () => {
   // Regression: the probe used to be written into tests/ and deleted in afterAll, while temp_config_isolation.test.ts lists every entry of tests/ and reads each one. Running in separate workers, that guard listed the probe and then failed with ENOENT reading it, pointing at a file it never meant to check. Nothing pinned where the probe lives, so this is the missing half: it fails if the probe moves back under tests/, and the end-to-end test below fails if it moves somewhere vitest does not collect, so the two together bracket the valid locations.
   it('writes its generated probe outside tests/, where no directory walker can race it', () => {
-    expect(path.relative(path.resolve('tests'), TMP_FLAKY).startsWith('..')).toBe(true)
+    expect(path.relative(import.meta.dirname, TMP_FLAKY).startsWith('..')).toBe(true)
   })
 
   it('fires on a test that actually failed and passed on retry', () => {
@@ -126,9 +126,9 @@ describe('reporter against the real vitest API', () => {
 
     const res = spawnSync(
       process.execPath,
-      [path.resolve('node_modules', 'vitest', 'vitest.mjs'), 'run', TMP_FLAKY, '--retry=1'],
+      [path.resolve(import.meta.dirname, '..', 'node_modules', 'vitest', 'vitest.mjs'), 'run', TMP_FLAKY, '--retry=1'],
       // The bundle build this config runs in globalSetup would race the outer run's readers of the same artifact, which on Windows fails the build and with it this whole spawn.
-      { encoding: 'utf8', env: { ...process.env, CI: '', TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD: '1' } },
+      { cwd: path.resolve(import.meta.dirname, '..'), encoding: 'utf8', env: { ...process.env, CI: '', TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD: '1' } },
     )
     const combined = `${res.stdout ?? ''}${res.stderr ?? ''}`
 
