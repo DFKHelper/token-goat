@@ -273,14 +273,24 @@ function readConfig(file: string, out: { configs: ConfigRead[]; ambiguous: strin
   out.configs.push({ path: file, text: comparable(raw), parsed: commandPaths(raw) })
 }
 
+/** A config's identity for the skip and seen sets: the OS's own spelling when the file exists (macOS /private/var, a Windows 8.3 RUNNER~1 name), since the ledger and the caller may spell one file two ways. */
+function configKey(file: string): string {
+  const resolved = path.resolve(file)
+  try {
+    return foldPath(fs.realpathSync.native(resolved))
+  } catch {
+    return foldPath(resolved)
+  }
+}
+
 /** Read every config that can name a hook target: each host's user config, the project configs of `cwd`, and every file in the created-configs ledger (a project install records its settings file there). */
 export function scanReferences(opts: ScanOptions = {}): ReferenceScan {
   const out = { configs: [] as ConfigRead[], ambiguous: [] as string[] }
   try {
-    const skip = new Set((opts.skipConfigs ?? []).map((p) => foldPath(path.resolve(p))))
+    const skip = new Set((opts.skipConfigs ?? []).map(configKey))
     const seen = new Set<string>()
     const visit = (file: string): void => {
-      const key = foldPath(path.resolve(file))
+      const key = configKey(file)
       if (seen.has(key) || skip.has(key)) return
       seen.add(key)
       readConfig(path.resolve(file), out)

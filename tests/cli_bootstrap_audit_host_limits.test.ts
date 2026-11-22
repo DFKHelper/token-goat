@@ -131,8 +131,8 @@ describe('bootstrap-audit host limits: Codex AGENTS.md', () => {
     const result = await buildBootstrapAudit({ project: scratch.project, home: scratch.home })
     const finding = findingFor(result, 'AGENTS.md', 'codex')
     expect(result.host_limits.codex).toMatchObject({ budget_bytes: 300, budget_source: 'project config' })
-    // The audit may spell the drive letter differently from os.tmpdir(), so the path is compared folded.
-    expect(result.host_limits.codex.config_path.toLowerCase()).toBe(projectConfig.toLowerCase())
+    // The audit may spell the scratch path differently from os.tmpdir() (drive letter case, a Windows 8.3 RUNNER~1 name, macOS /private/var), so both sides go through the OS and are folded.
+    expect(fs.realpathSync.native(result.host_limits.codex.config_path).toLowerCase()).toBe(fs.realpathSync.native(projectConfig).toLowerCase())
     expect(finding.outcome).toBe('cut')
     expect(finding.not_loaded_bytes).toBe(200)
     expect(finding.advice?.toLowerCase()).toContain(projectConfig.toLowerCase())

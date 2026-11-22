@@ -85,7 +85,8 @@ describe('repository root without a git start', () => {
     process.env.GIT_DIR = path.join(dir, '.git')
     process.env.GIT_WORK_TREE = elsewhere
     try {
-      expect(repoRoot(dir)).toBe(path.resolve(elsewhere))
+      // HAND-DERIVED: git resolves the work tree through the OS (macOS /private/var, a Windows 8.3 RUNNER~1 name), so both sides are compared as the OS spells them.
+      expect(fs.realpathSync.native(repoRoot(dir))).toBe(fs.realpathSync.native(elsewhere))
     } finally {
       for (const [name, value] of Object.entries(saved)) {
         if (value === undefined) delete process.env[name]

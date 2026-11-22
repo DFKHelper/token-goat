@@ -52,7 +52,8 @@ describe('syncNativeCopy', () => {
 
     running = await startBlocked(dest)
     const next = path.join(root, `next-${path.basename(built)}`)
-    fs.writeFileSync(next, Buffer.concat([fs.readFileSync(built), Buffer.from('tg-native-copy-overlay')]))
+    // Mode 0o755: syncNativeCopy runs `--selftest` on the offered binary to read its build, and a file written without the execute bit cannot run on Linux or macOS, so it reads as unstamped and the copy at dest is kept as the newer one.
+    fs.writeFileSync(next, Buffer.concat([fs.readFileSync(built), Buffer.from('tg-native-copy-overlay')]), { mode: 0o755 })
 
     expect(syncNativeCopy(next, dest)).toBe(true)
     expect(fs.readFileSync(dest).equals(fs.readFileSync(next))).toBe(true)

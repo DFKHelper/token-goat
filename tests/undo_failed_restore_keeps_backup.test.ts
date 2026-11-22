@@ -53,7 +53,7 @@ describe('a failed install whose restore of one file fails', () => {
     }
     const kept = fs.readdirSync(TMP).filter((f) => f.startsWith('a.json.bak.')).map((f) => path.join(TMP, f))
     expect(kept.length, 'backup still exists').toBe(1)
-    const same = (list: string[]): string[] => list.map((p) => path.resolve(p).toLowerCase())
+    const same = (list: string[]): string[] => list.map((p) => fs.realpathSync.native(path.resolve(p)).toLowerCase())
     expect(same(createdBackupsFor(a)), 'the ledger still names it').toEqual(same(kept))
     expect(fs.readFileSync(kept[0]!, 'utf8'), 'the backup holds the earlier bytes').toBe(EARLIER)
     expect(reported, 'the error names the file').toContain(a)

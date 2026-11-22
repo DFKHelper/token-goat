@@ -82,10 +82,11 @@ describe('the suite listing', () => {
     expect(listed).not.toContain('tests/parse_fixture_helper.test.ts')
   })
 
-  it('lists no file that names a parser entry point in its text, bar the four read by hand', () => {
-    // A file the import scan cannot link to the parser (a specifier built at run time) but that names an entry point is the case the scan would get wrong. These four were each read on 2026-10-25 and only quote the names: two scan source text, one holds log-line strings, one imports adapters directly (src/languages/*), which never touch the parser's slot. A new listed file that names one fails here until someone reads it.
+  it('lists no file that names a parser entry point in its text, bar the five read by hand', () => {
+    // A file the import scan cannot link to the parser (a specifier built at run time) but that names an entry point is the case the scan would get wrong. These five were each read and only quote the names: three scan source text (index_text_emitters_honor_read_deny, read 2026-11-22, holds one planted source line and imports no src module), one holds log-line strings, one imports adapters directly (src/languages/*), which never touch the parser's slot. A new listed file that names one fails here until someone reads it.
     const entry = /\b(?:indexFileSync|parseContent|loadRegexExtractors|extractSymbolsFromContent)\b/
     const readByHand = new Set([
+      'tests/guards/index_text_emitters_honor_read_deny.test.ts',
       'tests/guards/parser_fingerprint_covers_extraction_sources.test.ts',
       'tests/guards/read_commands_confinement_bypass.test.ts',
       'tests/indexer_patterns_cannot_stall_the_worker.test.ts',
