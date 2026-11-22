@@ -30,8 +30,8 @@ function makeTickFifo(sh: string): string {
   return fifo
 }
 
-/** Defines `tg_tick`, a wait of about 0.1 s that runs no process: a builtin read on TICK_FIFO times out. A poll loop that called `sleep 0.1` forked once per tick, and under load each fork took seconds, so the loop's wall time was the fork's latency rather than the clock. */
-export const TICK_FN = TICK_FIFO === null ? 'tg_tick() { :; }' : `tg_tick() { read -r -t 0.1 tg_tk <>'${TICK_FIFO}' || :; }`
+/** Defines `tg_tick`, a wait of about 0.1 s that runs no process: a builtin read on TICK_FIFO times out. A poll loop that called `sleep 0.1` forked once per tick, and under load each fork took seconds, so the loop's wall time was the fork's latency rather than the clock. A shell with no fractional timed read (dash, whose `read -t` is an option error, or bash 3.2) sleeps 0.1 s instead, one fork per tick, since the read there returns at once and the loop would spin. */
+export const TICK_FN = TICK_FIFO === null ? 'tg_tick() { :; }' : `tg_tick() { if [ "\${BASH_VERSINFO:-0}" -ge 4 ]; then read -r -t 0.1 tg_tk <>'${TICK_FIFO}' || :; else sleep 0.1; fi; }`
 
 /** The PowerShell to run suggestions through, or null when none can run here (it throws on CI instead, see powershellForParsing). */
 export const POWERSHELL: string | null = powershellForParsing()
@@ -113,7 +113,7 @@ export const SH_LIVE = 'tg_live() { tg_proc=${TG_PROC_ROOT:-/proc}; if [ -r /pro
 /** The shell loop (builtins only, no awk fork) that finds kin of the owned set from a PID PPID PGID listing (`ps -e` under MSYS, whose columns are PID PPID PGID WINPID ...; `ps -A -o pid=,ppid=,pgid=,stat=` elsewhere, since a procps `ps -e` prints PID TTY TIME CMD and its second column is no parent, which left the scan blind on Linux, and a BSD `ps -e` adds the environment to a listing of only the caller's processes that have a terminal, which left it blind on macOS where a test child has none): prints `L pid` for an owned process leading its own group, and `K pid` for a live process that is a child of an owned or killed pid or sits in a group an owned leader led. Under MSYS a process shows in stat (with its parent and group) one to several seconds before its environment is readable, so a child its parent started just before being killed is kin here long before the token scan can see it. */
 const KIN_SH = 'tg_seeds=" $tg_found $tg_all "; tg_lead=" $tg_leaders "; while read -r tg_a tg_b tg_c tg_d tg_r; do case $tg_a in "" | *[!0-9]*) continue ;; esac; case "$tg_d $tg_r" in *defunct* | Z*) continue ;; esac; case $tg_seeds in *" $tg_a "*) [ "$tg_c" = "$tg_a" ] && tg_leaders="$tg_leaders $tg_a" ;; *) tg_kn=; case $tg_seeds in *" $tg_b "*) tg_kn=1 ;; esac; case $tg_lead in *" $tg_c "*) tg_kn=1 ;; esac; [ -n "$tg_kn" ] || continue; case " $tg_found " in *" $tg_a "*) ;; *) tg_found="$tg_found $tg_a" ;; esac ;; esac; done <<EOF\n$tg_tbl\nEOF'
 
-/** Stops then kills every process whose environment carries `${OWNER_VAR}=$TG_REAP_TOKEN`, rescanning so a child forked between scan and stop is caught, and exits 1 naming any it killed that are still alive ten seconds later, each with its process state and Windows pid and with what `kill -f` printed, so a failure explains itself (a zombie awaiting its reaper counts as gone, so does a pid with no /proc entry where /proc exists, and the report lists only pids still alive when it is written, since under load a killed process can finish exiting just after the deadline). A survivor at two seconds is killed again, under MSYS through the Win32 interface (`kill -f`), since a loaded Windows machine left a signalled Git Bash process running past five seconds; the CONT after the KILL wakes a stopped process that would otherwise sit on its pending signal. Matching the token instead of a recorded pid finds the chunk subshell a timeout orphaned and everything it started, reparented or not, and cannot hit an unrelated process that reused a dead one's pid. One `grep -z` pass over every /proc/<pid>/environ on Linux and under MSYS (a pass that grep did not finish, killed by a signal, is repeated and never read as finding nothing, since an earlier report had it die with SIGHUP and the empty answer ended the reap with the run still alive, a signal this round could not reproduce; the failure message now lists each attempt's exit status), since bash's `read` pulls a /proc file a byte at a time and that took a loaded Windows machine past a minute; `ps -E` on macOS. Once everything found is dead the scan runs once more and exits 0 only when it finds no live owned process outside the killed set, since a process forked after the last scan (a stop signal can land after a fork already began, and a loaded machine stretches the gap between scan and kill) would otherwise outlive the reap unseen; a process that scan finds is killed and the check repeats. Every scan, with or without /proc, also adds the kin found by KIN_SH, because the token scan alone cannot see an MSYS child in the seconds between its parent starting it and its environment becoming readable (a child started just before its parent was killed outlived the reap that way); the reap exits 0 only after two consecutive scans find nothing live outside the killed set, survivors are sent KILL again every second, and a run that keeps producing new processes fails after 20 rounds instead of looping. The scan runs only after a failed run, so its cost never lands on a passing one. */
+/** Stops then kills every process whose environment carries `${OWNER_VAR}=$TG_REAP_TOKEN`, rescanning so a child forked between scan and stop is caught, and exits 1 naming any it killed that are still alive ten seconds later, each with its process state and Windows pid and with what `kill -f` printed, so a failure explains itself (a zombie awaiting its reaper counts as gone, so does a pid with no /proc entry where /proc exists, and the report lists only pids still alive when it is written, since under load a killed process can finish exiting just after the deadline). A survivor at two seconds is killed again, under MSYS through the Win32 interface (`kill -f`), since a loaded Windows machine left a signalled Git Bash process running past five seconds; the CONT after the KILL wakes a stopped process that would otherwise sit on its pending signal. Matching the token instead of a recorded pid finds the chunk subshell a timeout orphaned and everything it started, reparented or not, and cannot hit an unrelated process that reused a dead one's pid. One `grep -z` pass over every /proc/<pid>/environ on Linux and under MSYS (a pass that grep did not finish, killed by a signal, is repeated and never read as finding nothing, since an earlier report had it die with SIGHUP and the empty answer ended the reap with the run still alive, a signal this round could not reproduce; the failure message now lists each attempt's exit status), since bash's `read` pulls a /proc file a byte at a time and that took a loaded Windows machine past a minute; `ps -E` on macOS. Once everything found is dead the scan runs once more and exits 0 only when it finds no live owned process outside the killed set, since a process forked after the last scan (a stop signal can land after a fork already began, and a loaded machine stretches the gap between scan and kill) would otherwise outlive the reap unseen; a process that scan finds is killed and the check repeats. Every scan, with or without /proc, also adds the kin found by KIN_SH, because the token scan alone cannot see an MSYS child in the seconds between its parent starting it and its environment becoming readable (a child started just before its parent was killed outlived the reap that way); the reap exits 0 only after two consecutive scans find nothing live outside the killed set, survivors are sent KILL again every second, and a run that keeps producing new processes fails after 20 rounds instead of looping. The kill's own argument list also stops the seeds and lists their descendants once more (tg_kids), because on Linux and macOS a child a seed forked after the last listing is handed to init or a subreaper the moment the seed dies, so a listing taken after the KILL cannot name it by parentage. The scan runs only after a failed run, so its cost never lands on a passing one. */
 export const REAP_SCRIPT = [
   TICK_FN,  `tg_needle="${OWNER_VAR}=$TG_REAP_TOKEN"`,
   // The kin listing is taken by a command substitution whose only command is the listing (bash runs it in place, one fork) and read by builtins from a here-document, so a scan forks only the listing itself and leaves no file to remove at exit (a pipe, an awk and an exit-time rm each cost a fork, and a fork took seconds on a loaded Git Bash).
@@ -124,6 +124,25 @@ export const REAP_SCRIPT = [
   `tg_kin() {`,
   `  tg_tbl=$(tg_ps); ${KIN_SH}`,
   '}',
+  // Run inside the kill's own argument list, so its listing is the last one taken before the KILL: it stops the seeds, then lists every descendant of them and stops those too. A child forked after the loop's last listing has the seed as its parent only until the seed dies, since the kernel hands it to init or a subreaper at that instant (a zombie seed no longer owns it), so only a listing taken before the KILL can name it by parentage. It prints the pids found, which the kill ends with the seeds.',
+  'tg_kids() {',
+  '  kill -STOP "$@" 2>/dev/null',
+  '  tg_kt=$(tg_ps); tg_ks=" $* "; tg_ko=; tg_km=1',
+  '  while [ -n "$tg_km" ]; do',
+  '    tg_km=',
+  '    while read -r tg_a tg_b tg_c tg_d tg_r; do',
+  '      case $tg_a in "" | *[!0-9]*) continue ;; esac',
+  '      case "$tg_d $tg_r" in *defunct* | Z*) continue ;; esac',
+  '      case $tg_ks in *" $tg_a "*) continue ;; esac',
+  '      case $tg_ks in *" $tg_b "*) tg_ks="$tg_ks$tg_a "; tg_ko="$tg_ko $tg_a"; tg_km=1 ;; esac',
+  '    done <<EOF',
+  '$tg_kt',
+  'EOF',
+  '  done',
+  '  [ -z "$tg_ko" ] || kill -STOP $tg_ko 2>/dev/null',
+  '  echo "$tg_ko"',
+  '}',
+  'tg_kidset=',
   'tg_owned() {',
   '  echo scan',
   '  tg_found=',
@@ -164,14 +183,17 @@ export const REAP_SCRIPT = [
   '  kill -STOP $tg_new 2>/dev/null',
   '  tg_all="$tg_all$tg_new"',
   'done',
-  '[ -z "$tg_all" ] || { kill -KILL $tg_all; kill -CONT $tg_all; tg_postkill=1; } 2>/dev/null',
-  'tg_start=$SECONDS',
-  'tg_begin=$SECONDS',
+  '[ -z "$tg_all" ] || { kill -KILL $tg_all ${tg_kidset:=$(tg_kids $tg_all)}; kill -CONT $tg_all $tg_kidset; tg_postkill=1; } 2>/dev/null',
+  'tg_all="$tg_all$tg_kidset"',
+  // dash and other shells without $SECONDS count seconds from the clock instead, so every bound below still advances there.
+  'if [ -n "$BASH_VERSION" ]; then tg_clock() { tg_t=$SECONDS; }; else tg_clock() { tg_t=$(date +%s); }; fi',
+  'tg_clock; tg_start=$tg_t',
+  'tg_begin=$tg_t',
   'tg_forced=',
   'tg_clean=0',
   'tg_rounds=0',
-  'tg_lastkill=$SECONDS',
-  'while [ $((SECONDS - tg_begin)) -lt 300 ]; do',
+  'tg_lastkill=$tg_t',
+  'while tg_clock; [ $((tg_t - tg_begin)) -lt 300 ]; do',
   '  tg_left=',
   '  for tg_p in $tg_all; do tg_live "$tg_p" && tg_left="$tg_left $tg_p"; done',
   '  if [ -z "$tg_left" ]; then',
@@ -179,19 +201,19 @@ export const REAP_SCRIPT = [
   '    tg_owned; tg_late=',
   '    for tg_p in $tg_found; do case " $tg_all " in *" $tg_p "*) ;; *) tg_live "$tg_p" && tg_late="$tg_late $tg_p" ;; esac; done',
   '    if [ -z "$tg_late" ]; then tg_clean=$((tg_clean + 1)); [ "$tg_clean" -ge 2 ] && exit 0; continue; fi',
-  '    tg_clean=0; tg_rounds=$((tg_rounds + 1)); tg_start=$SECONDS; tg_forced=',
+  '    tg_clean=0; tg_rounds=$((tg_rounds + 1)); tg_start=$tg_t; tg_forced=',
   '    [ "$tg_rounds" -le 20 ] || { echo "owned processes kept appearing after SIGKILL:$tg_late" >&2; exit 1; }',
   '    kill -STOP $tg_late 2>/dev/null; kill -KILL $tg_late 2>/dev/null; kill -CONT $tg_late 2>/dev/null',
   '    tg_all="$tg_all$tg_late"',
   '    continue',
   '  fi',
   '  tg_clean=0',
-  '  [ $((SECONDS - tg_start)) -lt 10 ] || break',
-  '  if [ -z "$tg_forced" ] && [ $((SECONDS - tg_start)) -ge 2 ]; then',
+  '  [ $((tg_t - tg_start)) -lt 10 ] || break',
+  '  if [ -z "$tg_forced" ] && [ $((tg_t - tg_start)) -ge 2 ]; then',
   '    tg_forced=1',
   '    case $OSTYPE in msys* | cygwin*) tg_fout=$(/usr/bin/kill -f -KILL $tg_left 2>&1) ;; *) kill -KILL $tg_left 2>/dev/null ;; esac',
   '  fi',
-  '  if [ $((SECONDS - tg_lastkill)) -ge 1 ]; then tg_lastkill=$SECONDS; { kill -KILL $tg_left; kill -CONT $tg_left; } 2>/dev/null; fi',
+  '  if [ $((tg_t - tg_lastkill)) -ge 1 ]; then tg_lastkill=$tg_t; { kill -KILL $tg_left; kill -CONT $tg_left; } 2>/dev/null; fi',
   '  tg_tick',
   'done',
   'tg_why=',

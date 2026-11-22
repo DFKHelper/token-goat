@@ -30,8 +30,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     return script.replace(head, () => own).replace(glob, () => '$tg_scan')
   }
 
-  // The same narrowing with the process listing fixed to nothing. The kin search reads `ps`, a whole-table pass that took 5-9 s under load, so a row that does not test the kin search fixes that listing too; the row that does keeps the real listing (see the row that names a tokenless child).
-  // With `marker`, each listing that the fixture answers appends to that file, so a row can assert the fixture was the listing it read (a restored real listing leaves no marker).
+  // The same narrowing with the process listing fixed to nothing. The kin search reads `ps`, a whole-table pass that took 5-9 s under load, so a row that does not test the kin search fixes that listing too; the row that does keeps the real listing (see the row that names a tokenless child). With `marker`, each listing that the fixture answers appends to that file, so a row can assert the fixture was the listing it read (a restored real listing leaves no marker).
   const fixScan = (script: string, pidFiles: string[], marker?: string): string => {
     const listing = /^case \$OSTYPE in msys\* \| cygwin\*\) tg_ps\(\) .*esac$/m
     const narrowed = narrowScan(script, pidFiles)
@@ -385,7 +384,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.alive, 'the tokenless child forked after the first kin listing is still running after the reap returned').toBe(false)
   })
 
-  // Provenance: HAND-DERIVED from a review of the reap: the final listing of the break round is taken while a seed is signalled but not yet stopped, the seed then forks a tokenless child, and the KILL takes the seed, which stays a zombie while its parent waits in spawnSync. Every seed is then dead and the seed set is unchanged since that listing, so only the forced post-kill listing can name the child. The window is forced without a clock: the STOP is made a no-op and the reap, holding its kill after the last listing, releases the parent and waits for the child's pid file.
+  // Provenance: HAND-DERIVED from a review of the reap: the final listing of the break round is taken while a seed is signalled but not yet stopped, the seed then forks a tokenless child, and the KILL takes the seed, which stays a zombie while its parent waits in spawnSync. Every seed is then dead and the seed set is unchanged since that listing. Where the kernel reparents at exit (Linux, macOS; measured under WSL, where the child's parent became the Relay /init within 0.3 s while the zombie seed stayed listed) a listing taken after the KILL cannot name the child by parentage, so only the listing the kill carries (tg_kids, taken with the seeds stopped) can; under MSYS the forced post-kill listing names it as well. The window is forced without a clock: the STOP is made a no-op and the reap, holding its kill after the last listing, releases the parent and waits for the child's pid file.
   it('ends a tokenless child its owned parent forked after the last listing and before the kill', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlate-'))
     const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
@@ -430,9 +429,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.alive, 'the tokenless child forked after the last listing and before the kill is still running after the reap returned').toBe(false)
   })
 
-  // Provenance: HAND-DERIVED from a captured scan: the grep the reap runs to list every process carrying the token was killed by SIGHUP after four seconds and printed nothing, and the reap read that as no owned process, so it ended with the run's processes still alive. The failure is forced by a `grep` function that dies (status 129, no output) on its first two calls, which are the two scans the old reap counted as clean; the owned parent stays blocked, so only a scan that is repeated finds it. The reap runs asynchronously under the stall-proof watchdog, fed by the scan calls and the files the test waits on.
-  // Provenance: HAND-DERIVED from a second capture: a scan that finished with status 2 and no error naming the owned process, which was alive and forking, listed everything but it (1 of 32 scans under load). The case is forced by a `grep` that prints nothing and exits 1 on its first two calls.
-  // macOS has no /proc, so its reap scans with ps and never calls the grep these rows force to fail.
+  // Provenance: HAND-DERIVED from a captured scan: the grep the reap runs to list every process carrying the token was killed by SIGHUP after four seconds and printed nothing, and the reap read that as no owned process, so it ended with the run's processes still alive. The failure is forced by a `grep` function that dies (status 129, no output) on its first two calls, which are the two scans the old reap counted as clean; the owned parent stays blocked, so only a scan that is repeated finds it. The reap runs asynchronously under the stall-proof watchdog, fed by the scan calls and the files the test waits on. Provenance: HAND-DERIVED from a second capture: a scan that finished with status 2 and no error naming the owned process, which was alive and forking, listed everything but it (1 of 32 scans under load). The case is forced by a `grep` that prints nothing and exits 1 on its first two calls. macOS has no /proc, so its reap scans with ps and never calls the grep these rows force to fail.
   it.skipIf(process.platform === 'darwin').each([
     ['ends an owned process when the scan that lists it is killed before it finishes', 'return 129'],
     ['ends an owned process when the scan that lists it finishes without listing it', 'return 1'],
