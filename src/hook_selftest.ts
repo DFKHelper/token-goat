@@ -55,9 +55,10 @@ function shellSpawn(shell: GuardShell, command: string): ShellSpawn | null {
     program = bash
     args = ['-c', command]
   } else {
-    // PowerShell 5.1 is the oldest shell the PowerShell guard must run in; no other platform registers it.
+    // PowerShell 5.1 is the oldest shell the PowerShell guard must run in; no other platform registers it. Availability is the executable's presence, as for the sh branch's resolveWindowsBash(): a platform check alone let a host with no Windows PowerShell folder (or a test that fakes the platform) spawn a missing path and report ENOENT as a failed hook instead of "no PowerShell on this machine".
     if (process.platform !== 'win32') return null
     program = windowsPowerShellPath()
+    if (!fs.existsSync(program)) return null
     args = powerShellTextQueryArgs(command)
   }
   return { program, args, verbatim }

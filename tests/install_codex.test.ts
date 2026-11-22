@@ -57,8 +57,8 @@ function commandsFor(config: CodexConfigShape, event: string): string[] {
 
 let TMP: string
 
-/** A path as the written command quotes it: single quotes in the PowerShell line Codex runs on Windows, double quotes for sh elsewhere (no path here holds a quote or a dollar sign). */
-const quoted = (p: string): string => (process.platform === 'win32' ? `'${p}'` : `"${p}"`)
+/** A path as the written command quotes it. The guarded command (hook_guard.ts) single-quotes each native word on every platform through quotePosixShellWord, and the PowerShell line does the same; double quotes are the unguarded hookCommandFor form, which this install no longer writes while the entry path is known (no path here holds a quote or a dollar sign). */
+const quoted = (p: string): string => `'${p}'`
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-codex-install-'))

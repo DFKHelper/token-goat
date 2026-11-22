@@ -60,6 +60,9 @@ function shimPath(): string {
   return path.join(antigravityPluginDir(), 'token-goat-hook.cmd')
 }
 
+// The batch shim is written only on Windows (antigravity_install.ts writes it under process.platform === 'win32'; elsewhere the hooks entry carries the absolute node and entry paths). Shim-presence assertions follow that, so each one holds on both platforms; the plugin-entry assertions run everywhere.
+const SHIM_WRITTEN = process.platform === 'win32'
+
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-agy-install-'))
   ;(os.homedir as unknown as ReturnType<typeof vi.fn>).mockReturnValue(TMP)
@@ -270,13 +273,13 @@ describe('uninstallAntigravity', () => {
     fs.writeFileSync(otherHostConfig, JSON.stringify(hostHooks))
 
     expect(uninstallAntigravity()).toBe(true)
-    expect(fs.existsSync(shimPath()), 'uninstall deleted a shim another host config still names').toBe(true)
+    expect(fs.existsSync(shimPath()), 'uninstall deleted a shim another host config still names').toBe(SHIM_WRITTEN)
     expect(fs.existsSync(antigravityHooksPath())).toBe(false)
   })
 
   it('removes the shim when no host config references it', () => {
     installAntigravity()
-    expect(fs.existsSync(shimPath())).toBe(true)
+    expect(fs.existsSync(shimPath())).toBe(SHIM_WRITTEN)
 
     expect(uninstallAntigravity()).toBe(true)
     expect(fs.existsSync(shimPath()), 'uninstall kept an unreferenced shim').toBe(false)
@@ -287,7 +290,7 @@ describe('uninstallAntigravity', () => {
     failUnlink.path = shimPath()
     try {
       expect(() => uninstallAntigravity()).not.toThrow()
-      expect(fs.existsSync(shimPath())).toBe(true)
+      expect(fs.existsSync(shimPath())).toBe(SHIM_WRITTEN)
     } finally {
       failUnlink.path = ''
     }
