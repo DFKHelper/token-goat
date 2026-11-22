@@ -1,6 +1,6 @@
 pre-commit:
   commands:
-    # Refuses staged files holding a multi-line comment run; the repo keeps comments single-line.
+    # Refuses staged multi-line comments (the repo keeps comments single-line), read from the staged blob.
     merged-comments:
       priority: 1
       run: bash .lefthook-scripts/check-merged-comments.sh
