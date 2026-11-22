@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
 
-const SRC = path.resolve('src')
+const SRC = path.resolve(import.meta.dirname, '..', '..', 'src')
 
 function readSource(rel: string): string {
   return fs.readFileSync(path.join(SRC, rel), 'utf8')

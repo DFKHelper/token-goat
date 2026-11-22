@@ -7,8 +7,9 @@ import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import { outlineXml, parseXml, parseXmlTree, queryXml, serializeXmlNode, XML_ATTR_REGION, xmlTokenScanText } from '../../src/xml_query.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+const BUNDLE = join(ROOT, 'dist', 'token-goat.mjs')
 
 let projectDir: string
 let homeDir: string

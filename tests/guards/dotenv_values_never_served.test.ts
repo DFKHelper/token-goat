@@ -23,6 +23,7 @@ import { clearModuleCaches } from '../../src/reset.js'
 import { readSection } from '../../src/section_reader.js'
 import Database from '../../src/sqlite_driver.js'
 import { buildContextWindow } from '../../src/util_context.js'
+import { ROOT } from '../helpers/bundle.js'
 
 /** Fake secrets, built by concatenation so a secrets scanner does not read them as real. */
 const DB_SECRET = 'postgres://admin:' + 'hunter2pw' + '@db.internal:5432/app'
@@ -252,7 +253,7 @@ describe('the other paths that hand file text to a model', () => {
     try {
       const file = join(root, '.env')
       writeFileSync(file, ENV_FILE)
-      const bundle = resolve(process.cwd(), 'dist', 'token-goat.mjs')
+      const bundle = resolve(ROOT, 'dist', 'token-goat.mjs')
 
       const run = spawnSync(process.execPath, [bundle, 'bash-output', '--file', file], { encoding: 'utf8' })
 
@@ -272,7 +273,7 @@ describe('the other paths that hand file text to a model', () => {
     try {
       const file = join(root, '.env')
       writeFileSync(file, `${ENV_FILE}HARMLESS_LOOKING=${'plainsecret444'}\n`)
-      const bundle = resolve(process.cwd(), 'dist', 'token-goat.mjs')
+      const bundle = resolve(ROOT, 'dist', 'token-goat.mjs')
 
       const run = spawnSync(process.execPath, [bundle, command, '--file', file], { encoding: 'utf8' })
 
@@ -291,7 +292,7 @@ describe('the other paths that hand file text to a model', () => {
     try {
       const file = join(root, '.env')
       writeFileSync(file, `${ENV_FILE}HARMLESS_LOOKING=${'plainsecret444'}\n`)
-      const bundle = resolve(process.cwd(), 'dist', 'token-goat.mjs')
+      const bundle = resolve(ROOT, 'dist', 'token-goat.mjs')
 
       const stored = spawnSync(process.execPath, [bundle, 'compress-text', '--file', file], { encoding: 'utf8', cwd: root })
       expect(stored.status).toBe(0)
@@ -313,7 +314,7 @@ describe('the other paths that hand file text to a model', () => {
     try {
       const file = join(root, '.env')
       writeFileSync(file, `${ENV_FILE}HARMLESS_LOOKING=${'plainsecret444'}\n`)
-      const bundle = resolve(process.cwd(), 'dist', 'token-goat.mjs')
+      const bundle = resolve(ROOT, 'dist', 'token-goat.mjs')
 
       const stored = spawnSync(process.execPath, [bundle, 'handoff-create', 'dotenv-guard', '--file', file], { encoding: 'utf8', cwd: root })
       expect(stored.status).toBe(0)

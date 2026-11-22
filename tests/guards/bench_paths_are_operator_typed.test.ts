@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import { cliDispatchFiles, relSrc } from './cli_dispatch_files.js'
 import { pinnedPopulation } from './population.js'
+import { ROOT } from '../helpers/bundle.js'
 
 /** Entry points that accept a caller-supplied filesystem path into the bench command. */
 const BENCH_ENTRY_POINTS = ['runBenchCommand', 'loadCorpus', 'appendTsv'] as const
@@ -15,7 +16,7 @@ const BENCH_ENTRY_POINTS = ['runBenchCommand', 'loadCorpus', 'appendTsv'] as con
 const DEFINING_FILE = 'src/cli_bench.ts'
 
 function walkSrc(): string[] {
-  const root = path.join(process.cwd(), 'src')
+  const root = path.join(ROOT, 'src')
   const out: string[] = []
   const walk = (dir: string): void => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -43,7 +44,7 @@ function referencingFiles(): string[] {
   const pattern = new RegExp(`\\b(${BENCH_ENTRY_POINTS.join('|')})\\b`)
   return srcFiles()
     .filter((f) => pattern.test(fs.readFileSync(f, 'utf8')))
-    .map((f) => path.relative(process.cwd(), f).split(path.sep).join('/'))
+    .map((f) => path.relative(ROOT, f).split(path.sep).join('/'))
     .sort()
 }
 

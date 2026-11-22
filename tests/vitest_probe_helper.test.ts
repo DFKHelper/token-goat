@@ -44,10 +44,11 @@ describe('vitest probe cleanup', () => {
     // The shared directory cannot be removed here without re-creating the race this file guards, so the real helper runs in a child whose cwd is an empty temp directory.
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-probe-fresh-'))
     try {
-      const helper = pathToFileURL(path.resolve('tests', 'helpers', 'vitest-probe.ts')).href
+      const helper = pathToFileURL(path.resolve(import.meta.dirname, 'helpers', 'vitest-probe.ts')).href
       // tsx by absolute URL: a bare `--import tsx` resolves from the child's cwd, which has no node_modules.
-      const tsx = pathToFileURL(path.resolve('node_modules', 'tsx', 'dist', 'loader.mjs')).href
-      const res = spawnSync(process.execPath, ['--import', tsx, '-e', `import(${JSON.stringify(helper)}).then((m) => m.writeProbe('fresh.txt', ['fresh', '']))`], {
+      const tsx = pathToFileURL(path.resolve(import.meta.dirname, '..', 'node_modules', 'tsx', 'dist', 'loader.mjs')).href
+      const freshDir = path.join(cwd, path.basename(PROBE_DIR))
+      const res = spawnSync(process.execPath, ['--import', tsx, '-e', `import(${JSON.stringify(helper)}).then((m) => m.writeProbeTo(${JSON.stringify(freshDir)}, 'fresh.txt', ['fresh', '']))`], {
         cwd,
         encoding: 'utf8',
       })
@@ -63,14 +64,14 @@ describe('vitest probe cleanup', () => {
   })
 
   it('leaves the directory to the helper: no other test names it or removes it', () => {
-    const helper = path.resolve('tests', 'helpers', 'vitest-probe.ts')
-    const offenders = testSources(path.resolve('tests'))
+    const helper = path.resolve(import.meta.dirname, 'helpers', 'vitest-probe.ts')
+    const offenders = testSources(import.meta.dirname)
       .filter((file) => file !== helper)
       .filter((file) => {
         const src = fs.readFileSync(file, 'utf8')
         return /['"`]\.vitest-probe['"`/]/.test(src) || /\brm(?:dir)?Sync\(\s*PROBE_DIR\b/.test(src)
       })
-      .map((file) => path.relative(process.cwd(), file))
+      .map((file) => path.relative(path.resolve(import.meta.dirname, '..'), file))
     expect(offenders, 'use writeProbe/removeProbe from tests/helpers/vitest-probe.ts').toEqual([])
   })
 })

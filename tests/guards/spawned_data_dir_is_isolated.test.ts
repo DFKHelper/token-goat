@@ -4,6 +4,7 @@ import { pinnedPopulation } from './population.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ROOT } from '../helpers/bundle.js'
 
 function readdirIfPresent(dir: string): fs.Dirent[] {
   try {
@@ -29,7 +30,7 @@ function testFiles(dir: string, out: string[] = []): string[] {
 function scannedTestFiles(): readonly string[] {
   return pinnedPopulation({
     what: 'tests/**/*.ts files scanned for spawned-child data-dir isolation',
-    items: testFiles(path.join(process.cwd(), 'tests')),
+    items: testFiles(path.join(ROOT, 'tests')),
     floor: 300,
     mustInclude: ['worker.test.ts'],
   })
@@ -47,7 +48,7 @@ describe('a spawned binary gets an isolated data dir on every platform', () => {
       if (/\bXDG_DATA_HOME:/.test(text)) continue
       // Only a file that starts a child process can hand one a data dir. tests/screenshot.test.ts pins LOCALAPPDATA in-process to steer Chrome discovery and spawns nothing, so it is out of scope on a real property rather than by name.
       if (!/\bspawnSync\(|\bexecFileSync\(|\bexecSync\(|\bspawn\(/.test(text)) continue
-      offenders.push(path.relative(process.cwd(), full).split(path.sep).join('/'))
+      offenders.push(path.relative(ROOT, full).split(path.sep).join('/'))
     }
     expect(
       offenders,
@@ -75,7 +76,7 @@ describe('a spawned binary gets an isolated data dir on every platform', () => {
 
   it('agrees with the platform branches it is derived from, so the rule is not just asserted here', () => {
     // Anchors the guard to its source. If constants.ts ever stops reading XDG_DATA_HOME on the POSIX branches the rule above is obsolete, and this catches that rather than leaving a scan enforcing a stale invariant.
-    const constants = fs.readFileSync(path.join(process.cwd(), 'src', 'constants.ts'), 'utf8')
+    const constants = fs.readFileSync(path.join(ROOT, 'src', 'constants.ts'), 'utf8')
     expect(/process\.env\['LOCALAPPDATA'\]/.test(constants), 'constants.ts must still pick the data dir from LOCALAPPDATA').toBe(true)
     expect(/process\.env\['XDG_DATA_HOME'\]/.test(constants), 'constants.ts must still pick the data dir from XDG_DATA_HOME').toBe(true)
   })

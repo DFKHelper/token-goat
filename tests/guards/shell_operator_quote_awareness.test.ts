@@ -5,10 +5,11 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const SRC_DIR = join(process.cwd(), 'src')
+const SRC_DIR = join(ROOT, 'src')
 // This guard's own file: it necessarily quotes the naive pattern in its self-test and must not scan itself.
-const SELF = join(process.cwd(), 'tests', 'guards', 'shell_operator_quote_awareness.test.ts').replace(/\\/g, '/')
+const SELF = join(ROOT, 'tests', 'guards', 'shell_operator_quote_awareness.test.ts').replace(/\\/g, '/')
 // The one file allowed to reference the raw operator literals: it defines hasUnquotedOperator/maskQuotedSpans themselves, and hasBareBackgroundOrNewline's own bare-`&` regex.
 const DEFINITION_FILE = join(SRC_DIR, 'tool_filters', 'helpers.ts').replace(/\\/g, '/')
 

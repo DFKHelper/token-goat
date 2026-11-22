@@ -8,8 +8,9 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 import { stripUnsafeSuggestions } from '../../src/hint_suggestion_guard.js'
 import { findStructuredKeyPath } from '../../src/read_suggest.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+const BUNDLE = join(ROOT, 'dist', 'token-goat.mjs')
 
 let projectDir: string
 let homeDir: string

@@ -5,8 +5,8 @@ import * as path from 'node:path'
 
 import { embedFingerprintSources, extractionSources } from '../../scripts/parser-fingerprint.mjs'
 import { pinnedPopulation } from './population.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const ROOT = process.cwd()
 const SRC = path.join(ROOT, 'src')
 
 const relative = (f: string): string => path.relative(ROOT, f).split(path.sep).join('/')

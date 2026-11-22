@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
+import { ROOT } from '../helpers/bundle.js'
 
 // Functions that are allowed to call `fs.readFileSync(` or `indexFileSync(` directly, because they ARE the confinement-aware primitives (or, for the pdf/image thin wrappers, read a file type this module's confinement gate does not currently cover at all -- see the exclusions note below). Every other function in this file must go through one of these instead.
 const ALLOWED_RAW_READ_FUNCTIONS = new Set([
@@ -26,7 +27,7 @@ function findRawReaders(): Map<string, string[]> {
   const offenderRe = /(?<!Pinned)\bindexFileSync\(|\bfs\.readFileSync\(/
   const readers = new Map<string, string[]>()
   for (const file of SCANNED_FILES) {
-    const lines = fs.readFileSync(path.join(process.cwd(), 'src', file), 'utf8').split('\n')
+    const lines = fs.readFileSync(path.join(ROOT, 'src', file), 'utf8').split('\n')
     let currentFn = ''
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]!
@@ -73,7 +74,7 @@ describe('read_commands.ts confinement-reachable reads go through the pin-aware 
   })
 
   it('the pin-aware helpers are actually present, so the guard cannot pass vacuously', () => {
-    const src = fs.readFileSync(path.join(process.cwd(), 'src', 'read_commands.ts'), 'utf8')
+    const src = fs.readFileSync(path.join(ROOT, 'src', 'read_commands.ts'), 'utf8')
     for (const fn of ['readFileText', 'readFileBytes', 'indexFileSyncPinned', 'readPinnedBytes']) {
       expect(src, `Expected src/read_commands.ts to still define ${fn}`).toContain(`function ${fn}(`)
     }

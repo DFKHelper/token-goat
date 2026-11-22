@@ -7,8 +7,9 @@ import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import { displaySafePath } from '../../src/paths.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+const BUNDLE = join(ROOT, 'dist', 'token-goat.mjs')
 
 // A bundle hook spawn took 0.9 to 8.7 s (median 1.7 s) over 40 runs on this shared machine, so the old 20 s cap was about twice the slowest unloaded spawn and a loaded run crossed it; 60 s matches the per-test timeout.
 const SPAWN_TIMEOUT_MS = 60_000

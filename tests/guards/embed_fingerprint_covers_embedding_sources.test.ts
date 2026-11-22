@@ -4,8 +4,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { embedFingerprintSources, extractionSources } from '../../scripts/parser-fingerprint.mjs'
+import { ROOT } from '../helpers/bundle.js'
 
-const ROOT = process.cwd()
 
 interface ClosureResult {
   closure: Set<string>

@@ -12,7 +12,7 @@ const CHILD_PROCESS = /from '(?:node:)?child_process'/
 function testSources(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const p = path.join(dir, e.name)
-    if (e.isDirectory()) return e.name === 'fixtures' || e.name === 'node_modules' ? [] : testSources(p)
+    if (e.isDirectory()) return e.name.startsWith('.') || e.name === 'fixtures' || e.name === 'node_modules' ? [] : testSources(p)
     return e.name.endsWith('.ts') && p !== import.meta.filename ? [p] : []
   })
 }

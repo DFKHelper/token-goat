@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
 
-const TESTS = path.resolve('tests')
+const TESTS = path.resolve(import.meta.dirname, '..')
 const VAR = 'TOKEN_GOAT_MODEL_CACHE_DIR'
 
 /** Every test file that drives the download path, found by the call rather than by a name list. */

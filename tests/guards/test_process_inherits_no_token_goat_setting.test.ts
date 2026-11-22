@@ -31,8 +31,8 @@ function toolingFiles(): readonly string[] {
       else out.push(full)
     }
   }
-  for (const dir of ['.github', '.lefthook-scripts', path.join('tests', 'setup')]) walk(path.resolve(dir))
-  for (const file of ['lefthook.yml', 'vitest.config.ts']) out.push(path.resolve(file))
+  for (const dir of ['.github', '.lefthook-scripts', path.join('tests', 'setup')]) walk(path.resolve(import.meta.dirname, '..', '..', dir))
+  for (const file of ['lefthook.yml', 'vitest.config.ts']) out.push(path.resolve(import.meta.dirname, '..', '..', file))
   // 25 files when this was written. The anchors are the three that set a kept variable today: the CI workflow, the commit-msg hook and the setup file's own pins.
   return pinnedPopulation({
     what: 'tooling files that may name a token-goat variable',
@@ -88,8 +88,9 @@ describe('the test process inherits no token-goat setting', () => {
       '})',
       '',
     ])
-    const res = spawnSync(process.execPath, [path.resolve('node_modules', 'vitest', 'vitest.mjs'), 'run', probe], {
+    const res = spawnSync(process.execPath, [path.resolve(import.meta.dirname, '..', '..', 'node_modules', 'vitest', 'vitest.mjs'), 'run', probe], {
       encoding: 'utf8',
+      cwd: path.resolve(import.meta.dirname, '..', '..'),
       // The bundle build this config runs in globalSetup would race the outer run's readers of the same artifact.
       env: { ...process.env, CI: '', TOKEN_GOAT_BASH_COMPRESS: '0', TOKEN_GOAT_ASK_MODEL: 'some-model', TOKENWISE_COMPACT_ASSIST: 'false', TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD: '1' },
     })

@@ -261,6 +261,7 @@ describe('installer writes are contained by construction', () => {
 
     expect(
       undeclared,
+      // allow-cwd: quoted text inside a finding message, not a root lookup
       'This module writes a path built from process.cwd()/projectRoot through a write helper, but never ' +
         'calls withInstallScope. Its writes therefore run with NO project confinement, which is the ' +
         'defect four of five installers shipped: a clone can check the config path in as a symlink to a ' +

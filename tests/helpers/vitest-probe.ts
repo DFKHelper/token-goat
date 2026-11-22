@@ -2,14 +2,19 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-export const PROBE_DIR = path.resolve('.vitest-probe')
+export const PROBE_DIR = path.resolve(import.meta.dirname, '..', '..', '.vitest-probe')
+
+/** Writes `lines` to `<dir>/<name>`, creating `dir` first, and returns the file's absolute path. */
+export function writeProbeTo(dir: string, name: string, lines: readonly string[]): string {
+  const file = path.join(dir, name)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(file, lines.join('\n'))
+  return file
+}
 
 /** Writes `lines` to `.vitest-probe/<name>` and returns the file's absolute path. */
 export function writeProbe(name: string, lines: readonly string[]): string {
-  const file = path.join(PROBE_DIR, name)
-  fs.mkdirSync(PROBE_DIR, { recursive: true })
-  fs.writeFileSync(file, lines.join('\n'))
-  return file
+  return writeProbeTo(PROBE_DIR, name, lines)
 }
 
 /** Removes one probe file, leaving the directory and every other worker's probe in place. */

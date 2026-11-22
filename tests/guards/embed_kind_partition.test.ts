@@ -6,8 +6,9 @@ import { describe, it, expect } from 'vitest'
 import { embedFingerprintSources, embedGlobalSources, embedKindSources, sharedExtractionSources } from '../../scripts/parser-fingerprint.mjs'
 import { EMBED_KIND_FINGERPRINTS } from '../../src/embed_fingerprint.js'
 import { embedKindForPath } from '../../src/embed_stamp.js'
+import { ROOT } from '../helpers/bundle.js'
 
-const rel = (f: string): string => path.relative(process.cwd(), f).split(path.sep).join('/')
+const rel = (f: string): string => path.relative(ROOT, f).split(path.sep).join('/')
 
 const kindOwned = (): Map<string, string> => {
   const owned = new Map<string, string>()

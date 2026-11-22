@@ -24,6 +24,7 @@ import { openclawConfigPath, openclawPluginPath } from '../../src/bridges/opencl
 import { opencodePluginPath } from '../../src/bridges/opencode_install.js'
 import { piGlobalExtensionPath } from '../../src/bridges/pi_install.js'
 import { qwenSettingsPath } from '../../src/bridges/qwen_install.js'
+import { ROOT } from '../helpers/bundle.js'
 
 // The real values isolate-home.ts captured as TG_REAL_<NAME> before it redirected each one.
 const REAL_NAMES = ['HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR'] as const
@@ -129,7 +130,7 @@ function codeLines(text: string): string[] {
 }
 
 function relative(full: string): string {
-  return path.relative(process.cwd(), full).split(path.sep).join('/')
+  return path.relative(ROOT, full).split(path.sep).join('/')
 }
 
 // Per-file count of lines reading homedir (any form, aliases included) or a home-style env variable.
@@ -250,7 +251,7 @@ describe('no source file reads a home-style location outside the sanctioned set'
   it('lists every src file that reads homedir or a home variable, with the count the ratchet allows', () => {
     const files = pinnedPopulation({
       what: 'src/**/*.ts files scanned for home-style reads',
-      items: sourceFiles(path.join(process.cwd(), 'src')),
+      items: sourceFiles(path.join(ROOT, 'src')),
       floor: 400,
       mustInclude: ['constants.ts', 'purge.ts'],
     })
@@ -260,7 +261,7 @@ describe('no source file reads a home-style location outside the sanctioned set'
   it('lists every src file that performs an account lookup, with the count the ratchet allows', () => {
     const files = pinnedPopulation({
       what: 'src/**/*.ts files scanned for account lookups',
-      items: sourceFiles(path.join(process.cwd(), 'src')),
+      items: sourceFiles(path.join(ROOT, 'src')),
       floor: 400,
       mustInclude: ['constants.ts'],
     })

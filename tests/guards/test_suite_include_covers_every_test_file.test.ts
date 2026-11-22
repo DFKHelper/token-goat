@@ -5,10 +5,11 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { trackedFiles } from '../helpers/tracked-files.js'
+import { ROOT } from '../helpers/bundle.js'
 
 /** The `include` patterns, read out of the config's source rather than imported from it. Importing `vitest.config.ts` would pull it into the tests TypeScript project, where it does not currently typecheck -- `minWorkers` is rejected by the vitest types that project resolves -- and `npm run typecheck:tests` fails before the suite ever runs. Reading the source keeps this guard from deciding what belongs in an unrelated tsconfig. */
 function includePatterns(): string[] {
-  const source = fs.readFileSync(path.join(process.cwd(), 'vitest.config.ts'), 'utf8')
+  const source = fs.readFileSync(path.join(ROOT, 'vitest.config.ts'), 'utf8')
   const line = /^\s*include:\s*\[(.*)\],\s*$/m.exec(source)?.[1] ?? ''
   return [...line.matchAll(/'([^']+)'/g)].map((m) => m[1])
 }
