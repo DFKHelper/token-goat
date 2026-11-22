@@ -1,5 +1,9 @@
 pre-commit:
   commands:
+    # Refuses staged files holding a multi-line comment run; the repo keeps comments single-line.
+    merged-comments:
+      priority: 1
+      run: bash .lefthook-scripts/check-merged-comments.sh
     # Fast structural gate: lint + typecheck, then the I/O-free guard suite (tests/guards) which catches implemented-but-unregistered/unfunctional commands before the commit lands. priority orders them lint -> typecheck -> guards; the full suite and built-bundle matrix stay on pre-push/CI.
     ts-lint:
       priority: 1
