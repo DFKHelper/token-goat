@@ -255,6 +255,7 @@ export interface SidechainLaneRollup {
 }
 
 /** Read-interception census over every Read tool_result in the corpus; repeats match on normalized path. */
+/** Divert counts UNDER-count on template drift; repeat counts on a per-file split; neither over-counts. */
 export interface ReadInterceptionRollup {
   readResults: number
   /** Under READ_DIVERT_MAX_BYTES, is_error true, matching a divert template; UNDER-counts on drift. */
@@ -265,7 +266,7 @@ export interface ReadInterceptionRollup {
   fullServeBytesOver10k: number
   /** Full serves whose path had no earlier Read tool_use in the transcript: the pool the re-read divert excludes by design. */
   fullServesFirstRead: number
-  /** Repeats: an earlier Read tool_use in the transcript; divert candidates; subagent lanes UNDER-count. */
+  /** Repeats: an earlier Read tool_use in the transcript; lane splits UNDER-count, never over-count. */
   fullServesRepeat: number
   repeatBytes: number
   /** Repeats whose own call carried an offset or limit parameter: deliberate paging, not a divert miss. */

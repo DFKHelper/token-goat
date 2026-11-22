@@ -117,6 +117,12 @@ describe('Node support claims', () => {
     expect(shippedAtLeast(sh, wslPin, floor), `wsl-test.sh pins Node ${wslPin}, below the engines floor ${floor}`).toBe(true)
   })
 
+  // A shell that cannot start is a spawn error: the same throw as a timeout or a signal, with no wait.
+  it('throws no answer when the shell cannot start, rather than judging a version', () => {
+    const missing = path.join(os.tmpdir(), `no-sh-${randomBytes(8).toString('hex')}`, 'sh')
+    expect(() => shippedAtLeast(missing, '22.16.0', floor)).toThrow('gave no answer: status null, signal null')
+  })
+
   it('does not advertise a tested version that no workflow actually runs', () => {
     const ran = new Set(pinned.map((p) => p.version))
     const advertised = [...readme.matchAll(/(?:runs?|tested) on Node\.js (\d+)/g)].map((m) => Number(m[1]))
@@ -130,6 +136,7 @@ describe('vec0 probe', () => {
   const tsxLoader = pathToFileURL(path.join(repoRoot, 'node_modules', 'tsx', 'dist', 'esm', 'index.mjs')).href
 
   it('opens through the production driver and creates a vec0 table in the real tree', () => {
+    // One node process with no child of its own, so spawnSync's timeout kill reaches all of it.
     const run = spawnSync(process.execPath, ['--import', tsxLoader, probe], { cwd: repoRoot, encoding: 'utf8', windowsHide: true, timeout: 30_000 })
     expect(run.status, `vec0 probe exited ${String(run.status)}: ${run.stderr}`).toBe(0)
     expect(run.stdout).toMatch(/^vec0 v\d/m)
@@ -148,8 +155,11 @@ describe('vec0 probe', () => {
       // FORMAT-DERIVED: node_modules/sqlite-vec/package.json (main index.cjs; exports require, import).
       fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'sqlite-vec', type: 'module', main: 'index.cjs', exports: { '.': { require: './index.cjs', import: './index.mjs' } } }))
       const missing = JSON.stringify(path.join(dir, 'vec0-missing.so'))
+      // FORMAT-DERIVED: node_modules/sqlite-vec/index.cjs:42-46 (load(db) calls db.loadExtension).
       fs.writeFileSync(path.join(pkg, 'index.cjs'), `exports.load = function load(db) { db.loadExtension(${missing}) }\n`)
+      // FORMAT-DERIVED: node_modules/sqlite-vec/index.mjs:43-47 (export function load(db)).
       fs.writeFileSync(path.join(pkg, 'index.mjs'), `export function load() {}\n`)
+      // One node process with no child of its own, so spawnSync's timeout kill reaches all of it.
       return spawnSync(process.execPath, ['--import', tsxLoader, path.join(dir, 'scripts', 'check-vec0.mjs')], { cwd: dir, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 })
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })

@@ -289,6 +289,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
       `echo "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"$STUB_DIR/${leg.leg}.pid"`,
       ignoresTerm ? "trap '' TERM" : '',
       // The wsl-test stub prints the skip line that a leg prints before its probe when STUB_WSL_SKIP is set.
+      // FORMAT-DERIVED: .lefthook-scripts/wsl-test.sh:16 and :85 print "wsl-test: $1, skipping" for a skipped leg.
       leg.leg === 'wsl-test' ? 'if [[ -n "${STUB_WSL_SKIP:-}" ]]; then echo "$STUB_WSL_SKIP"; fi' : '',
       // The leg named by STUB_FIRE_STOP fires the stop once it is running, then sleeps like any other leg. With STUB_FIRE_AFTER_TESTS the firing leg waits for the tests leg's done file and then 3 s, so the hook has read that leg's end before the stop comes.
       `if [[ "\${STUB_FIRE_STOP:-}" == "${leg.leg}" && "\${STUB_FIRE_AFTER_TESTS:-}" == "1" ]]; then`,
