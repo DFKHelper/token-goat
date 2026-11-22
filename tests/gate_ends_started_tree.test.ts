@@ -38,7 +38,7 @@ function backgroundCommand(): string {
   const script = path.join(dir, 'sleeper.cjs')
   fs.writeFileSync(script, SLEEPER_SCRIPT)
   const start = `'${slash(process.execPath)}' '${slash(script)}' '${slash(dir)}' </dev/null 2>/dev/null`
-  return `exec 3< <(${start}); read -r -u 3 _up`
+  return `mkfifo '${slash(dir)}/up'; ${start} > '${slash(dir)}/up' & exec 3< '${slash(dir)}/up'; read -r _up <&3`
 }
 
 afterEach(() => {

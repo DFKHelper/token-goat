@@ -45,7 +45,7 @@ function startSleeper(): string {
   const script = path.join(dir, 'sleeper.cjs')
   fs.writeFileSync(script, SLEEPER_SCRIPT)
   const start = `'${slash(process.execPath)}' '${slash(script)}' '${slash(dir)}' </dev/null`
-  return `exec 3< <(${start}); read -r -u 3 _up`
+  return `mkfifo '${slash(dir)}/up'; ${start} > '${slash(dir)}/up' & exec 3< '${slash(dir)}/up'; read -r _up <&3`
 }
 
 afterEach(() => {
@@ -85,7 +85,7 @@ describe('the status of a shell that exited before the deadline', () => {
   })
 
   it.skipIf(!platformCanEnd)('a shell still running at the deadline returns 124', async () => {
-    const code = await gateRun(`${startSleeper()}; read -r -u 3 _never`)
+    const code = await gateRun(`${startSleeper()}; read -r _never <&3`)
     expect(code, 'the shell was still waiting when the deadline fired').toBe(124)
     expect(processAlive(recordedPid() as number), 'the tree is ended at the deadline').toBe(false)
   })
