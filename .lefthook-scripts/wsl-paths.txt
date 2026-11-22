@@ -47,6 +47,7 @@ src/native_hook.ts
 native/*
 scripts/build-native.mjs
 scripts/verify-native-dist.mjs
+scripts/check-vec0.mjs
 src/embed_runtime.ts
 src/embed_runtime_web.ts
 src/embed_model.ts

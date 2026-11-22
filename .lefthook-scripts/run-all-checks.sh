@@ -257,6 +257,8 @@ if [[ "$WSL_RUN" -eq 1 ]]; then
     [[ -z "${FAILED[wsl-test]:-}" ]] || { report_failure wsl-test; FAIL=1; }
     record_leg_outcome wsl-test wsl
     report_cut wsl
+    # A leg that skipped before its probe exits 0; its skip line is printed here so a passing push shows the probe never ran.
+    if [[ -z "${FAILED[wsl-test]:-}" ]]; then cap_bounded grep -h '^wsl-test: .*, skipping$' "$LOG_DIR/wsl-test.log" || true; fi
   fi
 fi
 

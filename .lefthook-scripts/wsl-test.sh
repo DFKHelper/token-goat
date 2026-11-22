@@ -4,7 +4,8 @@ set -euo pipefail
 
 # Pinned in one place: the Node release used when the login shell has none new enough. CI runs Node 22 (setup-node '22'); package.json engines wants >=22.16.0.
 NODE_VERSION="22.23.3"
-NODE_MAJOR_MIN=22
+# The least login-shell Node the suite accepts, compared per component: the package.json engines floor.
+NODE_MIN="22.16.0"
 # Override for tests of the download-failure path.
 NODE_MIRROR="${PREPUSH_NODE_MIRROR:-https://nodejs.org/dist}"
 DISTRO="${PREPUSH_WSL_DISTRO:-Ubuntu}"
@@ -64,8 +65,8 @@ fi
 
 # The Linux-side half. Positional values arrive as a generated header so nothing needs quoting through wsl.exe.
 {
-    printf 'TAR=%q\nBUNDLE=%q\nNAMES=%q\nNODE_VERSION=%q\nNODE_MAJOR_MIN=%q\nNODE_MIRROR=%q\nSKIP_STATUS=%q\nPIDFILE=%q\nCUTFILE=%q\nLEFT_MS=%q\n' \
-        "$(to_wsl_path "$TMPD/src.tar")" "$(to_wsl_path "$TMPD/history.bundle")" "$(to_wsl_path "$TMPD/confidential-names.txt")" "$NODE_VERSION" "$NODE_MAJOR_MIN" "$NODE_MIRROR" "$SKIP_STATUS" "$(to_wsl_path "$TMPD/inner.pid")" "$(to_wsl_path "$TMPD/cut.txt")" "$LEFT_MS"
+    printf 'TAR=%q\nBUNDLE=%q\nNAMES=%q\nNODE_VERSION=%q\nNODE_MIN=%q\nNODE_MIRROR=%q\nSKIP_STATUS=%q\nPIDFILE=%q\nCUTFILE=%q\nLEFT_MS=%q\n' \
+        "$(to_wsl_path "$TMPD/src.tar")" "$(to_wsl_path "$TMPD/history.bundle")" "$(to_wsl_path "$TMPD/confidential-names.txt")" "$NODE_VERSION" "$NODE_MIN" "$NODE_MIRROR" "$SKIP_STATUS" "$(to_wsl_path "$TMPD/inner.pid")" "$(to_wsl_path "$TMPD/cut.txt")" "$LEFT_MS"
     # The floor list travels as an array in the generated header; empty with no fill means the whole suite.
     printf 'FOCUS_FILES=('
     for focus_file in ${FLOOR_LIST[@]+"${FLOOR_LIST[@]}"}; do printf '%q ' "$focus_file"; done
@@ -97,11 +98,26 @@ if ! flock -n 9; then
     flock 9
 fi
 
-# Prefer a login-shell node that is new enough.
+# True when dotted version $1 is at or above $2, each of major, minor and patch compared as a number.
+version_at_least() {
+    local IFS=.
+    local -a have=($1) want=($2)
+    local i h w
+    for i in 0 1 2; do
+        h="${have[i]:-0}"
+        w="${want[i]:-0}"
+        [[ "$h" =~ ^[0-9]+$ ]] || return 1
+        if (( 10#$h > 10#$w )); then return 0; fi
+        if (( 10#$h < 10#$w )); then return 1; fi
+    done
+    return 0
+}
+
+# Prefer a login-shell node that is at least the engines floor.
 NODE_BIN=""
 if command -v node &>/dev/null; then
-    major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-    if [[ "$major" -ge "$NODE_MAJOR_MIN" ]]; then
+    login_version="$(node -p 'process.versions.node' 2>/dev/null || echo 0)"
+    if version_at_least "$login_version" "$NODE_MIN"; then
         NODE_BIN="$(dirname "$(command -v node)")"
     fi
 fi
@@ -153,6 +169,10 @@ if [[ ! -d node_modules || ! -f "$ROOT/ci.stamp" || "$(cat "$ROOT/ci.stamp")" !=
 else
     echo "wsl-test: node_modules is current, skipping npm ci"
 fi
+
+# The sqlite-vec check runs in CI too; here it fails the pre-push run instead of letting the semantic tests skip.
+# A failed sqlite-vec check fails the push (exit 1, not the skip code 75).
+npm run vec0:check
 
 # Tests spawn `python` inside shell commands; Ubuntu ships only python3, so give the run a `python` that is first on PATH, but only when none exists.
 if ! command -v python &>/dev/null && command -v python3 &>/dev/null; then

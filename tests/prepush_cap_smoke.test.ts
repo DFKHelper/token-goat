@@ -288,15 +288,15 @@ describe('the hard stop ends the legs of a real hook run', () => {
       '#!/usr/bin/env bash',
       `echo "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"$STUB_DIR/${leg.leg}.pid"`,
       ignoresTerm ? "trap '' TERM" : '',
-      // The leg named by STUB_FIRE_STOP fires the stop once it is running, then sleeps like any other leg.
-      // With STUB_FIRE_AFTER_TESTS the firing leg waits for the tests leg's done file and then 3 s, so the hook has read that leg's end before the stop comes.
+      // The wsl-test stub prints the skip line that a leg prints before its probe when STUB_WSL_SKIP is set.
+      leg.leg === 'wsl-test' ? 'if [[ -n "${STUB_WSL_SKIP:-}" ]]; then echo "$STUB_WSL_SKIP"; fi' : '',
+      // The leg named by STUB_FIRE_STOP fires the stop once it is running, then sleeps like any other leg. With STUB_FIRE_AFTER_TESTS the firing leg waits for the tests leg's done file and then 3 s, so the hook has read that leg's end before the stop comes.
       `if [[ "\${STUB_FIRE_STOP:-}" == "${leg.leg}" && "\${STUB_FIRE_AFTER_TESTS:-}" == "1" ]]; then`,
       '  until [[ -e "$STUB_DIR/tests.done" ]]; do sleep 1; done',
       '  sleep 3',
       'fi',
       `if [[ "\${STUB_FIRE_STOP:-}" == "${leg.leg}" ]]; then`,
-      // The watchdog's pid is read first, so the instant recorded is followed only by builtins up to the signal: a slow fork in the stub is not part of the hook's tail.
-      // STUB_FORK_DELAY stands in for a fork that takes that many seconds on an overloaded host.
+      // The watchdog's pid is read first, so the instant recorded is followed only by builtins up to the signal: a slow fork in the stub is not part of the hook's tail. STUB_FORK_DELAY stands in for a fork that takes that many seconds on an overloaded host.
       '  hard_pid="$(sleep "${STUB_FORK_DELAY:-0}"; cat "$TMPDIR"/token-goat-pre-push.*/hard-stop.pid)"',
       '  printf "%s\\n" "$EPOCHREALTIME" >"$STUB_DIR/fired.epoch"',
       '  kill -TERM "$hard_pid"',
@@ -319,8 +319,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
   })
 
   afterEach(() => {
-    // Only a run that did not return (or a leg known to survive its kill) can leave a live leg; a leg the hook ended is not signalled again, since its pid may be reused.
-    // The sentinel of the unkillable leg row: its stub loops while the file exists, so removing it lets the stub end by itself.
+    // Only a run that did not return (or a leg known to survive its kill) can leave a live leg; a leg the hook ended is not signalled again, since its pid may be reused. The sentinel of the unkillable leg row: its stub loops while the file exists, so removing it lets the stub end by itself.
     rmSync(path.join(stubs, 'unkillable'), { force: true })
     if (leftLegs) endRecordedTrees(LEGS.map((leg) => path.join(stubs, `${leg.leg}.pid`)), dir)
     leftLegs = false
@@ -343,8 +342,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
     expect(runnerAlive(), `the vitest runner (pid ${process.ppid}) was ended during this row`).toBe(true)
   })
 
-  // tailS: seconds from the stub's stop event to the hook's return, or null when no stub fired one.
-  // A hook row has no wall-clock budget of its own: the hook's start-up is bounded by the hard stop it runs under, so the row may take that stop and the tail, as a hang guard (vitest's 60 s default is for rows that spawn one short script).
+  // tailS: seconds from the stub's stop event to the hook's return, or null when no stub fired one. A hook row has no wall-clock budget of its own: the hook's start-up is bounded by the hard stop it runs under, so the row may take that stop and the tail, as a hang guard (vitest's 60 s default is for rows that spawn one short script).
   const HOOK_ROW_TIMEOUT_MS = (HOOK_STOP_S + TAIL_BOUND_S) * 1000
   const hookRow = (name: string, fn: () => void, onlyWindows = false): void => {
     it.skipIf(!bashAvailable || (onlyWindows && process.platform !== 'win32'))(name, fn, HOOK_ROW_TIMEOUT_MS)
@@ -393,6 +391,14 @@ describe('the hard stop ends the legs of a real hook run', () => {
     const m = /^pre-push: legs: .* total=(\d+)s$/.exec(lines[lines.length - 1] ?? '')
     expect(m, r.out).not.toBeNull()
     expect(r.elapsedS - Number(m?.[1])).toBeLessThan(SPAWN_SLACK_S)
+  })
+
+  // A WSL leg that skips before its probe exits 0, so a passing push must print the reason; otherwise it reads as a run that probed.
+  hookRow('a passing WSL leg that skipped before its probe prints the skip reason and the push passes', () => {
+    const r = runHook({ TG_PREPUSH_WSL: '1', STUB_WSL_SKIP: 'wsl-test: WSL distro Ubuntu not available, skipping' })
+    expect(r.timedOut).toBe(false)
+    expect(r.status).toBe(0)
+    expect(r.out.split('\n')).toContain('wsl-test: WSL distro Ubuntu not available, skipping')
   })
 
   // The EXIT trap fires from the start-up failure before the budget variables are read, so it must not trip set -u after the notice.
@@ -796,8 +802,7 @@ describe('the cleanup of recorded stub pids', () => {
   })
 })
 
-// Ends the process tree of each pid a test recorded in a pid file. A pid is ended only while its command line, read right now, is a bash that names the row's own temp directory (`owner`): a bash alone is not proof, since Windows hands a freed pid to the next process it starts and a recorded winpid goes stale when a forked bash execs, so a recorded pid can now be an unrelated session's bash. The tree goes with it, since a plain kill leaves the children behind on Windows.
-// A hook run the spawn timeout ended lost only its top bash: every process still naming the row's unique directory in its command line is the row's own, and holds the directory (EPERM on removal). Windows only; elsewhere the process group ends with the spawn.
+// Ends the process tree of each pid a test recorded in a pid file. A pid is ended only while its command line, read right now, is a bash that names the row's own temp directory (`owner`): a bash alone is not proof, since Windows hands a freed pid to the next process it starts and a recorded winpid goes stale when a forked bash execs, so a recorded pid can now be an unrelated session's bash. The tree goes with it, since a plain kill leaves the children behind on Windows. A hook run the spawn timeout ended lost only its top bash: every process still naming the row's unique directory in its command line is the row's own, and holds the directory (EPERM on removal). Windows only; elsewhere the process group ends with the spawn.
 function endTreesNamingDir(owner: string): void {
   if (process.platform !== 'win32') return
   const tag = path.basename(owner)
