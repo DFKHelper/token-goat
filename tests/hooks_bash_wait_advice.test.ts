@@ -64,7 +64,16 @@ describe('a follow-mode tail piped into a first-match grep', () => {
 })
 
 describe('a fixed sleep followed by a read in the same line', () => {
-  it.each([['sleep 30; cat /tmp/x.log'], ['sleep 5 && tail /tmp/x.log'], ['sleep 10; git status']])(
+  it.each([
+    ['sleep 30; cat /tmp/x.log'],
+    ['sleep 5 && tail /tmp/x.log'],
+    ['sleep 10; git status'],
+    ['sleep 5 && token-goat bash-output --file /tmp/x.output'],
+    ['sleep 5 && token-goat read src/app.ts'],
+    ['sleep 5 && token-goat bash-output --tail 5 --file /tmp/x.output'],
+    ['sleep 5 && tg read src/app.ts'],
+    ['sleep 5 && npx token-goat read src/app.ts'],
+  ])(
     'gets the note for %s',
     (command) => {
       const out = run(command)
@@ -74,10 +83,44 @@ describe('a fixed sleep followed by a read in the same line', () => {
     },
   )
 
-  it.each([['sleep 5'], ['sleep 5; echo done'], ['cat /tmp/x.log; sleep 5']])(
+  it.each([
+    ['sleep 5'],
+    ['sleep 5; echo done'],
+    ['cat /tmp/x.log; sleep 5'],
+    ['sleep 5 && token-goat bash-output abc123'],
+    ['sleep 5 && token-goat bash-output --tail 5 abc123'],
+    ['sleep 5 && token-goat reader src/app.ts'],
+    ['sleep 5 && token-goat bash-output --files /tmp/x.output'],
+  ])(
     'gets no note for %s',
     (command) => {
       expect(run(command).hookType, command).toBe('pass')
     },
   )
+})
+
+describe('a fixed sleep followed by a read on the next line or after a fraction', () => {
+  it.each([
+    ['sleep 0.5 && tail /tmp/x.log'],
+    ['sleep 5\ntail /tmp/x.log'],
+    ['sleep 5\ntg read src/app.ts'],
+  ])('gets the note for %s', (command) => {
+    const out = run(command)
+    expect(out.hookType, command).toBe('context')
+    expect(ctx(out), command).toContain('fixed sleep')
+    expect(ctx(out), command).toContain("command's own completion or exit status")
+  })
+
+  it.each([['sleep 5.']])('gets no note for %s', (command) => {
+    expect(run(command).hookType, command).toBe('pass')
+  })
+})
+
+describe('a fixed sleep before a cat of a repo source file', () => {
+  it('gets the note through preBashHandler', () => {
+    const out = run('sleep 30; cat src/hooks_bash.ts')
+    expect(out.hookType, 'sleep 30; cat src/hooks_bash.ts').toBe('context')
+    expect(ctx(out)).toContain('fixed sleep')
+    expect(ctx(out)).toContain("command's own completion or exit status")
+  })
 })

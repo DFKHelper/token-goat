@@ -827,10 +827,12 @@ const FOLLOW_TAIL_FIRST_MATCH = new RegExp(
     String.raw`\|\s*[ef]?grep\s(?:[^|;&\n]*\s)?` +
     String.raw`(?:-m\s*1|--max-count[= ]1|-[A-Za-z]{0,6}q[A-Za-z]{0,6})(?=\s|$)`,
 )
+// live: token-goat read, bash-output --file, not cache-id. limit: quoted, seen live; revisit-when: it recurs
 const SLEEP_THEN_READ = new RegExp(
-  String.raw`\bsleep\s+\d+[smhd]?\s*(?:;|&&)\s*` +
+  String.raw`\bsleep\s+\d+(?:\.\d+)?[smhd]?[^\S\n]*(?:;|&&|\n)\s*` +
     String.raw`(?:cat|tail|head|less|more|type|Get-Content|gc|ps|pgrep|tasklist|` +
-    String.raw`git\s+status|docker\s+ps|systemctl\s+status)\b`,
+    String.raw`git\s+status|docker\s+ps|systemctl\s+status|` +
+    String.raw`(?:token-goat|tg|npx\s+token-goat)\s+(?:read|bash-output\s+(?:[^\s|;&]+\s+)*--file))\b`,
 )
 const WAIT_TAIL = 'Wait on the command\'s own completion or exit status instead.'
 const FOLLOW_TAIL_NOTE =
