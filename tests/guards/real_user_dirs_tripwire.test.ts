@@ -154,8 +154,7 @@ function accountLookupCounts(files: readonly string[]): Map<string, number> {
   return counts
 }
 
-// Ratchet: each listed file may hold exactly this many home-read lines; any other count fails.
-// Each one is an os.homedir() default or a home-variable read, which setup redirects into the run root.
+// Ratchet: each listed file may hold exactly this many home-read lines; any other count fails. Each one is an os.homedir() default or a home-variable read, which setup redirects into the run root.
 const SANCTIONED_HOME_READS: Readonly<Record<string, number>> = {
   'src/bridges/aider_install.ts': 1,
   'src/bridges/antigravity_install.ts': 1,
