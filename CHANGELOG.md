@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.36] - 2026-11-23
+
 ### Added
 
 - **`token-goat session-audit` checks each "already read" deny against the Read results delivered before it.** For Claude Code transcripts, a deny that says a file was already read is matched to a Read tool result for the same path earlier in the same compaction epoch. The report prints the checked and false counts and up to five false examples by transcript and line, never by path (the audit's output carries no file paths from inside sessions). Only Read tool results count, so a file read through Bash or a token-goat CLI command is a false claim here. Reads match by path, not by line range, so a partial Read counts as delivering the file. A subagent (sidechain) Read supports only a subagent claim, and a relative `file_path` resolves against the record's own working directory. Absoluteness is read from the path's form (a drive letter, a UNC prefix or a leading slash), never from the audit host, so a Windows-form path is not joined onto that directory on Linux or macOS. Relative Read paths now resolve against the record's own working directory, which changes repeat detection in the read census: the same relative path read under two working directories is two files, and a relative and an absolute spelling of one file now match. Only a Read result flagged as an error counts as a deny, so a Read whose body quotes a deny sentence is a delivery. A transcript from another host is reported as not checked, never as clean.
