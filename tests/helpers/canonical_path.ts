@@ -12,7 +12,7 @@ function product(s: string): string {
   return normalizePath(FOLDS_CASE ? s.toLowerCase() : s)
 }
 
-/** `realpath.native` of `p`'s nearest existing ancestor, case-folded on win32 and darwin, then normalizePath. */
+/** `realpath.native` of `p`'s nearest existing ancestor, case-folded on win32/darwin, then normalizePath. */
 export function canonicalPath(p: string): string {
   const absolute = path.resolve(p)
   const tail: string[] = []
