@@ -345,7 +345,7 @@ function endTrees(sweep: 'always' | 'when-recorded'): void {
   })
   // Sweeps strays no recorded pid reaches. A 'when-recorded' row with no pid skips it: a listing costs ~1 s here.
   attempt(() => {
-    if (sweep === 'when-recorded' && !startedAny) return
+    if (sweep === 'when-recorded' && !startedAny && ownedRoots.length === 0) return
     const roots = ownedRoots.map((root) => root.toLowerCase().replaceAll('/', '\\'))
     const strays = new Map<number, string>()
     for (const [pid, entry] of listProcesses()) {

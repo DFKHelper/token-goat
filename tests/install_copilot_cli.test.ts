@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
@@ -33,7 +33,7 @@ import {
 } from '../src/bridges/copilot_cli_install.js'
 import { writeInProcessFake } from './helpers/copilot_inprocess_fake.js'
 import { runNodeAsync } from './helpers/copilot_shim_run.js'
-import { assertOwedDeliveredOnce, assertTreeDead, cleanupTrees, cleanupTreesWhenRecorded, DEADLINE_FAIL_OPEN, installStartupOwner, ownedRoots, premiseBranch, runTreeShim, treeFixture } from './helpers/copilot_session_start_tree.js'
+import { assertOwedDeliveredOnce, assertTreeDead, alive, cleanupTrees, cleanupTreesWhenRecorded, DEADLINE_FAIL_OPEN, installStartupOwner, ownedRoots, premiseBranch, runTreeShim, treeFixture } from './helpers/copilot_session_start_tree.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MAX_MS } from '../src/bridges/shim_common.js'
 import { VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END } from '../src/bridges/visualstudio_install.js'
@@ -783,9 +783,22 @@ function writeFakeEntry(cwd: string): { entryPath: string; capturePath: string }
 }
 
 describe('COPILOT_CLI_HOOK_SCRIPT', () => {
-  afterEach(cleanupTreesWhenRecorded, 0)
+  afterEach(cleanupTrees, 0)
   // Ruling 98: the full stray sweep runs once after this describe's rows, so a stray with no recorded pid ends with the file.
   afterAll(cleanupTrees, 0)
+
+  it('the when-recorded sweep still ends a stray whose owned root has no recorded pid', () => {
+    const root = mkIsolated()
+    const stray = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)', root], { stdio: 'ignore' })
+    if (stray.pid === undefined) throw new Error('the stray spawned no pid')
+    ownedRoots.push(root)
+    try {
+      cleanupTreesWhenRecorded()
+      expect(alive(stray.pid), 'a stray with an owned root and no recorded pid survived the sweep').toBe(false)
+    } finally {
+      stray.kill()
+    }
+  })
 
   it("invokes the baked entry path (argv[3]) directly via process.execPath, bypassing PATH resolution entirely, when the shim receives one", () => {
     const cwd = mkIsolated()
@@ -946,13 +959,13 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.permissionDecisionReason).toBe('already read this session')
   })
 
-  // HAND-DERIVED: the hook holds 3.5 s, past the 3000 ms the shim used to allow it, before it answers; the hold sleeps in Atomics.wait instead of spinning a CPU. The clock is still the only signal (no shim event marks its cap), so this stays a clock wait.
+  // The hold must exceed the old 3000 ms cap; the live cap is shim_common.ts:95 (45 s), so this pins the old reference. HAND-DERIVED: the hook holds 4.5 s, past the 3000 ms the shim used to allow it, before it answers; the hold sleeps in Atomics.wait instead of spinning a CPU. The clock is still the only signal (no shim event marks its cap), so this stays a clock wait.
   it('waits for a hook that takes longer than the old 3 s cap and relays its deny, instead of answering an empty allow', () => {
     const cwd = mkIsolated()
     const entryPath = path.join(cwd, 'slow-entry.js')
     fs.writeFileSync(
       entryPath,
-      `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3500)\nprocess.stdout.write(JSON.stringify({ decision: 'block', reason: 'slow but decided' }))\n`,
+      `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4500)\nprocess.stdout.write(JSON.stringify({ decision: 'block', reason: 'slow but decided' }))\n`,
       'utf8',
     )
     const scriptPath = path.join(cwd, 'shim.js')
