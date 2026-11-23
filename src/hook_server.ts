@@ -42,6 +42,8 @@ import { VERSION } from './version.js'
 const IDLE_EXIT_MS = { primary: 30 * 60_000, overflow: 3 * 60_000 }
 /** How often a server checks that its key file is still there. Deleting it (`uninstall --purge`, or a test run cleaning up its data directory) retires every server keyed on it within this interval; one stat every two seconds costs an idle process nothing measurable. */
 const KEY_CHECK_MS = 2_000
+/** Retire a server at 1 GiB RSS so the next hook can start a fresh copy. */
+const RSS_RETIRE_BYTES = 1_073_741_824
 /** An unauthenticated connection that has not finished the handshake by now is dropped. */
 const HANDSHAKE_IDLE_MS = 10_000
 
@@ -257,7 +259,15 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
     awaitingRequest.clear()
     if (!busy) exitOnceFlushed()
   }
+  const retireForMemory = (): boolean => {
+    if (process.memoryUsage().rss < RSS_RETIRE_BYTES) return false
+    // Let the next hook start a clean process instead of inheriting this slot's spawn throttle.
+    removeMarker(`spawn-${slot}`)
+    stop()
+    return true
+  }
   const armIdle = (): void => {
+    if (retireForMemory()) return
     if (idleTimer !== undefined) clearTimeout(idleTimer)
     idleTimer = setTimeout(stop, slot === 0 ? IDLE_EXIT_MS.primary : IDLE_EXIT_MS.overflow)
   }
@@ -409,6 +419,7 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
   if (process.platform !== 'win32') socketIno = fs.statSync(endpoint, { bigint: true }).ino
   removeMarker('failed')
   setInterval(() => {
+    if (!busy && retireForMemory()) return
     if (!fs.existsSync(keyPath) || !ownsEndpoint()) stop()
   }, KEY_CHECK_MS).unref()
   if (process.platform !== 'win32') {
