@@ -52,8 +52,8 @@ function writeVscodeSettings(text: string): string {
   return file
 }
 
-function rows(): Array<{ name: string; status: 'ok' | 'warn' | 'fail'; message: string }> {
-  return runDoctor(path.join(home, 'data'), path.join(home, 'config.toml'), project, [])
+async function rows(): Promise<Array<{ name: string; status: 'ok' | 'warn' | 'fail'; message: string }>> {
+  return await runDoctor(path.join(home, 'data'), path.join(home, 'config.toml'), project, [])
 }
 
 describe('claudeHooksInstalledAnyScope', () => {
@@ -83,12 +83,12 @@ describe('claudeHooksInstalledAnyScope', () => {
 })
 
 describe('chat.useClaudeHooks over a partial install', () => {
-  it('doctor warns and --repair turns the setting off when user-scope VS Code hooks sit beside one leftover event', () => {
+  it('doctor warns and --repair turns the setting off when user-scope VS Code hooks sit beside one leftover event', async () => {
     installHooks('user')
     keepOnlyEvents('user', ['PostToolUse'])
     installVscode()
     const settings = writeVscodeSettings(SETTING_ON)
-    const row = rows().find((r) => r.name === 'VS Code hooks')
+    const row = (await rows()).find((r) => r.name === 'VS Code hooks')
     expect(row?.status).toBe('warn')
     const result = repairHarnessHooks(project)
     expect(result.repairs.some((r) => r.includes('chat.useClaudeHooks'))).toBe(true)
@@ -97,28 +97,28 @@ describe('chat.useClaudeHooks over a partial install', () => {
 })
 
 describe('Cursor doctor row', () => {
-  it('takes its hooks answer from the shared predicate: a partial install reads as installed', () => {
+  it('takes its hooks answer from the shared predicate: a partial install reads as installed', async () => {
     installHooks('user')
     keepOnlyEvents('user', ['PostToolUse'])
     installCursor()
-    const row = rows().find((r) => r.name === 'Cursor')
+    const row = (await rows()).find((r) => r.name === 'Cursor')
     expect(row?.status).toBe('ok')
     expect(row?.message).toContain('already installed')
     expect(cursorMcpPath()).toContain(home)
   })
 
-  it('still says no hooks are installed when none are', () => {
+  it('still says no hooks are installed when none are', async () => {
     installCursor()
-    expect(rows().find((r) => r.name === 'Cursor')?.message).toContain('none are installed there yet')
+    expect((await rows()).find((r) => r.name === 'Cursor')?.message).toContain('none are installed there yet')
   })
 })
 
 describe('VS Code hooks doctor row and a project-scope VS Code install', () => {
-  it('is a note, not a warning, when only project-scope VS Code hooks exist, and says why the setting is left alone', () => {
+  it('is a note, not a warning, when only project-scope VS Code hooks exist, and says why the setting is left alone', async () => {
     installHooks('user')
     installVscode({ project: true, projectRoot: project })
     writeVscodeSettings(SETTING_ON)
-    const row = rows().find((r) => r.name === 'VS Code hooks')
+    const row = (await rows()).find((r) => r.name === 'VS Code hooks')
     expect(row?.status).toBe('ok')
     expect(row?.message).toContain('leaves the setting alone')
     expect(row?.message).toContain('"chat.useClaudeHooks": false')

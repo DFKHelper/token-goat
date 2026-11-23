@@ -385,11 +385,11 @@ describe('cli_doctor', () => {
         .run(p, 1, 2, 'body', 'symbol')
 
     // HAND-DERIVED: a fresh install with the model missing and nothing embedded has one fault, so the full doctor run must raise one warning about it, not one per check that observes it.
-    it('raises exactly one embedding warning through runDoctor when the model is missing and nothing is embedded', () => {
+    it('raises exactly one embedding warning through runDoctor when the model is missing and nothing is embedded', async () => {
       modelOverride.present = false
       const db = getDb(path.join(tempDir, 'global.db'))
       for (let i = 0; i < 10; i++) insertFile(db, normalizePath(path.join(tempDir, `src/f${i}.ts`)))
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
+      const results = await runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
       const warned = results.filter((r) => r.status === 'warn' && /^Embedding (model|coverage)$/.test(r.name)).map((r) => r.name)
       expect(warned).toEqual(['Embedding model'])
     })
@@ -663,10 +663,10 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('20/30 sampled paths survived')
     })
 
-    it('is wired into runDoctor rather than only being callable', () => {
+    it('is wired into runDoctor rather than only being callable', async () => {
       const dbPath = path.join(tempDir, 'global.db')
       seedDetails(dbPath, Array.from({ length: 5 }, () => 'trigger=auto bytes=700 est_tokens=240 manifest_paths=0/6'))
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
+      const results = await runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
       const row = results.find((r) => r.name === 'Compaction channel')
       expect(row, `no Compaction channel row in: ${results.map((r) => r.name).join(', ')}`).toBeDefined()
       expect(row?.status).toBe('warn')
@@ -743,10 +743,10 @@ describe('cli_doctor', () => {
       expect(checkHookLatency(dbPath).status).toBe('ok')
     })
 
-    it('is wired into runDoctor rather than only being callable', () => {
+    it('is wired into runDoctor rather than only being callable', async () => {
       const dbPath = path.join(tempDir, 'global.db')
       seedHookDurations(dbPath, 'pre_tool_use', Array.from({ length: 25 }, (_, i) => 1700 + (i % 5) * 75))
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
+      const results = await runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
       const row = results.find((r) => r.name === 'Hook latency')
       expect(row, `no Hook latency row in: ${results.map((r) => r.name).join(', ')}`).toBeDefined()
       expect(row?.status).toBe('warn')
@@ -1251,8 +1251,8 @@ describe('cli_doctor', () => {
 
   describe('runDoctor', () => {
     // The one test that leaves `processes` undefined, so the real gather runs. Without it the gather would be dead code that no test ever reaches -- every other test here supplies the argument, which is exactly the injected-seam shape where a shipping path rots unnoticed. It was already untested before the argument existed: checkMcpProcessHealth had synthetic-row coverage, but nothing asserted runDoctor wires it in at all.
-    it.runIf(process.platform === 'win32')('gathers the Windows process list itself when none is supplied', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'))
+    it.runIf(process.platform === 'win32')('gathers the Windows process list itself when none is supplied', async () => {
+      const results = await runDoctor(tempDir, path.join(tempDir, 'config.json'))
       const health = results.find((r) => r.name === 'MCP process health')
       expect(health, 'runDoctor did not run the MCP process-health check at all').toBeDefined()
       // This process is running right now, so a real gather cannot come back empty; an empty list would have produced the "no duplicate MCP launchers" ok message with nothing behind it.
@@ -1365,14 +1365,14 @@ describe('cli_doctor', () => {
       ).toEqual([])
     })
 
-    it('returns array of doctor results', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
+    it('returns array of doctor results', async () => {
+      const results = await runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       expect(Array.isArray(results)).toBe(true)
       expect(results.length).toBeGreaterThan(0)
     })
 
     // One run, one case, covering what six near-identical cases used to. Each of those ran a whole doctor pass to assert that one name was present and nothing else about it, so a check that had been reduced to a bare name with no message still passed all six. This asserts the full expected set in one pass and requires each of them to actually report something.
-    it('runs every check it is expected to run, and each one reports something', () => {
+    it('runs every check it is expected to run, and each one reports something', async () => {
       const expected = [
         'Installation',
         'Worker',
@@ -1385,28 +1385,28 @@ describe('cli_doctor', () => {
         'Parser freshness',
       ]
 
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
+      const results = await runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
 
       expect(results.map((r) => r.name)).toEqual(expect.arrayContaining(expected))
       const empty = expected.filter((name) => (results.find((r) => r.name === name)?.message ?? '') === '')
       expect(empty).toEqual([])
     })
 
-    it('marks results with ok/warn/fail status', () => {
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
+    it('marks results with ok/warn/fail status', async () => {
+      const results = await runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       for (const result of results) {
         expect(['ok', 'warn', 'fail']).toContain(result.status)
       }
     })
 
-    it('scopes the Worker check to the passed-in dataDir, not the real default install dir', () => {
+    it('scopes the Worker check to the passed-in dataDir, not the real default install dir', async () => {
       // checkDbExists/checkSymbolCount/checkDirtyQueueHealth all correctly scope to the dataDir runDoctor was given -- the Worker check must too, or a caller diagnosing one dataDir gets a report describing an entirely different directory's worker. A real, currently-alive pid (this test process itself) makes isWorkerRunning's process.kill(pid, 0) liveness probe succeed without needing to spawn anything.
       fs.mkdirSync(tempDir, { recursive: true })
       fs.writeFileSync(workerPidPath(tempDir), String(process.pid))
       fs.mkdirSync(path.dirname(drainHeartbeatPathFor(tempDir)), { recursive: true })
       fs.writeFileSync(drainHeartbeatPathFor(tempDir), `${process.pid}\n`)
 
-      const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
+      const results = await runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
       const worker = results.find((r) => r.name === 'Worker')
       expect(worker?.status).toBe('ok')
       expect(worker?.message).toBe('running')
@@ -1913,7 +1913,7 @@ describe('cli_doctor', () => {
       expect(stale?.message).toContain('not reaching Claude Code. Recovery: run `token-goat install`')
     })
 
-    it('reports a stale Codex shim from runDoctor, resolved through the real install path', () => {
+    it('reports a stale Codex shim from runDoctor, resolved through the real install path', async () => {
       const home = path.join(tempDir, 'home')
       const shim = path.join(home, '.codex', 'hooks', 'token-goat-shim.cjs')
       fs.mkdirSync(path.dirname(shim), { recursive: true })
@@ -1922,7 +1922,7 @@ describe('cli_doctor', () => {
       process.env['HOME'] = home
       process.env['USERPROFILE'] = home
       try {
-        const results = runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
+        const results = await runDoctor(tempDir, path.join(tempDir, 'config.json'), undefined, NO_PROCESSES)
         const codex = results.find((r) => r.name === 'Codex')
         expect(codex?.status).toBe('warn')
         expect(codex?.message).toContain('token-goat install --codex')

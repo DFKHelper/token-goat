@@ -3,9 +3,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { spawnSync } from 'node:child_process'
 import type { DoctorResult } from './doctor_result.js'
 import { displaySafeText } from './paths.js'
+import { type OwnedChild, spawnOwned } from './process_tree.js'
 import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
 
 /** Maximum recommended total size in bytes before warning about harness session bloat (5 GB). */
@@ -117,26 +117,42 @@ export function checkHarnessSessionStorage(
   }
 }
 
-/** Queries Windows Defender active exclusion paths via PowerShell (returns null if non-Windows or query fails). */
-export function getWindowsDefenderExclusionPaths(): string[] | null {
-  if (process.platform !== 'win32') return null
+/** How long the Defender exclusion query may run before it is ended and reported as unknown. */
+const DEFENDER_QUERY_TIMEOUT_MS = 2500
 
-  try {
-    const res = spawnSync(
-      windowsPowerShellPath(),
-      powerShellTextQueryArgs('$ProgressPreference="SilentlyContinue"; (Get-MpPreference).ExclusionPath'),
-      { encoding: 'utf-8', timeout: 2500, windowsHide: true }
-    )
-    if (res.status === 0 && res.stdout) {
-      return res.stdout
-        .split(/\r?\n/)
-        .map((l) => l.trim().toLowerCase())
-        .filter(Boolean)
+/** Starts the Defender exclusion query on an owned child and resolves with its paths, or null; it returns at once, so doctor's other checks run meanwhile. */
+export function startWindowsDefenderExclusionQuery(): Promise<string[] | null> {
+  if (process.platform !== 'win32') return Promise.resolve(null)
+  return new Promise((resolve) => {
+    let out = ''
+    const finish = (paths: string[] | null): void => {
+      clearTimeout(timer)
+      resolve(paths)
     }
-  } catch {
-    // Non-fatal if PowerShell or MpPreference is restricted
-  }
-  return null
+    let owned: OwnedChild
+    try {
+      owned = spawnOwned(
+        windowsPowerShellPath(),
+        powerShellTextQueryArgs('$ProgressPreference="SilentlyContinue"; (Get-MpPreference).ExclusionPath'),
+        { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
+      )
+    } catch {
+      // Non-fatal if PowerShell or MpPreference is restricted
+      resolve(null)
+      return
+    }
+    const timer = setTimeout(() => {
+      owned.kill()
+      finish(null)
+    }, DEFENDER_QUERY_TIMEOUT_MS)
+    owned.child.stdout?.setEncoding('utf-8').on('data', (chunk: string) => {
+      out += chunk
+    })
+    owned.child.once('error', () => finish(null))
+    owned.child.once('close', (code) => {
+      finish(code === 0 && out ? out.split(/\r?\n/).map((l) => l.trim().toLowerCase()).filter(Boolean) : null)
+    })
+  })
 }
 
 /** Normalizes a Windows or POSIX path for case-insensitive exclusion matching. */
@@ -156,16 +172,13 @@ export function isPathExcluded(targetPath: string, exclusions: string[]): boolea
   return false
 }
 
-/** Checks whether the workspace or harness home directories are excluded in real-time AV, advising on performance and disclaimer. */
+/** Checks whether the workspace or harness home directories are excluded in real-time AV; `exclusionsOverride` is the Defender query's answer, and null or undefined (off Windows, or no answer) yields no row. */
 export function checkAntivirusExclusionPosture(
   rootDir: string = process.cwd(),
   homeDir: string = os.homedir(),
   exclusionsOverride?: string[] | null
 ): DoctorResult | null {
-  // Only evaluate on Windows where Defender/EDR CPU overhead on node/git file trees is common
-  if (process.platform !== 'win32' && !exclusionsOverride) return null
-
-  const exclusions = exclusionsOverride !== undefined ? exclusionsOverride : getWindowsDefenderExclusionPaths()
+  const exclusions = exclusionsOverride ?? null
   if (!exclusions || exclusions.length === 0) {
     return null
   }

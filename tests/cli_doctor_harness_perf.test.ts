@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
+import type * as ChildProcessModule from 'node:child_process'
 import {
   AV_EXCLUSION_DISCLAIMER,
   checkHarnessSessionStorage,
@@ -9,6 +10,45 @@ import {
   isPathExcluded,
   measureDirectoryBytes,
 } from '../src/cli_doctor_harness_perf.js'
+import { runDoctorChecks } from '../src/cli_doctor.js'
+import type * as HookClientModule from '../src/hook_client.js'
+
+// Event log: Defender query sync/spawn/settle and hook-server status asks, in call order.
+const defenderQueries = vi.hoisted(() => ({ events: [] as string[] }))
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const real = await importOriginal<typeof ChildProcessModule>()
+  const isDefenderQuery = (args: readonly string[]): boolean => args.some((a) => a.includes('Get-MpPreference'))
+  return {
+    ...real,
+    spawn: ((file: string, args: readonly string[], options: ChildProcessModule.SpawnOptions) => {
+      if (!isDefenderQuery(args)) return real.spawn(file, args, options)
+      defenderQueries.events.push('spawn:defender')
+      const child = real.spawn(file, args, options)
+      const settled = (): void => {
+        defenderQueries.events.push('defender:settled')
+      }
+      child.once('error', settled)
+      child.once('close', settled)
+      return child
+    }) as typeof real.spawn,
+    spawnSync: ((file: string, args: readonly string[], options: ChildProcessModule.SpawnOptions) => {
+      if (isDefenderQuery(args)) defenderQueries.events.push('sync:defender')
+      return real.spawnSync(file, args, options)
+    }) as typeof real.spawnSync,
+  }
+})
+
+vi.mock('../src/hook_client.js', async (importOriginal) => {
+  const real = await importOriginal<typeof HookClientModule>()
+  return {
+    ...real,
+    serverStatuses: (dir?: string) => {
+      defenderQueries.events.push('status:start')
+      return real.serverStatuses(dir)
+    },
+  }
+})
 
 describe('cli_doctor_harness_perf', () => {
   it('disclaimer constant contains required label and wording', () => {
@@ -113,6 +153,45 @@ describe('cli_doctor_harness_perf', () => {
       expect(res?.message).toContain('excluded from real-time Defender scanning')
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true })
+    }
+  })
+
+  it('doctor starts the Defender exclusion query and never runs it synchronously (Ruling 116)', async () => {
+    const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-av-async-'))
+    defenderQueries.events.length = 0
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      await runDoctorChecks(tmp, path.join(tmp, 'config.toml'), tmp, [])
+      expect(defenderQueries.events.filter((e) => e === 'sync:defender')).toEqual([])
+      expect(defenderQueries.events).toContain('spawn:defender')
+    } finally {
+      if (realPlatform) Object.defineProperty(process, 'platform', realPlatform)
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('doctor asks the hook servers while the Defender query is still running (Ruling 116 overlap)', async () => {
+    const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+    const priorServer = process.env.TOKEN_GOAT_HOOK_SERVER
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-av-overlap-'))
+    defenderQueries.events.length = 0
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    process.env.TOKEN_GOAT_HOOK_SERVER = '1'
+    try {
+      await runDoctorChecks(tmp, path.join(tmp, 'config.toml'), tmp, [])
+      const events = defenderQueries.events
+      const queryAt = events.indexOf('spawn:defender')
+      const statusAt = events.indexOf('status:start')
+      const settledAt = events.indexOf('defender:settled')
+      expect(queryAt, `events: ${events.join(' > ')}`).toBeGreaterThanOrEqual(0)
+      expect(statusAt, `events: ${events.join(' > ')}`).toBeGreaterThan(queryAt)
+      expect(settledAt, `events: ${events.join(' > ')}`).toBeGreaterThan(statusAt)
+    } finally {
+      if (priorServer === undefined) delete process.env.TOKEN_GOAT_HOOK_SERVER
+      else process.env.TOKEN_GOAT_HOOK_SERVER = priorServer
+      if (realPlatform) Object.defineProperty(process, 'platform', realPlatform)
+      fs.rmSync(tmp, { recursive: true, force: true })
     }
   })
 })

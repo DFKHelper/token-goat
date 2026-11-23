@@ -30,8 +30,8 @@ afterEach(() => {
   fs.rmSync(project, { recursive: true, force: true })
 })
 
-function doctorRows(): Array<{ name: string; status: string; message: string }> {
-  return runDoctor(project, path.join(project, 'config.toml'), project, [])
+async function doctorRows(): Promise<Array<{ name: string; status: string; message: string }>> {
+  return await runDoctor(project, path.join(project, 'config.toml'), project, [])
 }
 
 function editProjectSettings(edit: (hooks: Record<string, unknown>) => void): void {
@@ -42,18 +42,18 @@ function editProjectSettings(edit: (hooks: Record<string, unknown>) => void): vo
 }
 
 describe('doctor "Claude Code hooks" row', () => {
-  it('stays quiet when one event is missing, and leaves the finding to the hook events row', () => {
+  it('stays quiet when one event is missing, and leaves the finding to the hook events row', async () => {
     editProjectSettings((hooks) => { delete hooks.PostToolUse })
-    const rows = doctorRows()
+    const rows = (await doctorRows())
     expect(rows.find((r) => r.name === 'Claude Code hooks')).toBeUndefined()
     const events = rows.find((r) => r.name === 'Claude Code hook events')
     expect(events?.status).toBe('warn')
     expect(events?.message).toContain('PostToolUse')
   })
 
-  it('still warns that the file was overwritten when no token-goat hook is wired at all', () => {
+  it('still warns that the file was overwritten when no token-goat hook is wired at all', async () => {
     editProjectSettings((hooks) => { for (const key of Object.keys(hooks)) delete hooks[key] })
-    const row = doctorRows().find((r) => r.name === 'Claude Code hooks')
+    const row = (await doctorRows()).find((r) => r.name === 'Claude Code hooks')
     expect(row?.status).toBe('warn')
     expect(row?.message).toContain('probably overwritten or deleted')
   })

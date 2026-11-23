@@ -4,12 +4,14 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
 import { runDoctor } from '../src/cli_doctor.js'
 import { checkClaudeHookEvents } from '../src/cli_doctor_platforms.js'
 import type { DoctorResult } from '../src/doctor_result.js'
 import { claudeHookShell } from '../src/claude_hook_shell.js'
+import { setHookSelftestRunnerForTesting } from '../src/hook_selftest.js'
 import {
   claudeHookScriptPath,
   expectedHookEntryFor,
@@ -51,6 +53,8 @@ function capturedStaleShimGroups(shimPath: string, event: string): Array<{ match
   // CAPTURE: the token-goat entries in this machine's real ~/.claude/settings.json on 2026-09-25, written by an older build that wired token-goat-shim.js (command and args verbatim except the shim path, which the caller relocates into the test home; matchers blanked); these hooks were firing while doctor said the events never reach token-goat.
   return [{ matcher: '', hooks: [{ type: 'command', command: 'C:\\Program Files\\nodejs\\node.exe', args: [shimPath, event, 'C:\\Projects\\token-goat\\dist\\token-goat.mjs'] }] }]
 }
+
+useStubbedHookSelftest()
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-install-'))
@@ -105,6 +109,16 @@ describe('installHooks', () => {
     expect(settings.hooks['PreToolUse']?.[0]?.hooks[0]?.command).toBe(expectedCommand('pre_tool_use'))
     expect(settings.hooks['PostToolUse']?.[0]?.hooks[0]?.command).toBe(expectedCommand('post_tool_use'))
     expect(settings.hooks['PreCompact']?.[0]?.hooks[0]?.command).toBe(expectedCommand('pre_compact'))
+  })
+
+  it('runs the install self-test through the runner seam, so a dropped self-test call fails here', () => {
+    let calls = 0
+    setHookSelftestRunnerForTesting(() => {
+      calls += 1
+      return { status: 0, stdout: '{}', stderr: '' }
+    })
+    installHooks('project')
+    expect(calls).toBeGreaterThan(0)
   })
 
   it('wires UserPromptSubmit and SubagentStop (regression: HOOK_EVENT_MAP omitted both, so the branch-context and hallucination-detection features were fully implemented but never invoked by Claude Code)', () => {
@@ -187,7 +201,7 @@ describe('installHooks', () => {
     expect(hookEventGaps('project')).toBeNull()
   })
 
-  it('doctor reports events wired to the pre-.cjs shim as outdated, not as never reaching token-goat, and an unwired event as missing; install rewrites both', () => {
+  it('doctor reports events wired to the pre-.cjs shim as outdated, not as never reaching token-goat, and an unwired event as missing; install rewrites both', async () => {
     process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
     const events = CLAUDE_HOOK_EVENTS
     const oldShim = path.join(path.dirname(claudeHookScriptPath()), 'token-goat-shim.js')
@@ -196,17 +210,17 @@ describe('installHooks', () => {
     const p = settingsPath('project')
     fs.mkdirSync(path.dirname(p), { recursive: true })
     const writeStale = (keys: ReadonlyArray<readonly [string, string]>): void => fs.writeFileSync(p, JSON.stringify({ hooks: Object.fromEntries(keys.map(([key, arg]) => [key, capturedStaleShimGroups(oldShim, arg)])) }))
-    const doctorRow = (): DoctorResult | undefined => runDoctor(TMP, path.join(TMP, 'config.toml'), TMP, []).find((r) => r.name === 'Claude Code hook events')
+    const doctorRow = async (): Promise<DoctorResult | undefined> => (await runDoctor(TMP, path.join(TMP, 'config.toml'), TMP, [])).find((r) => r.name === 'Claude Code hook events')
 
     writeStale(events)
-    const allStale = doctorRow()
+    const allStale = (await doctorRow())
     expect(allStale?.status).toBe('warn')
     expect(allStale?.message).toContain('project scope wires PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, UserPromptSubmit, Stop, SubagentStop, SessionStart to a token-goat hook command this build no longer writes; run: token-goat install --project')
     expect(allStale?.message).not.toContain('lacks')
     expect(allStale?.message).not.toContain('never reach token-goat')
 
     writeStale(events.filter(([key]) => key !== 'SessionStart'))
-    const oneMissing = doctorRow()
+    const oneMissing = (await doctorRow())
     expect(oneMissing?.message).toContain('project scope lacks SessionStart; run: token-goat install --project. Those events never reach token-goat until then')
     expect(oneMissing?.message).toContain('project scope wires PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, PostCompact, UserPromptSubmit, Stop, SubagentStop to a token-goat hook command this build no longer writes')
     expect(isInstalled('project')).toBe(false)
@@ -214,7 +228,7 @@ describe('installHooks', () => {
     expect(installHooks('project').alreadyInstalled).toBe(false)
     expect(fs.readFileSync(p, 'utf8')).not.toContain('token-goat-shim.js')
     expect(isInstalled('project')).toBe(true)
-    expect(doctorRow()?.status).toBe('ok')
+    expect((await doctorRow())?.status).toBe('ok')
   })
 
   it('an event wired to a shim file that no longer exists is missing, not outdated, in exec and string form, while the PATH-resolved pre-shim command stays outdated', () => {

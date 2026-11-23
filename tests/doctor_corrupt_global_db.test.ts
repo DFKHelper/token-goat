@@ -50,8 +50,8 @@ describe('doctor with a corrupt global.db', () => {
     expect(receipt.message).toContain('could not read the stats database')
   })
 
-  it('runDoctor finishes every check and reports the damaged file on the Database row', () => {
-    const results = runDoctor(path.dirname(globalDbPath()), undefined, root, [])
+  it('runDoctor finishes every check and reports the damaged file on the Database row', async () => {
+    const results = await runDoctor(path.dirname(globalDbPath()), undefined, root, [])
     const database = results.find((r) => r.name === 'Database')
     expect(database?.status).toBe('fail')
     expect(database?.message).toContain('not a valid SQLite file')

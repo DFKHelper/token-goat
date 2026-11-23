@@ -40,11 +40,11 @@ afterEach(() => {
 })
 
 describe('doctor on a data dir with no global.db', () => {
-  it('leaves no global.db behind and reports the same Database row twice', () => {
+  it('leaves no global.db behind and reports the same Database row twice', async () => {
     const dataDir = path.dirname(globalDbPath())
-    const first = runDoctor(dataDir, undefined, root, []).find((r) => r.name === 'Database')
+    const first = (await runDoctor(dataDir, undefined, root, [])).find((r) => r.name === 'Database')
     expect(fs.existsSync(globalDbPath())).toBe(false)
-    const second = runDoctor(dataDir, undefined, root, []).find((r) => r.name === 'Database')
+    const second = (await runDoctor(dataDir, undefined, root, [])).find((r) => r.name === 'Database')
     expect(first?.message).toContain('global.db not found')
     expect(second).toEqual(first)
   })

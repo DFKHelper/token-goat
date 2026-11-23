@@ -55,7 +55,7 @@ import type { DoctorResult } from './doctor_result.js'
 import { type ProcessInfo, checkMcpProcessHealth, readWindowsProcesses, checkWorkerRunning } from './cli_doctor_process.js'
 import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks, checkClaudeHookEvents, checkClaudeHooksGone, checkVisualStudio, checkZed, checkCursor, checkStrayClaudeMdBlocks, checkVscodeProjectMcp } from './cli_doctor_platforms.js'
 import { checkInstructionGates, checkHarnessCacheEfficiency } from './cli_doctor_guidance.js'
-import { checkHarnessSessionStorage, checkAntivirusExclusionPosture } from './cli_doctor_harness_perf.js'
+import { checkHarnessSessionStorage, checkAntivirusExclusionPosture, startWindowsDefenderExclusionQuery } from './cli_doctor_harness_perf.js'
 import { repairBlocker, runDoctorRepair } from './cli_doctor_repair.js'
 export { autoReclaimRow, repairBlocker, runDoctorRepair, type DoctorRepairResult } from './cli_doctor_repair.js'
 import { checkSecurityPosture } from './cli_doctor_security.js'
@@ -820,20 +820,37 @@ export async function runDoctorChecks(
   processes?: ProcessInfo[],
   opts?: { fast?: boolean; precheckedIntegrity?: IntegrityCheckResult },
 ): Promise<DoctorResult[]> {
-  const results = runDoctor(dataDir, configPath, rootDir, processes, opts)
   const enabled = hookServerEnabled()
   const dir = dataDir || defaultDataDir()
-  results.push(checkHookServer({ enabled, statuses: enabled ? await serverStatuses(dir) : [], failure: readMarker('failed', dir) }))
+  // runDoctor starts the Defender query before its synchronous rows; the server ask runs alongside it, and both are awaited once.
+  const [results, statuses] = await Promise.all([runDoctor(dataDir, configPath, rootDir, processes, opts), enabled ? serverStatuses(dir) : []])
+  results.push(checkHookServer({ enabled, statuses, failure: readMarker('failed', dir) }))
   return results
 }
 
-export function runDoctor(
+/** The doctor rows, Defender exclusion row included: its query runs while the other checks run (Ruling 116). */
+export async function runDoctor(
   dataDir?: string,
   configPath?: string,
   rootDir?: string,
   processes?: ProcessInfo[],
   opts?: { fast?: boolean; precheckedIntegrity?: IntegrityCheckResult },
-): DoctorResult[] {
+): Promise<DoctorResult[]> {
+  // Started before the synchronous checks, so the Defender query runs while they do; awaited once below.
+  const defenderExclusions = startWindowsDefenderExclusionQuery()
+  const { results, antivirusAt } = collectDoctorRows(dataDir, configPath, rootDir, processes, opts)
+  const antivirus = checkAntivirusExclusionPosture(rootDir, undefined, await defenderExclusions)
+  if (antivirus) results.splice(antivirusAt, 0, antivirus)
+  return results
+}
+
+function collectDoctorRows(
+  dataDir?: string,
+  configPath?: string,
+  rootDir?: string,
+  processes?: ProcessInfo[],
+  opts?: { fast?: boolean; precheckedIntegrity?: IntegrityCheckResult },
+): { results: DoctorResult[]; antivirusAt: number } {
   const results: DoctorResult[] = []
   const actualDataDir = dataDir || defaultDataDir()
 
@@ -909,12 +926,12 @@ export function runDoctor(
   if (harnessCacheResult) results.push(harnessCacheResult)
   const harnessSessionResult = checkHarnessSessionStorage()
   if (harnessSessionResult) results.push(harnessSessionResult)
-  const avExclusionResult = checkAntivirusExclusionPosture(rootDir)
-  if (avExclusionResult) results.push(avExclusionResult)
+  // The Defender row goes at this index once its query answers (see runDoctorChecks).
+  const antivirusAt = results.length
   results.push(checkGlobalMcpConfig())
   if (process.platform === 'win32') results.push(checkMcpProcessHealth(processes ?? readWindowsProcesses()))
 
-  return results
+  return { results, antivirusAt }
 }
 
 /** Format and print doctor results to stdout. */

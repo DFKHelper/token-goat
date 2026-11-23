@@ -206,8 +206,8 @@ describe('checkSecurityPosture', () => {
 
 // The helper above is only half of it. A posture report the doctor command never calls is a stub, so this drives the real entrypoint and then the shipped bundle: the section has to survive both the wiring and the build.
 describe('the doctor command reports the posture', () => {
-  it('includes the security lines in runDoctor output', () => {
-    const names = runDoctor(root, path.join(root, 'config.toml'), root, []).map((r) => r.name)
+  it('includes the security lines in runDoctor output', async () => {
+    const names = (await runDoctor(root, path.join(root, 'config.toml'), root, [])).map((r) => r.name)
 
     expect(names).toContain('Security network')
     expect(names).toContain('Security data dir')
