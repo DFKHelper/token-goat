@@ -69,6 +69,8 @@ beforeEach(() => {
   // Project-scope install resolves against process.cwd() (mirrors install_pi.test.ts's handling of --local); chdir into an isolated project dir so `{ local: true }` writes under {TMP}/project/.github/hooks, never this repo's own .github/.
   fs.mkdirSync(path.join(TMP, 'project'), { recursive: true })
   process.chdir(path.join(TMP, 'project'))
+  // Install self-tests run real host shells (~7 s each); rows here assert writes, so they stub it.
+  setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
 })
 
 afterEach(() => {
@@ -81,6 +83,8 @@ afterEach(() => {
 
 describe('installCopilotCli (user scope)', () => {
   it('writes the shim script and a hooks config registering all nine implemented events on a fresh install', () => {
+    // The one real-runner row: a fresh install runs the host shells for its self-test.
+    setHookSelftestRunnerForTesting(undefined)
     const result = installCopilotCli()
     expect(result.alreadyInstalled).toBe(false)
     expect(result.configPath).toBe(copilotCliConfigPath())

@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 
 import { installVscode, vscodeUserSettingsPath } from '../src/bridges/vscode_install.js'
 import { run } from '../src/cli.js'
@@ -20,6 +21,8 @@ let stderrSpy: WriteSpy
 
 // HAND-DERIVED: a user settings file with the setting on and a comment that must survive every write.
 const SETTING_ON = '{\n  // my own setting\n  "chat.useClaudeHooks": true,\n  "editor.fontSize": 14\n}\n'
+
+useStubbedHookSelftest()
 
 beforeEach(() => {
   originalCwd = process.cwd()

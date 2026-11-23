@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 
 import { installCopilotHooksFile, HOOKS_SCRIPT_FILE } from '../src/bridges/copilot_cli_install.js'
 import { copilotCapture } from './fixtures/copilot_cli_1_0_88.js'
@@ -15,6 +16,8 @@ const SKILL_MD =
 const BODY_MARKER = 'TGCAP-C5-SKILL-BODY-2d4a'
 
 const tempDirs: string[] = []
+
+useStubbedHookSelftest()
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {

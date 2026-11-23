@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
@@ -29,6 +30,8 @@ const SAVED = ['CLAUDE_CONFIG_DIR', 'KIMI_CODE_HOME', 'TOKEN_GOAT_CLAUDE_EXEC_FO
 let saved: Record<string, string | undefined>
 let tmp: string
 let home: string
+
+useStubbedHookSelftest()
 
 beforeEach(() => {
   saved = Object.fromEntries(SAVED.map((k) => [k, process.env[k]]))

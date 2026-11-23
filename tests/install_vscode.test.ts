@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 
 import { copilotHooksOwnersPath, installCopilotCli, isCopilotCliInstalled, readCopilotHooksOwners, uninstallCopilotCli } from '../src/bridges/copilot_cli_install.js'
 import { disableVscodeClaudeHooks, installVscode, uninstallVscode, VSCODE_HOOK_FILE_EVENT_KEYS, vscodeDecoderConfigured, vscodeHooksInstalled, vscodeUserMcpPath, vscodeUserSettingsPath, vscodeUsesClaudeHooks } from '../src/bridges/vscode_install.js'
@@ -13,6 +14,8 @@ const savedHome = process.env['HOME']
 const savedXdgConfig = process.env['XDG_CONFIG_HOME']
 const savedUserProfile = process.env['USERPROFILE']
 let defaultUserDir: string
+
+useStubbedHookSelftest()
 
 beforeEach(() => {
   defaultUserDir = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-vscode-default-userdir-'))

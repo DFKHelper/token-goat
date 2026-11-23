@@ -6,6 +6,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 
 import { GeminiSettingsParseError, geminiSettingsPath, installGemini, uninstallGemini } from '../src/bridges/gemini_install.js'
 import { QwenSettingsParseError, installQwen, qwenSettingsPath, uninstallQwen } from '../src/bridges/qwen_install.js'
@@ -38,6 +39,8 @@ function isolatedEnv(): Record<(typeof ENV_KEYS)[number], string> {
     TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS: '0',
   }
 }
+
+useStubbedHookSelftest()
 
 beforeEach(() => {
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))

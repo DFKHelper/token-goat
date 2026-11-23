@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 
 import { installCopilotHooksFile, releaseCopilotHooksFile } from '../src/bridges/copilot_cli_install.js'
 import { _resetDataDirCacheForTesting, dataDir } from '../src/constants.js'
@@ -94,6 +95,8 @@ function userHooksDir(): string {
   fs.mkdirSync(dir, { recursive: true })
   return dir
 }
+
+useStubbedHookSelftest()
 
 beforeEach(() => {
   saved = {}

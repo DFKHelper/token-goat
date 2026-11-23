@@ -5,6 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 
 import { COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END, installCopilotCli, uninstallCopilotCli } from '../src/bridges/copilot_cli_install.js'
 import {
@@ -32,6 +33,8 @@ let root: string
 let home: string
 let project: string
 const originalCwd = process.cwd()
+
+useStubbedHookSelftest()
 
 beforeEach(() => {
   // Realpath'd: macOS `os.tmpdir()` is `/var/folders/...`, a symlink to `/private/var/folders/...`. This suite chdirs into the project, so the installer resolves its scope root through `process.cwd()` and gets the `/private` spelling, while the paths built from `root` kept the `/var` one. The two then compared unequal for a file that is the same file.
