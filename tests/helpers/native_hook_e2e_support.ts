@@ -10,6 +10,7 @@ import { expect } from 'vitest'
 import { dataDirForHome } from '../../src/constants.js'
 import { endpointFor, readServerKey, type ServerStatus } from '../../src/hook_ipc.js'
 import { parseNativeInvocation, splitHookCommand, type HookShell } from '../../src/native_hook.js'
+import { killProcessTree } from '../../src/process_tree.js'
 import Database from '../../src/sqlite_driver.js'
 import { HARNESS_HOOK_PAYLOADS, type HookPayloadCase, type PayloadHarness } from '../fixtures/harness_hook_payloads.js'
 import { ROOT } from './bundle.js'
@@ -49,6 +50,8 @@ export interface Sandbox {
   endpoint?: string
   server?: ChildProcess
   pids: Set<number>
+  /** Hook clients launch spawned, kept by handle for stopServer to end. */
+  children: ChildProcess[]
 }
 
 export const sandboxes: Sandbox[] = []
@@ -93,7 +96,7 @@ export function makeSandbox(dirName: string): Sandbox {
     TOKEN_GOAT_HOME: path.join(home, 'tg-home'),
     TOKEN_GOAT_HOOK_SERVER: '0',
   })
-  const sb: Sandbox = { root, home, link, proj, dataDir, entry: path.join(link, 'dist', 'token-goat.mjs'), env, pids: new Set() }
+  const sb: Sandbox = { root, home, link, proj, dataDir, entry: path.join(link, 'dist', 'token-goat.mjs'), env, pids: new Set(), children: [] }
   sandboxes.push(sb)
   return sb
 }
@@ -203,6 +206,7 @@ export function launch(l: Launch, c: HookPayloadCase, sb: Sandbox, sid: string, 
   for (const [k, v] of Object.entries(c.env ?? {})) caseEnv[k] = substitute(v, sb, sid)
   return new Promise((resolve, reject) => {
     const child = spawn(l.file, l.args, { cwd: sb.proj, env: { ...sb.env, ...caseEnv, ...env }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, ...(l.shell === undefined ? {} : { shell: l.shell }) })
+    sb.children.push(child)
     const out: Buffer[] = []
     let stderr = ''
     child.stdout.on('data', (d: Buffer) => out.push(d))
@@ -398,7 +402,16 @@ export function doctorRows(sb: Sandbox, env: Env = {}): DoctorRow[] {
   return list
 }
 
+/** Ends each still-running launched child and its tree by the handle launch recorded. */
+function endLaunched(sb: Sandbox): void {
+  for (const child of sb.children) {
+    if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) continue
+    if (!killProcessTree(child.pid).ok) child.kill('SIGKILL')
+  }
+}
+
 export function stopServer(sb: Sandbox): void {
+  endLaunched(sb)
   if (sb.server === undefined) return
   cli(sb, ['hook-server', 'stop'], { TOKEN_GOAT_HOOK_SERVER: '1' })
 }

@@ -104,6 +104,8 @@ describe('config writes follow a symlinked destination', () => {
     else if (spawnSync('sudo', ['-n', 'chown', '-h', '65534:65534', link]).status !== 0) skip('needs root or passwordless sudo to give the link another owner')
     expect(fs.lstatSync(link).uid).toBe(65534)
     // Ruling 76: a foreign-owned link is refused, never followed and never replaced, so the link and its target both stay as they were.
+
+    // util.ts resolveSymlinkChain leaves a link owned by neither our uid nor 0, so atomicWriteText refuses.
     expect(() => atomicWriteText(link, 'planted\n')).toThrow(/refusing to write .*symbolic link owned by another user/)
     expect(fs.readFileSync(victim, 'utf8')).toBe(THEME)
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
