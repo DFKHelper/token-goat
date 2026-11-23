@@ -1,12 +1,34 @@
 /** Built-bundle command matrix, shard 4 of 4 (pre-push / CI tier — slow). See tests/command_matrix_e2e.1.test.ts for the full doc comment (fixture, coverage gate) and tests/helpers/matrix_cases.ts for the shared fixture/case table this shard runs a slice of. Also owns the built-bundle image-shrink/OCR-wiring regression tests below, which need the same shared fixture (dataBase) but are not part of the sharded command case table. */
 
+import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import sharp from 'sharp'
 
-import { afterEachHeartbeatMitigation, cases, cleanupMatrixFixture, dataBase, mkIsolated, run, setupMatrixFixture, shardKeys, tgEnv } from './helpers/matrix_cases.js'
+import { BUNDLE } from './helpers/bundle.js'
+import { afterEachHeartbeatMitigation, cases, cleanupMatrixFixture, dataBase, mkIsolated, repo, run, setupMatrixFixture, shardKeys, tgEnv } from './helpers/matrix_cases.js'
+
+// Runs the built bundle and settles on the child's close event, so the fork's event loop stays free while it runs (spawnSync blocked it, which starved vitest's own heartbeat and timer and reported a slow child as a test timeout). The child is ended on every path.
+async function runAsync(args: string[], input: string, env: NodeJS.ProcessEnv): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, [BUNDLE, ...args], { cwd: repo, env, stdio: ['pipe', 'pipe', 'pipe'] })
+  try {
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8').on('data', (d: string) => { stdout += d })
+    child.stderr.setEncoding('utf8').on('data', (d: string) => { stderr += d })
+    child.stdin.on('error', () => {})
+    child.stdin.end(input)
+    const status = await new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', (code) => resolve(code))
+    })
+    return { status, stdout, stderr }
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill()
+  }
+}
 
 beforeAll(setupMatrixFixture, 120000)
 afterAll(cleanupMatrixFixture)
@@ -99,7 +121,7 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
       session_id: 'matrix-image-ocr',
     })
     // network.offline, so the spawned bundle takes the OCR path without fetching the 5 MB tesseract language data from cdn.jsdelivr.net. Measured by wrapping fetch for a whole suite run: this was the only test that reached that host, and it cost 12 s per run plus a hard dependency on the internet for a case whose own assertion below already accepts either outcome. What it still proves is the thing it was written for: the built bundle dispatches a large text-heavy image through the real hook path, loads its native addons in the right order, and answers without crashing or hanging. The OCR engine's own wiring -- the child script, the pinned langPath, the cache directory, the integrity refusal -- is covered by tests/image_ocr_integrity.test.ts and tests/image_ocr.test.ts against stubs. Pinned to a context-channel harness, whose reply carries either marker this case accepts; on Claude Code the OCR branch is skipped and the shrink is a rewritten path.
-    const r = run(['hook', 'pre_tool_use'], { input: payload, env: { ...tgEnv(dataBase), TOKEN_GOAT_OFFLINE: '1', TOKEN_GOAT_HARNESS_OVERRIDE: 'generic' } })
+    const r = await runAsync(['hook', 'pre_tool_use'], payload, { ...tgEnv(dataBase), TOKEN_GOAT_OFFLINE: '1', TOKEN_GOAT_HARNESS_OVERRIDE: 'generic' })
     expect(r.status, r.stderr).toBe(0)
 
     const out = JSON.parse(r.stdout) as {
