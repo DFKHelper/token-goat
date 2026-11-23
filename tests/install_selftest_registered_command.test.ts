@@ -60,6 +60,7 @@ afterEach(() => {
   if (realNativeFlag === undefined) delete process.env['TOKEN_GOAT_NATIVE_HOOKS']
   else process.env['TOKEN_GOAT_NATIVE_HOOKS'] = realNativeFlag
   setHookSelftestRunnerForTesting(undefined)
+  setHookSelftestResultOverrideForTesting(undefined)
   fs.rmSync(root, { recursive: true, force: true })
 })
 
