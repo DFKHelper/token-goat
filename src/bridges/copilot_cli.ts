@@ -390,6 +390,13 @@ async function main() {
     }
     sessionStartDeadline = epoch
   }
+  // A self-test probe proves the wiring without the owner: it drains its input and answers the safe object, with no budget and nothing on stderr.
+  if (sessionStartDeadline !== undefined && process.env.TOKEN_GOAT_HOOK_PROBE === '1') {
+    process.stdin.resume()
+    process.stdin.on('error', () => {})
+    process.stdin.on('end', () => process.stdout.write('{}'))
+    return
+  }
   let raw = ''
   if (sessionStartDeadline !== undefined) {
     try {

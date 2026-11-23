@@ -19,6 +19,7 @@ import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
 import { isHookServerCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { buildNative } from './helpers/native_bin.js'
+import { SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MIN_MS } from '../src/bridges/shim_common.js'
 
 type Env = Record<string, string>
 const WIN = process.platform === 'win32'
@@ -453,7 +454,9 @@ describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli
   }, 120_000)
 
   it('writes the native form for every event and each way the harness runs it is served, matches the Node command, and falls back to it', async () => {
-    const printed = install(sb, INSTALL_FLAG[harness], {})
+    // Ruling 115: the copilot install runs with the SessionStart owner budget at its floor, so the wiring must not depend on the owner finishing inside it.
+    const budget: Env = harness === 'copilot_cli' ? { [SESSION_START_TEST_BUDGET_ENV]: String(SESSION_START_TEST_BUDGET_MIN_MS) } : {}
+    const printed = install(sb, INSTALL_FLAG[harness], budget)
     const f = forms(CONFIG_FILE[harness](sb), SPLIT[harness])
     expect(f.native, `install printed: ${printed}`).toBeGreaterThan(0)
     expect(f.node).toBe(0)

@@ -39,6 +39,12 @@ pub fn run(mut command: Vec<OsString>, started: Instant, call: &Call, limit: Opt
     if command.len() < 4 {
         return fail_open("installed startup command unavailable");
     }
+    // A self-test probe proves the wiring without the owner, so it neither starts owner work nor waits on the budget.
+    if crate::notice::probing() {
+        let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+        crate::out::emit("{}");
+        return 0;
+    }
     let deadline = deadline_for(started, &call.harness, limit, budget_ms());
     let epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(now) => now.as_millis() as u64 + deadline.saturating_duration_since(Instant::now()).as_millis() as u64,

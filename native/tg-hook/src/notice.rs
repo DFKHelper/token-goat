@@ -59,7 +59,7 @@ pub fn record(data_dir: &str, route: &str, path: &str, error: &str) {
 /// The variable the self-tests and `doctor` set on a probe run (`HOOK_PROBE_ENV` in src/stats.ts): a probe's failures are not a live hook's, so it neither writes nor clears the notice.
 const PROBE_ENV: &str = "TOKEN_GOAT_HOOK_PROBE";
 
-fn probing() -> bool {
+pub(crate) fn probing() -> bool {
     is_probe(std::env::var(PROBE_ENV).ok().as_deref())
 }
 
