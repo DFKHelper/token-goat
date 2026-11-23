@@ -18,6 +18,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`token-goat php-lint` runs PHP syntax checks in parallel.** It runs `php -l` on the PHP files under the given paths (the current directory by default) without indexing them. `--php <executable>` picks the PHP runtime, and `--jobs <count>` sets how many checks run at once, from 1 to 8 (default 4). Invalid paths, a missing runtime, or a syntax error exit 1.
 - **COBOL files are indexed.** Files ending in `.cbl`, `.cob`, `.cobol`, `.cpy`, `.cop` or `.cpb` get symbols, and the comments above a declaration become its docstring. `CALL` targets are recorded whether quoted or unquoted. `--sig` works for COBOL.
 - **Java records, enums, interfaces and annotation types get their own scopes.** Exports cover them too, and Java annotations stay in `--sig` output.
+- **`token-goat stats` shows the ten most-run commands that have no dedicated Bash filter.** They appear under Commands as run counts, not as savings.
+- **The post-Bash hook handles Copilot CLI output that is saved to a spool file.**
+- **The skill text and compact help say which read command to use for each task, and which one to avoid.** Rows cover `symbol` and `read`, `search` and `semantic`, and `outline` and `skeleton`.
+- **token-goat locates the SKILL.md that Copilot CLI loads, in Copilot's project and personal skill folders.**
 
 ### Changed
 
@@ -43,6 +47,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **When a request is cancelled, the VS Code extension stops its token-goat and git calls** instead of waiting for them to finish.
 - **The parser fingerprint changed, so the index is rebuilt once after upgrading.** The extraction sources changed; files whose stamp no longer matches are reparsed on first use.
 - **`semantic`, `search` and `refs` (and `callers`, `impact`) say how much of the project is indexed when they find nothing.** The result gains one line such as `indexed 2 of 4 files in this project, 2 not indexed`, counted against the files `token-goat index` would take, so an empty answer can be told from a project that was never fully indexed.
+- **`token-goat install` refuses a checkout build as the hook entry unless `--dev` is passed.** The error names the global install to use instead, and `doctor` warns when the hooks and the token-goat launcher on PATH run different builds.
+- **A repeated hint is shown once, and shown again only when the trigger behind it changes.**
+- **The background worker daemon uses one embedding thread per session, and an idle embedding gives its slot back once its queue is abandoned.**
+- **`mcp-audit` also reads `.github/mcp.json` and Copilot's user `mcp-config.json`, and says so when `COPILOT_MCP_TOOL_CACHE` turns the Copilot tool cache off.**
 
 ### Removed
 
@@ -69,6 +77,26 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **The refusal of a shell search that walks a filesystem root or the home directory no longer lets three shapes through.** Wrappers nested past the check's depth limit, a command word spelled with escapes or `$` (`f\ind /`, `fi$'n'd /`, `$F /`), and `eval "find / ..."` or `xargs find` with no bound are now refused, and a `'\''` quote idiom is decoded. A `$` command word is refused only when it has no arguments to read or one is a root or home start, so `$EDITOR file.ts` and `$CC -o x x.c` run.
 - **A Bash command whose first line is a token-goat call no longer skips the pre-tool-use hook for the lines after it.** The own-command skip treated `token-goat symbol x` followed by a newline and `find / -name a` as one own command, so the root-walk refusal never ran; a CR or LF now disqualifies the skip, and `token-goat-x` or `token-goat.sh` no longer count as token-goat.
 - **`uninstall --copilot` keeps the shared Copilot hooks file when its owners record cannot be read.** A read error other than a missing record (such as a permission or lock error) was taken to mean Copilot was the only install relying on `token-goat.json`, so the file that `install --vscode` also uses was deleted. Uninstall now keeps the file and prints one line on stderr saying why.
+- **`doctor` skips the full page scan of a database over 512 MiB, or of every database in `--fast` mode, and quarantines a database only for confirmed corruption, not for a briefly locked file.**
+- **Post-merge sync steps stop at a time bound and end the child processes they start.**
+- **`doctor` repairs a harness only when its config is due a rewrite, so a healthy harness no longer reports an error.** Gemini also removes old token-goat hook entries left under a retired matcher.
+- **A failed check stops being reported once HEAD moves to another commit.**
+- **Two token-goat builds that share one index no longer mark each other's rows stale, which stopped the worker from re-embedding the whole index over and over.**
+- **`bash-output` no longer serves a cached result when `git status` fails, because the state of the tree is then unknown.**
+- **On Windows, a Git Bash command killed by a signal reports exit code 128 plus the signal number, not 0, so a failed command no longer looks like a success.**
+- **A failed install puts back the earlier bytes of each file it overwrote; a file it cannot restore keeps its backup, and the error names the backup path so you can restore it by hand.** Undo also handles dangling and foreign symlinks.
+- **Relay bridges fall back to the token-goat on PATH when the bundled entry fails, and accept a block only from a run that exits 0 with a text reason.**
+- **Relay bridges (opencode, OpenClaw and pi) name their own harness and bound the in-process hook call with a deadline set per call, so a stalled hook no longer hangs the host.**
+- **The native hook client keeps one deadline across reading stdin, connecting and waiting for the reply, and answers safely with exit 0 when time runs out, so a host that never closes stdin no longer hangs the hook.**
+- **VS Code hooks take the Copilot CLI time limit, so SessionStart gets its full 10-second budget instead of 3 seconds.**
+- **A lost tool call no longer silences the batch hint for good.** A read-only call whose result never arrives now expires after ten minutes.
+- **Commands whose only redirect is a trailing `2>/dev/null` are filtered instead of refused.**
+- **`changed` applies deny rules to the right paths when run from a subdirectory, so a denied file under the repository root is no longer printed.**
+- **A session start left claimed by a process that died is taken over after 15 minutes, delivered once, and never repeated.**
+- **A hook that exits 2 with a whitespace-only message is treated as having no message.**
+- **`token-goat diff` on one file reads quoted file names in the diff headers, and drops with a note any section whose header it cannot read.**
+- **`stats` keeps generic Bash command counts out of its event totals and by-day figures, and shows them separately.**
+- **`stats` counts a wrapped command under the tool it runs (such as `sudo` or `timeout`), drops `.exe` from tool names, and files a name that looks like a credential under `other`.**
 
 ### Security
 
