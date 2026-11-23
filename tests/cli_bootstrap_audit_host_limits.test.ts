@@ -347,7 +347,7 @@ describe('bootstrap-audit host limits: the Codex config read is bounded', () => 
     fs.symlinkSync(outside, projectConfigPath())
     const refused = await buildBootstrapAudit({ project: scratch.project, home: scratch.home })
     expect(wasRead(projectConfigPath()), 'the audit read the outside link').toBe(false)
-    expect(reasonFor(refused,projectConfigPath())).toContain('leads outside the project')
+    expect(reasonFor(refused, projectConfigPath())).toContain('leads outside the project')
     expect(refused.host_limits.codex).toMatchObject({ budget_bytes: 32768, budget_source: 'default' })
     fs.unlinkSync(projectConfigPath())
     const inside = path.join(scratch.project, 'shared.toml')

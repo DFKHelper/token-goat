@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
+import { once } from 'node:events'
 import type * as ChildProcessModule from 'node:child_process'
 import {
   AV_EXCLUSION_DISCLAIMER,
@@ -9,12 +10,16 @@ import {
   checkAntivirusExclusionPosture,
   isPathExcluded,
   measureDirectoryBytes,
+  startWindowsDefenderExclusionQuery,
 } from '../src/cli_doctor_harness_perf.js'
 import { runDoctorChecks } from '../src/cli_doctor.js'
 import type * as HookClientModule from '../src/hook_client.js'
 
 // Event log: Defender query sync/spawn/settle and hook-server status asks, in call order.
 const defenderQueries = vi.hoisted(() => ({ events: [] as string[] }))
+// Per-row Defender query behaviour: 'real' runs PowerShell, 'hang' runs a child that outlives the deadline, 'throw' fails the spawn.
+const defenderOverride = vi.hoisted(() => ({ mode: 'real' as 'real' | 'hang' | 'throw' }))
+const defenderChildren = vi.hoisted(() => [] as ChildProcessModule.ChildProcess[])
 
 vi.mock('node:child_process', async (importOriginal) => {
   const real = await importOriginal<typeof ChildProcessModule>()
@@ -24,7 +29,13 @@ vi.mock('node:child_process', async (importOriginal) => {
     spawn: ((file: string, args: readonly string[], options: ChildProcessModule.SpawnOptions) => {
       if (!isDefenderQuery(args)) return real.spawn(file, args, options)
       defenderQueries.events.push('spawn:defender')
-      const child = real.spawn(file, args, options)
+      if (defenderOverride.mode === 'throw') throw new Error('spawn EACCES (test: Defender query)')
+      // Exits by itself after 15 s, so a row whose deadline never kills it fails on its exit code, not by hanging.
+      const child =
+        defenderOverride.mode === 'hang'
+          ? real.spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 15000)'], options)
+          : real.spawn(file, args, options)
+      defenderChildren.push(child)
       const settled = (): void => {
         defenderQueries.events.push('defender:settled')
       }
@@ -192,6 +203,41 @@ describe('cli_doctor_harness_perf', () => {
       else process.env.TOKEN_GOAT_HOOK_SERVER = priorServer
       if (realPlatform) Object.defineProperty(process, 'platform', realPlatform)
       fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('ends the Defender query at its deadline, kills its child, and reports no paths (timeout path)', async () => {
+    const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+    defenderOverride.mode = 'hang'
+    defenderChildren.length = 0
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      const paths = await startWindowsDefenderExclusionQuery()
+      expect(paths).toBeNull()
+      expect(checkAntivirusExclusionPosture(os.tmpdir(), os.tmpdir(), paths)).toBeNull()
+      const child = defenderChildren[0]
+      if (child === undefined) throw new Error('the Defender query spawned no child')
+      if (child.exitCode === null && child.signalCode === null) await once(child, 'exit')
+      expect(child.exitCode, 'the deadline must end the child, not its own exit after 15 s').not.toBe(0)
+    } finally {
+      defenderOverride.mode = 'real'
+      if (realPlatform) Object.defineProperty(process, 'platform', realPlatform)
+    }
+  })
+
+  it('reports no paths and no posture row when the Defender query cannot be spawned (throw path)', async () => {
+    const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+    defenderQueries.events.length = 0
+    defenderOverride.mode = 'throw'
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      const paths = await startWindowsDefenderExclusionQuery()
+      expect(paths).toBeNull()
+      expect(checkAntivirusExclusionPosture(os.tmpdir(), os.tmpdir(), paths)).toBeNull()
+      expect(defenderQueries.events).toContain('spawn:defender')
+    } finally {
+      defenderOverride.mode = 'real'
+      if (realPlatform) Object.defineProperty(process, 'platform', realPlatform)
     }
   })
 })

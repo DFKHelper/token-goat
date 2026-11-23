@@ -13,6 +13,7 @@ import { afterEachHeartbeatMitigation, cases, cleanupMatrixFixture, dataBase, mk
 // Runs the built bundle and settles on the child's close event, so the fork's event loop stays free while it runs (spawnSync blocked it, which starved vitest's own heartbeat and timer and reported a slow child as a test timeout). The child is ended on every path.
 async function runAsync(args: string[], input: string, env: NodeJS.ProcessEnv): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const child = spawn(process.execPath, [BUNDLE, ...args], { cwd: repo, env, stdio: ['pipe', 'pipe', 'pipe'] })
+  let timer: NodeJS.Timeout | undefined
   try {
     let stdout = ''
     let stderr = ''
@@ -23,9 +24,15 @@ async function runAsync(args: string[], input: string, env: NodeJS.ProcessEnv): 
     const status = await new Promise<number | null>((resolve, reject) => {
       child.once('error', reject)
       child.once('close', (code) => resolve(code))
+      // Same 60000 ms bound as the base run() (tests/helpers/matrix_cases.ts:55); a hung child is killed here.
+      timer = setTimeout(() => {
+        child.kill()
+        reject(new Error(`built bundle child still running after 60000 ms: ${args.join(' ')}`))
+      }, 60000)
     })
     return { status, stdout, stderr }
   } finally {
+    clearTimeout(timer)
     if (child.exitCode === null && child.signalCode === null) child.kill()
   }
 }
