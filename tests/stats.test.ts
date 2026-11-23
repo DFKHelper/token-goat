@@ -924,6 +924,31 @@ describe('stats', () => {
       expect(summaryShortWindow.total_events).toBe(1)
       db.close()
     })
+
+    it('rolls a row up under the same local day summarize() gives it, across a DST change, under a TZ set at runtime', () => {
+      // HAND-DERIVED from America/New_York offsets (EST UTC-5 in January, EDT UTC-4 in July); the zone is set after process start, which SQLite's own 'localtime' does not follow on Windows.
+      const originalTz = process.env['TZ']
+      process.env['TZ'] = 'America/New_York'
+      try {
+        const db = openStatsDb(path.join(tempDir, 'rollup-local-day.db'))
+        const insert = db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, 'read_replacement', 1, 1)`)
+        // 2026-01-16T03:00Z is 2026-01-15 22:00 EST; 2025-07-16T04:30Z is 2025-07-16 00:30 EDT (a fixed UTC-5 would say the 15th).
+        const winter = Math.floor(Date.UTC(2026, 0, 16, 3, 0, 0) / 1000)
+        const summer = Math.floor(Date.UTC(2025, 6, 16, 4, 30, 0) / 1000)
+        insert.run(winter)
+        insert.run(summer)
+
+        rollupAndPruneStats(db, 180)
+
+        const days = (db.prepare(`SELECT day FROM stats_daily_rollup ORDER BY day`).all() as Array<{ day: string }>).map((r) => r.day)
+        expect(days).toEqual(['2025-07-16', '2026-01-15'])
+        expect(summarize(0, db).by_day.map((r) => r.date).sort()).toEqual(['2025-07-16', '2026-01-15'])
+        db.close()
+      } finally {
+        if (originalTz === undefined) delete process.env['TZ']
+        else process.env['TZ'] = originalTz
+      }
+    })
   })
 
   // CAPTURE: read via `sqlite3 -readonly` off a real install's global.db. Before constants.ts's homeFallbackOrGuard started refusing to resolve DATA_DIR against the real home directory inside a Vitest worker, a Python test harness resolved the real LOCALAPPDATA/global.db anyway and wrote against it -- ~6,472 rows dated 2026-06-03 through 06-22, in exactly the two shapes below (image_shrink/large_read_redirect rows naming a pytest tempdir, hint_backoff_suppressed/session_hint_suppressed/indexed_cat_deny/ indexed_cat_advisory rows naming the literal fixture path /fake/...). A real session can produce both shapes too (reading pytest's own output, or a project with a fake/ directory), so the fix keys the DELETE on the leak's actual fingerprint instead: tg_version IS NULL (every real row after that column shipped carries one) and ts inside the measured 2026-06-03..06-22 window (1780406895..1782119331), never on shape alone.

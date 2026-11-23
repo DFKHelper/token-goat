@@ -388,6 +388,13 @@ export function formatLocalTimestamp(d: Date): string {
   return `${toLocalDateKey(d)}T${hours}:${minutes}:${seconds}`
 }
 
+// The SQL function every stats query buckets by day through, so the rollup and summarize() agree on a day. SQLite's own 'localtime' modifier reads the C library's zone, which a process that changes process.env.TZ after start (a test; Windows never re-reads it) does not move, while Date does; this asks Date, the same source toLocalDateKey and every displayed day use. Registered by passing the function itself (never calling it), on the connection that runs the query.
+const LOCAL_DAY_FN = 'tg_local_day'
+
+function localDayOf(ts: unknown): string | null {
+  return typeof ts === 'number' || typeof ts === 'bigint' ? toLocalDateKey(new Date(Number(ts) * 1000)) : null
+}
+
 function zeroBucket(): StatsBucket {
   return { events: 0, bytes_saved: 0, tokens_saved: 0 }
 }
@@ -630,10 +637,11 @@ const STATS_ROLLUP_INTERVAL_MS = 6 * 60 * 60 * 1000
 export function rollupAndPruneStats(db: SqliteDatabase, retentionDays: number = STATS_RETENTION_DAYS): void {
   try {
     const cutoffTs = Math.floor(Date.now() / 1000) - retentionDays * 86400
+    db.function(LOCAL_DAY_FN, {}, localDayOf)
     const run = db.transaction((cutoff: number) => {
       db.prepare(
         `INSERT INTO stats_daily_rollup (day, kind, harness, tg_version, events, bytes_saved, tokens_saved)
-         SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') AS day,
+         SELECT ${LOCAL_DAY_FN}(ts) AS day,
                 kind,
                 COALESCE(harness, '') AS harness,
                 COALESCE(tg_version, '') AS tg_version,
@@ -1051,9 +1059,9 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   // Selected only when the column is actually there: an injected `testDb` may carry a table this module never migrated, and naming a missing column would throw out of summarize() entirely rather than degrading to "harness not recorded".
   const hasHarness = statsHasHarnessColumn(db)
   const hasVersion = statsHasVersionColumn(db)
-  // Aggregate in SQLite so JavaScript receives only distinct reporting buckets instead of materializing every event.
-  // Local-day grouping matches rollups; ordering by MAX(ts) preserves newest-first map insertion order.
-  const dayExpr = "strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime')"
+  // Aggregate in SQLite so JavaScript receives only distinct reporting buckets instead of materializing every event. Local-day grouping matches rollups; ordering by MAX(ts) preserves newest-first map insertion order.
+  db.function(LOCAL_DAY_FN, {}, localDayOf)
+  const dayExpr = `${LOCAL_DAY_FN}(ts)`
   const harnessExpr = hasHarness ? "COALESCE(harness, '')" : "''"
   const versionExpr = hasVersion ? "COALESCE(tg_version, '')" : "''"
   const query = `
