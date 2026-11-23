@@ -27,6 +27,10 @@ import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { copilotCliConfigPath, copilotCliHooksDir, copilotCliInstructionsPath, copilotCliScriptPath, installCopilotHooksFile, wiredCopilotHookWords, writeCopilotInstructionsBlock } from '../src/bridges/copilot_cli_install.js'
 import { copilotMcpConfigPath } from '../src/bridges/copilot_mcp_install.js'
 
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
 describe('doctor auto-repair and embedding model checks', () => {
   // runDoctorRepair checks the instruction gate against the user-level files and the project root, and writes the project when no gate is active anywhere. Every call gets a scratch project and a scratch home holding the gate `token-goat install` writes to ~/.claude/CLAUDE.md, so a healthy install reads as healthy and nothing touches the real home or the checkout the suite runs from.
   let userHome: string
@@ -41,6 +45,7 @@ describe('doctor auto-repair and embedding model checks', () => {
     vi.spyOn(cliUpgrade, 'performUpgrade').mockResolvedValue({ ok: false, message: 'unexpected upgrade: this test did not stub performUpgrade' })
     userHome =fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-home-'))
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-root-'))
+    vi.spyOn(process, 'cwd').mockReturnValue(projectRoot)
     vi.stubEnv('HOME', userHome)
     vi.stubEnv('USERPROFILE', userHome)
     // The suite pins embeddings off through the environment; the repair's job here is the config layer, and an env-held switch is exercised by its own test.
@@ -60,6 +65,7 @@ describe('doctor auto-repair and embedding model checks', () => {
   afterEach(() => {
     setHookSelftestRunnerForTesting(undefined)
     clearUpdateCheck()
+    vi.restoreAllMocks()
     vi.unstubAllEnvs()
     fs.rmSync(userHome, { recursive: true, force: true })
     fs.rmSync(projectRoot, { recursive: true, force: true })

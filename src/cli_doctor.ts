@@ -49,6 +49,7 @@ import { claudeHookActivity, formatAgeSeconds, hookLatencyBreakdown, type HookLa
 import { checkNativeHooks } from './cli_doctor_native.js'
 import { checkHookEntryBuild } from './cli_doctor_build.js'
 import { checkDbExists, checkSymbolCount, checkDirtyQueueHealth, checkEmbeddingCoverage, checkParserFreshness } from './cli_doctor_index.js'
+import type { IntegrityCheckResult } from './db_integrity.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import type { DoctorResult } from './doctor_result.js'
 import { type ProcessInfo, checkMcpProcessHealth, readWindowsProcesses, checkWorkerRunning } from './cli_doctor_process.js'
@@ -812,15 +813,27 @@ export function checkHookServer(state: { enabled: boolean; statuses: readonly Se
 }
 
 /** {@link runDoctor} plus the checks that have to ask a running process, which the synchronous checks cannot. */
-export async function runDoctorChecks(dataDir?: string, configPath?: string, rootDir?: string, processes?: ProcessInfo[]): Promise<DoctorResult[]> {
-  const results = runDoctor(dataDir, configPath, rootDir, processes)
+export async function runDoctorChecks(
+  dataDir?: string,
+  configPath?: string,
+  rootDir?: string,
+  processes?: ProcessInfo[],
+  opts?: { fast?: boolean; precheckedIntegrity?: IntegrityCheckResult },
+): Promise<DoctorResult[]> {
+  const results = runDoctor(dataDir, configPath, rootDir, processes, opts)
   const enabled = hookServerEnabled()
   const dir = dataDir || defaultDataDir()
   results.push(checkHookServer({ enabled, statuses: enabled ? await serverStatuses(dir) : [], failure: readMarker('failed', dir) }))
   return results
 }
 
-export function runDoctor(dataDir?: string, configPath?: string, rootDir?: string, processes?: ProcessInfo[]): DoctorResult[] {
+export function runDoctor(
+  dataDir?: string,
+  configPath?: string,
+  rootDir?: string,
+  processes?: ProcessInfo[],
+  opts?: { fast?: boolean; precheckedIntegrity?: IntegrityCheckResult },
+): DoctorResult[] {
   const results: DoctorResult[] = []
   const actualDataDir = dataDir || defaultDataDir()
 
@@ -835,7 +848,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   // File checks
   const cfg = loadConfig(rootDir)
-  results.push(checkDbExists(actualDataDir, cfg.indexing.max_db_size_mb, rootDir))
+  results.push(checkDbExists(actualDataDir, cfg.indexing.max_db_size_mb, rootDir, opts))
   results.push(checkSymbolBodySize(path.join(actualDataDir, 'global.db')))
   results.push(checkSymbolCount(path.join(actualDataDir, 'global.db'), rootDir))
   results.push(checkDirtyQueueHealth(actualDataDir))
@@ -1037,14 +1050,18 @@ export async function runDoctorAndExit(opts?: string | {
   const options = typeof opts === 'string' ? { rootDir: opts } : (opts ?? {})
   const repairRan = options.repair === true || options.fix === true
   let repairErrors: string[] = []
+  let checkedIntegrity: IntegrityCheckResult | undefined
 
   if (repairRan) {
     console.log('Running automatic repairs...\n')
-    const { repairs, errors, notices } = await runDoctorRepair({
+    const repairResult = await runDoctorRepair({
       dataDir: options.dataDir,
       configPath: options.configPath,
       rootDir: options.rootDir,
+      fast: Boolean(options.fast),
     })
+    const { repairs, errors, notices } = repairResult
+    checkedIntegrity = repairResult.checkedIntegrity
 
     if (repairs.length > 0) {
       console.log('Repairs applied:')
@@ -1068,7 +1085,10 @@ export async function runDoctorAndExit(opts?: string | {
   }
 
   const processes = options.processes ?? (options.fast === true ? [] : undefined)
-  const results = await runDoctorChecks(options.dataDir, options.configPath, options.rootDir, processes)
+  const results = await runDoctorChecks(options.dataDir, options.configPath, options.rootDir, processes, {
+    fast: Boolean(options.fast),
+    ...(checkedIntegrity === undefined ? {} : { precheckedIntegrity: checkedIntegrity }),
+  })
   printDoctorResults(results)
 
   if (options.context === true) {

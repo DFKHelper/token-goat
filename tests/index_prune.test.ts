@@ -4,6 +4,10 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
 // Regression harness: pruneDeletedFiles used to call fs.existsSync(p), which per Node's own docs swallows ANY stat error (not just ENOENT -- also EPERM/EBUSY/permission-denied-mid-scan) and just returns false, indistinguishable from "genuinely deleted". existsSync is implemented via Node's internal binding, not by calling the public fs.statSync -- so a mock that only patches statSync never reaches the buggy existsSync call at all and would pass identically pre- and post-fix. To faithfully reproduce the real failure mode we mock BOTH: existsSync returns false for the blocked path (exactly what it does in real life when any stat error occurs underneath it), while statSync throws a non-ENOENT error for that same path (what the fixed code checks for). vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine property"), so a module mock with a hoisted flag is the portable way to do this while every other fs call in this file passes straight through to the real module untouched.
 const mockState = vi.hoisted(() => ({
   blockedPath: undefined as string | undefined,
@@ -43,12 +47,15 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import * as fs from 'node:fs'
 
-import { getDb } from '../src/db.js'
+import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
+import { pathEqClause, projectScopeClause } from '../src/sql_path.js'
+import { foldPath } from '../src/util.js'
 import { indexFileSync, deleteFileRows } from '../src/parser.js'
 import {
   pruneDeletedFiles,
   removeFileFromIndex,
+  countFilesUnderRoot,
   sweepKnownRoots,
   findSystemTempFiles,
   pruneSystemTempFiles,
@@ -57,6 +64,9 @@ import {
   pruneDeadRetryRows,
   pruneOrphanedChunks,
   pruneOrphanedVectors,
+  findTopIndexedProjects,
+  projectFileScope,
+  rawPathsUnderRoot,
 } from '../src/index_prune.js'
 import { recordKnownRoot, recordKnownRootThrottled } from '../src/known_roots.js'
 import * as embeddingsModule from '../src/embeddings.js'
@@ -99,6 +109,51 @@ describe('index_prune', () => {
     }
   })
 
+  it('normalizes trailing slashes and preserves POSIX and drive-root bounds', () => {
+    const posixProject = projectFileScope('/proj///')
+    expect(posixProject.root).toBe('/proj')
+    expect(posixProject.forwardBounds).toEqual(['/proj/', '/proj0'])
+
+    const windowsProject = projectFileScope('c:/proj///')
+    expect(windowsProject.root).toBe('c:/proj')
+    expect(windowsProject.forwardBounds).toEqual(['c:/proj/', 'c:/proj0'])
+    expect(projectFileScope('/').forwardBounds).toEqual(['/', '0'])
+    expect(projectFileScope('c:/').forwardBounds).toEqual(['c:/', 'c:0'])
+  })
+
+  it('matches literal LIKE metacharacters and excludes sibling boundary neighbors', () => {
+    const db = getDb(dbPath)
+    const matchingPaths = (root: string, candidates: string[]): string[] => {
+      const scope = projectFileScope(root)
+      const values = candidates.map(() => '(?)').join(', ')
+      const scopeParams = [
+        ...scope.forwardBounds,
+        foldPath(scope.root),
+        ...(scope.legacyRoot === undefined || scope.legacyBounds === undefined
+          ? []
+          : [...scope.legacyBounds, foldPath(scope.legacyRoot)]),
+      ]
+      const rows = db
+        .prepare(`WITH candidates(path) AS (VALUES ${values}) SELECT path FROM candidates WHERE ${scope.clause} ORDER BY path`)
+        .all(...candidates, ...scopeParams) as Array<{ path: string }>
+      return rows.map(({ path: candidate }) => candidate)
+    }
+
+    expect(
+      matchingPaths('/proj', [
+        '/proj/a.ts',
+        '/proj-other/a.ts',
+        '/proj.bak/a.ts',
+        '/proj0/a.ts',
+        '/proj%/a.ts',
+        '/proj_/a.ts',
+      ]),
+    ).toEqual(['/proj/a.ts'])
+    expect(
+      matchingPaths('/proj%_///', ['/proj%_/a.ts', '/projAB/a.ts', '/proj_/a.ts', '/proj%X/a.ts']),
+    ).toEqual(['/proj%_/a.ts'])
+  })
+
   it('prunes rows for a file deleted from disk', () => {
     const aPath = path.join(dir, 'a.ts')
     fs.writeFileSync(aPath, 'export const aSym = 1\n')
@@ -121,6 +176,104 @@ describe('index_prune', () => {
     const result = pruneDeletedFiles(normalizePath(dir), dbPath)
     expect(result).toBe(0)
     expect(symbolCount(dbPath, aKey)).toBe(countBefore)
+  })
+
+  it('uses case-aware indexed bounds for uppercase roots', () => {
+    const db = getDb(dbPath)
+    const root = '/UpperCase/Project'
+    const lowerRoot = '/uppercase/project'
+    try {
+      const insertRoot = db.prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, NULL)')
+      insertRoot.run(root)
+      const insertFile = db.prepare('INSERT INTO files (path, sha) VALUES (?, ?)')
+      insertFile.run(root, 'exact-root')
+      insertFile.run(`${root}/src/a.ts`, 'uppercase-child')
+      insertFile.run(`${lowerRoot}/src/b.ts`, 'lowercase-child')
+
+      for (const mode of ['0', '1'] as const) {
+        vi.stubEnv('TOKEN_GOAT_CASE_INSENSITIVE_FS', mode)
+        const caseInsensitive = mode === '1'
+        const range = projectScopeClause('path')
+        const expectedRoot = caseInsensitive ? lowerRoot : root
+        expect(range.params(root)).toEqual([`${expectedRoot}/`, `${expectedRoot}0`])
+        expect(pathEqClause('path')).toBe(caseInsensitive ? 'TG_LOWER(path) = ?' : 'path = ?')
+
+        const clauses = [range.clause, pathEqClause('path')]
+        const params = [...range.params(root), foldPath(root)]
+        if (process.platform === 'win32') {
+          const legacyRoot = normalizePath(root).replace(/\//g, '\\').replace(/\\+$/, '')
+          const legacyPrefix = `${legacyRoot}\\`.toLowerCase()
+          clauses.push('(TG_LOWER(path) >= ? AND TG_LOWER(path) < ?)', pathEqClause('path'))
+          params.push(legacyPrefix, `${legacyPrefix.slice(0, -1)}]`, foldPath(legacyRoot))
+        }
+        const plan = db
+          .prepare(`EXPLAIN QUERY PLAN SELECT path FROM files WHERE (${clauses.join(' OR ')})`)
+          .all(...params) as Array<{ detail: string }>
+        const searches = plan.map((row) => row.detail).filter((detail) => detail.includes('SEARCH files USING'))
+        expect(searches).toHaveLength(process.platform === 'win32' ? 4 : 2)
+        expect(
+          searches.every(
+            (detail) =>
+              detail.includes('idx_files_path_folded') ||
+              detail.includes('sqlite_autoindex_files_1') ||
+              detail.includes('PRIMARY KEY'),
+          ),
+        ).toBe(true)
+        if (caseInsensitive) expect(searches.every((detail) => detail.includes('idx_files_path_folded'))).toBe(true)
+        expect(plan.map((row) => row.detail).join(' | ')).not.toMatch(/\bSCAN files\b/)
+
+        const expectedCount = caseInsensitive ? 3 : 2
+        expect(countFilesUnderRoot(root, dbPath)).toBe(expectedCount)
+        expect(findTopIndexedProjects(dbPath, 10).find((consumer) => consumer.root === root)?.fileCount).toBe(
+          expectedCount,
+        )
+      }
+    } finally {
+      closeDb(dbPath)
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it.skipIf(process.platform !== 'win32')('counts legacy backslash-stored Windows paths', () => {
+    const db = getDb(dbPath)
+    const root = 'C:\\Project'
+    const file = 'C:\\Project\\src\\a.ts'
+    try {
+      db.prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, NULL)').run(root)
+      const insertFile = db.prepare('INSERT INTO files (path, sha) VALUES (?, ?)')
+      insertFile.run(root, 'exact-root')
+      insertFile.run(file, 'legacy-child')
+
+      expect(countFilesUnderRoot(root, dbPath)).toBe(2)
+      expect(findTopIndexedProjects(dbPath, 10)).toContainEqual({ root: normalizePath(root), fileCount: 2 })
+    } finally {
+      closeDb(dbPath)
+    }
+  })
+
+  it('counts exact roots while preferring outer roots on ties', () => {
+    const db = getDb(dbPath)
+    const outer = normalizePath(path.join(dir, 'outer'))
+    const nested = `${outer}/nested`
+    const exact = normalizePath(path.join(dir, 'exact'))
+    try {
+      const insertRoot = db.prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, NULL)')
+      insertRoot.run(nested)
+      insertRoot.run(outer)
+      insertRoot.run(exact)
+      const insertFile = db.prepare('INSERT INTO files (path, sha) VALUES (?, ?)')
+      insertFile.run(`${nested}/a.ts`, 'nested-a')
+      insertFile.run(`${nested}/b.ts`, 'nested-b')
+      insertFile.run(exact, 'exact-root')
+      insertFile.run(`${exact}/child.ts`, 'exact-child')
+
+      const consumers = findTopIndexedProjects(dbPath, 10)
+      expect(consumers.find((consumer) => consumer.root === exact)?.fileCount).toBe(2)
+      expect(consumers.find((consumer) => consumer.root === outer)?.fileCount).toBe(2)
+      expect(consumers.some((consumer) => consumer.root === nested)).toBe(false)
+    } finally {
+      closeDb(dbPath)
+    }
   })
 
   // Regression: pruneDeletedFiles used to call fs.existsSync(p), which swallows ANY stat error (not just ENOENT -- also EPERM/EBUSY/permission-denied-mid-scan, all documented Node behavior) and returns false. A transient lock (e.g. a Windows AV scanner or search indexer holding the file open at the exact moment prune runs) was therefore indistinguishable from "genuinely deleted", and the tracked file's rows were wiped even though it was still on disk. The fix must confirm real absence (ENOENT) before pruning, and leave a file's rows intact when its existence can't be confirmed for any other reason.
@@ -396,8 +549,11 @@ describe('index_prune', () => {
         throw new Error('simulated crash between deletes')
       })
 
-    expect(() => removeFileFromIndex(db, aKey)).toThrow('simulated crash between deletes')
-    deleteEmbeddingsSpy.mockRestore()
+    try {
+      expect(() => removeFileFromIndex(db, aKey)).toThrow('simulated crash between deletes')
+    } finally {
+      deleteEmbeddingsSpy.mockRestore()
+    }
 
     // Pre-fix (no transaction): deleteFileRows' effect would have persisted despite the throw -- symbols/files rows gone, orphaning the (untested-here) chunks rows nothing else could ever clean up. Post-fix: the whole operation rolls back, so the row survives intact.
     expect(symbolCount(dbPath, aKey)).toBe(1)
@@ -446,6 +602,34 @@ describe('findSystemTempFiles / pruneSystemTempFiles', () => {
     const found = findSystemTempFiles(dbPath)
     expect(found).toContain(tempKey)
     expect(found).not.toContain(realKey)
+  })
+
+  it('queries raw temp aliases without normalizing their prefix', () => {
+    const previousCaseSetting = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '0'
+    const rawTempPrefix = 'Z:/tg-prune-raw-temp-alias'
+    const rawTempFile = `${rawTempPrefix}/scratch.ts`
+    try {
+      expect(normalizePath(rawTempPrefix)).not.toBe(rawTempPrefix)
+      const db = getDb(dbPath)
+      db.prepare('INSERT INTO files (path, sha, embed_sha) VALUES (?, ?, ?)').run(rawTempFile, 'sha123', 'embedsha123')
+      const found = rawPathsUnderRoot(rawTempPrefix, dbPath)
+      expect(found).toContain(rawTempFile)
+
+      if (process.platform === 'win32') {
+        const backslashFile = `${rawTempPrefix.replace(/\//g, '\\')}\\legacy.ts`
+        db.prepare('INSERT INTO files (path, sha, embed_sha) VALUES (?, ?, ?)').run(
+          backslashFile,
+          'sha456',
+          'embedsha456',
+        )
+        expect(rawPathsUnderRoot(rawTempPrefix, dbPath)).toContain(backslashFile)
+      }
+    } finally {
+      if (previousCaseSetting === undefined) delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+      else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = previousCaseSetting
+      closeDb(dbPath)
+    }
   })
 
   it('pruneSystemTempFiles removes indexed rows under system temp and keeps everything else', () => {
@@ -780,9 +964,7 @@ describe('orphaned embedding chunks (files row gone, chunks row left behind)', (
     expect(vectorCount()).toBe(0)
   })
 
-  // The mirror of the case above: the chunk row goes and the vector stays. deleteFileEmbeddings produces this whenever chunk_vectors is unusable (sqlite-vec absent) and purgeDotenvEmbeddings produces it whenever the vector delete throws, both deliberately -- a leaked chunk row is worse than a leaked vector. What made it a defect is that nothing then collected the leftover: every other sweep takes its population from chunks or files rows, which for an orphan are already gone, so only a full rebuild cleared them.
-  //
-  // Provenance: the ORPHAN SHAPE is CAPTURE -- a read-only query against the maintainer's live global.db on 2026-09-22 found 6,685 vectors with no chunks row against 212,089 chunks (3.1%), with rowids spanning both below min(chunks.id) and inside the live id range, so this is an ongoing leak rather than one historical migration. The rows below are HAND-DERIVED to that shape: a chunk and its vector, then the chunk row deleted on its own.
+  // 2026-09-22 read-only global.db capture: 6,685 orphan vectors vs. 212,089 chunks; normal sweeps miss them.
   it.skipIf(!sqliteVecInstalled())('reclaims a vector whose chunk row is already gone, and leaves a live one alone', () => {
     const db = getDb(dbPath)
 

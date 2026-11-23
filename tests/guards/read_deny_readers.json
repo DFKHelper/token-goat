@@ -315,9 +315,9 @@
     "reason": "own state: the index database is opened here and only header bytes are checked"
   },
   "db_integrity.ts": {
-    "reads": 3,
+    "reads": 4,
     "accessors": 0,
-    "reason": "count only: quick_check on the own index database shows its verdict, never content"
+    "reason": "count only: quick_check and bounded smoke probes check the own index database, never content"
   },
   "dep_docs.ts": {
     "reads": 2,

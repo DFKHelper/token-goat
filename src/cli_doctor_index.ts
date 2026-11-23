@@ -15,10 +15,15 @@ import { modelFilesPresent } from './embed_model.js'
 import { isEmbedFresh, oversizeEmbedSha } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { getDb } from './db.js'
-import { isZeroLengthDb, quickCheckDb } from './db_integrity.js'
-import { indexSizeBytes } from './index_reclaim.js'
+import {
+  checkDbIntegrity,
+  isZeroLengthDb,
+  resolveMaxFullScanBytes,
+  type IntegrityCheckResult,
+} from './db_integrity.js'
 import type { DoctorResult } from './doctor_result.js'
 import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { indexSizeBytes } from './index_reclaim.js'
 
 /** Size at which the index DB stops being merely large and starts being a functional problem: write transactions scale with it, and once one outlasts db.ts's 15s `busy_timeout` the failure reaches the user as "database is locked" rather than as anything mentioning size. A healthy index for a large multi-project tree is tens of MB, so exceeding max_db_size_mb (default 1500 MB) is well clear of normal use and still catches the pathology early. */
 export const DB_SIZE_WARN_BYTES = 1500 * 1024 * 1024
@@ -114,17 +119,31 @@ export function oversizeDbMessage(
 }
 
 /** Check if the data directory and database files exist. A missing global.db means no index command has run yet (install does not create it), so the warning names the git-aware index command, like the Symbols row. */
-export function checkDbExists(dataDir: string, maxDbSizeMb?: number, rootDir?: string): DoctorResult {
+export function checkDbExists(
+  dataDir: string,
+  maxDbSizeMb?: number,
+  rootDir?: string,
+  opts?: { fast?: boolean; precheckedIntegrity?: IntegrityCheckResult; maxFullScanBytes?: number },
+): DoctorResult {
   const dbPath = path.join(dataDir, 'global.db')
-  if (!fs.existsSync(dbPath)) {
-    return {
+  const missingDbResult = (): DoctorResult => ({
       name: 'Database',
       status: 'warn',
       message: `global.db not found at ${dbPath}; nothing has been indexed yet, so run ${fencedCommand(suggestedIndexCommand(rootDir ?? process.cwd()))} in a project to create it`,
+    })
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(dbPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return missingDbResult()
+    return {
+      name: 'Database',
+      status: 'warn',
+      message: `global.db at ${dbPath} could not be inspected (${extractErrorMessage(error)}); retry when the file is accessible`,
     }
   }
-  const sizeBytes = indexSizeBytes(dbPath)
-  if (isZeroLengthDb(dbPath)) {
+  const totalBytes = indexSizeBytes(dbPath)
+  if (stat.size === 0 || isZeroLengthDb(dbPath)) {
     return {
       name: 'Database',
       status: 'warn',
@@ -132,8 +151,8 @@ export function checkDbExists(dataDir: string, maxDbSizeMb?: number, rootDir?: s
     }
   }
   const SQLITE_HEADER = 'SQLite format 3\0'
-  let header = ''
-  let headerBytes = Buffer.alloc(0)
+  let header: string
+  let headerBytes: Buffer
   try {
     const fd = fs.openSync(dbPath, 'r')
     try {
@@ -144,30 +163,50 @@ export function checkDbExists(dataDir: string, maxDbSizeMb?: number, rootDir?: s
     } finally {
       fs.closeSync(fd)
     }
-  } catch {
-    // treat an unreadable file as invalid below
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return missingDbResult()
+    return {
+      name: 'Database',
+      status: 'warn',
+      message: `global.db at ${dbPath} could not be read (${extractErrorMessage(error)}); retry when the file is accessible`,
+    }
   }
   if (header !== SQLITE_HEADER) {
     return {
       name: 'Database',
       status: 'fail',
-      message: `global.db at ${dbPath} is not a valid SQLite file (${sizeBytes} bytes) — likely truncated or corrupt; run token-goat doctor --repair to move it aside and rebuild the index`,
+      message: `global.db at ${dbPath} is not a valid SQLite file (${totalBytes} bytes) — likely truncated or corrupt; run token-goat doctor --repair to move it aside and rebuild the index`,
     }
   }
   // A valid header says nothing about the pages behind it: quick_check is what turns a malformed index into a failed row instead of a healthy one whose every other check warns.
-  const integrity = quickCheckDb(dbPath)
-  if (!integrity.ok) {
+  const fullScanCap = resolveMaxFullScanBytes(opts?.maxFullScanBytes)
+  const skipHeavyPageWalk = Boolean(opts?.fast) || totalBytes > fullScanCap
+  const check =
+    opts?.precheckedIntegrity ??
+    checkDbIntegrity(dbPath, {
+      ...(opts?.fast === undefined ? {} : { fast: opts.fast }),
+      sizeBytes: totalBytes,
+      ...(opts?.maxFullScanBytes === undefined ? {} : { maxFullScanBytes: opts.maxFullScanBytes }),
+    })
+  if (!check.ok) {
+    if (!check.corrupt) {
+      return {
+        name: 'Database',
+        status: 'warn',
+        message: `${dbPath} integrity probe could not complete (${check.detail}) — database may be busy; retry when indexing settles`,
+      }
+    }
     return {
       name: 'Database',
       status: 'fail',
-      message: `global.db at ${dbPath} is malformed (${integrity.detail}); run token-goat doctor --repair to move it aside and rebuild the index`,
+      message: `global.db at ${dbPath} is malformed (${check.detail}); run token-goat doctor --repair to move it aside and rebuild the index`,
     }
   }
   // An index that has grown into the gigabytes is not merely a disk-space matter: every reindex transaction scales with it, and once a write outlasts db.ts's 15s busy_timeout the failure presents to the user as an unexplained "database is locked" plus long stalls during `token-goat index`. Surface the size directly, because the symptom points nowhere near the cause. A healthy index is tens of MB; exceeding max_db_size_mb (default 1500 MB) means something is storing far more per symbol than it should.
   const cfg = loadConfig()
   const thresholdMb = maxDbSizeMb ?? cfg.indexing.max_db_size_mb ?? 1500
   const warnBytes = thresholdMb * 1024 * 1024
-  if (sizeBytes > warnBytes) {
+  if (totalBytes > warnBytes) {
     let tempRows = 0
     try {
       tempRows = findSystemTempFiles(dbPath).length
@@ -175,33 +214,38 @@ export function checkDbExists(dataDir: string, maxDbSizeMb?: number, rootDir?: s
       // an unreadable files table only loses this half of the advice
     }
     let categories: CategoryByteShare[] = []
-    try {
-      categories = dbCategoryBreakdown(dbPath)
-    } catch {
-      // measuring the breakdown only loses that half of the message, not the warning itself
+    if (!skipHeavyPageWalk) {
+      try {
+        categories = dbCategoryBreakdown(dbPath)
+      } catch {
+        // measuring the breakdown only loses that half of the message, not the warning itself
+      }
     }
-    // findTopIndexedProjects catches internally and returns [] on an unreadable index, so no wrapper is needed here.
-    const topConsumers = findTopIndexedProjects(dbPath, 3)
+    const topConsumers = opts?.fast ? [] : findTopIndexedProjects(dbPath, 3)
+    const smokeNote =
+      check.mode === 'smoke'
+        ? ` (smoke-checked; full page-by-page quick_check skipped ${opts?.fast ? 'in fast mode' : 'due to size'})`
+        : ''
     return {
       name: 'Database',
       status: 'warn',
-      message: oversizeDbMessage(
+      message: `${oversizeDbMessage(
         dbPath,
-        sizeBytes,
+        totalBytes,
         freelistBytes(headerBytes),
         tempRows,
         categories,
         topConsumers,
         thresholdMb,
         cfg.indexing.auto_reclaim_embeddings,
-      ),
+      )}${smokeNote}`,
     }
   }
   // Name the resolved path even when healthy. The warn branch above already does, and the asymmetry actively misleads: TOKEN_GOAT_HOME and the data dir resolve independently, so exporting both to point at a scratch directory does NOT guarantee a command reads the isolated index. Without the path here, a dogfood run against the real global index is indistinguishable from an isolated one, and "which index am I actually on" is the first question worth answering when a command returns surprising output.
   return {
     name: 'Database',
     status: 'ok',
-    message: `global.db exists (${toKB(sizeBytes)} KB) at ${dbPath}`,
+    message: `global.db exists (${toKB(totalBytes)} KB) at ${dbPath}${check.mode === 'smoke' ? ' (smoke-checked)' : ''}`,
   }
 }
 

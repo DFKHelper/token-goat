@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 
 import { loadConfig } from './config.js'
 import { globalDbPath } from './constants.js'
@@ -7,8 +8,9 @@ import { deleteFileEmbeddings } from './embeddings.js'
 import { indexedFileIsGone } from './fingerprint.js'
 import { isTooShallowToPrune } from './known_roots.js'
 import { deleteFileRows } from './parser.js'
+import { isCaseInsensitiveFs } from './path_containment.js'
 import { isUnderSystemTemp } from './project.js'
-import { pathEqClause } from './sql_path.js'
+import { pathEqClause, projectScopeClause } from './sql_path.js'
 import { foldPath, isUnderBlockedRoot, normalizePath } from './util.js'
 
 type DbHandle = ReturnType<typeof getDb>
@@ -25,26 +27,87 @@ export function removeFileFromIndex(db: DbHandle, filePath: string): void {
 }
 
 
-function foldedBounds(rootPrefix: string): { foldedRootPrefix: string; foldedPrefix: string } {
-  // Normalize before folding: foldPath only lowercases, and a row written from a raw OS path keeps its backslashes while every root arrives forward-slashed, so folding alone never matches the two -- the prefix scan comes back empty and every caller reports a clean nothing-to-do.
-  const normalized = normalizePath(rootPrefix)
+function normalizeRootPrefix(rootPrefix: string, preserveRawPrefix = false): string {
+  const normalized = preserveRawPrefix ? rootPrefix.replace(/\\/g, '/') : normalizePath(rootPrefix)
+  if (normalized === '') return ''
+  const driveRoot = normalized.match(/^([a-z]:)\/+$/i)
+  if (driveRoot?.[1] !== undefined) return `${driveRoot[1]}/`
+  return normalized.replace(/\/+$/, '') || '/'
+}
+
+function foldedBounds(rootPrefix: string, preserveRawPrefix = false): { foldedRootPrefix: string; foldedPrefix: string } {
+  // Normalize regular roots before folding; the temp-path alias probe can retain a raw forward-slashed root when that spelling is also indexed.
+  const normalized = normalizeRootPrefix(rootPrefix, preserveRawPrefix)
   const prefix = normalized.endsWith('/') ? normalized : `${normalized}/`
   return { foldedRootPrefix: foldPath(normalized), foldedPrefix: foldPath(prefix) }
 }
 
-function allIndexedPaths(dbPath: string): string[] {
-  const db = getDb(dbPath)
-  const rows = db.prepare('SELECT DISTINCT path FROM files').all() as Array<{ path: string }>
-  return rows.map((r) => r.path)
+export function projectFileScope(rootPrefix: string, preserveRawPrefix = false): {
+  clause: string
+  root: string
+  forwardBounds: [string, string]
+  legacyRoot?: string
+  legacyBounds?: [string, string]
+} {
+  const root = normalizeRootPrefix(rootPrefix, preserveRawPrefix)
+  const scope = projectScopeClause('path')
+  let clause = `(${scope.clause} OR ${pathEqClause('path')})`
+  let legacyRoot: string | undefined
+  let legacyBounds: [string, string] | undefined
+  if (process.platform === 'win32') {
+    legacyRoot = root.replace(/\//g, '\\').replace(/\\+$/, '')
+    const foldedPrefix = `${legacyRoot}\\`.toLowerCase()
+    legacyBounds = [foldedPrefix, `${foldedPrefix.slice(0, -1)}]`]
+    clause = `(${scope.clause} OR ${pathEqClause('path')} OR (TG_LOWER(path) >= ? AND TG_LOWER(path) < ?) OR ${pathEqClause('path')})`
+  }
+  return {
+    clause,
+    root,
+    forwardBounds: scope.params(root),
+    ...(legacyRoot === undefined || legacyBounds === undefined ? {} : { legacyRoot, legacyBounds }),
+  }
 }
 
 // Every distinct indexed path folded under rootPrefix, WITHOUT filtering by disk existence. Shared by findDeletablePaths and countFilesUnderRoot so both match the same fold/prefix rule.
-function foldedPathsUnderRoot(rootPrefix: string, dbPath: string): string[] {
+function foldedPathsUnderRoot(rootPrefix: string, dbPath: string, preserveRawPrefix = false): string[] {
   const { foldedRootPrefix, foldedPrefix } = foldedBounds(rootPrefix)
-  return allIndexedPaths(dbPath).filter((p) => {
+  const scope = projectFileScope(rootPrefix, preserveRawPrefix)
+  const rows = getDb(dbPath)
+    .prepare(`SELECT path FROM files WHERE ${scope.clause}`)
+    .all(
+      ...scope.forwardBounds,
+      foldPath(scope.root),
+      ...(scope.legacyRoot === undefined || scope.legacyBounds === undefined
+        ? []
+        : [...scope.legacyBounds, foldPath(scope.legacyRoot)]),
+    ) as Array<{ path: string }>
+  return rows.map((row) => row.path).filter((p) => {
     const foldedP = foldPath(normalizePath(p))
     return foldedP === foldedRootPrefix || foldedP.startsWith(foldedPrefix)
   })
+}
+
+/** Query a path prefix exactly as spelled, for temp aliases that normalizePath would otherwise erase. */
+export function rawPathsUnderRoot(rawPrefix: string, dbPath: string): string[] {
+  const rawRoot = rawPrefix.replace(/\/+$/, '') || '/'
+  const caseInsensitive = isCaseInsensitiveFs()
+  const pathColumn = caseInsensitive ? 'TG_LOWER(path)' : 'path'
+  const foldedRoot = foldPath(rawRoot)
+  const forwardLower = foldedRoot.endsWith('/') ? foldedRoot : `${foldedRoot}/`
+  const forwardUpper = `${forwardLower.slice(0, -1)}0`
+  const clauses = [`(${pathColumn} >= ? AND ${pathColumn} < ?)`, `${pathColumn} = ?`]
+  const params = [forwardLower, forwardUpper, foldedRoot]
+  if (process.platform === 'win32') {
+    const backslashRoot = foldPath(rawRoot.replace(/\//g, '\\').replace(/\\+$/, '') || '\\')
+    const backslashLower = backslashRoot.endsWith('\\') ? backslashRoot : `${backslashRoot}\\`
+    const backslashUpper = `${backslashLower.slice(0, -1)}]`
+    clauses.push(`(${pathColumn} >= ? AND ${pathColumn} < ?)`, `${pathColumn} = ?`)
+    params.push(backslashLower, backslashUpper, backslashRoot)
+  }
+  const rows = getDb(dbPath)
+    .prepare(`SELECT path FROM files WHERE (${clauses.join(' OR ')})`)
+    .all(...params) as Array<{ path: string }>
+  return rows.map((row) => row.path)
 }
 
 /** Delete the reconcile resume rows (reconcile_cursor, written by reconcile.ts) of every project at or under `rootPrefix`: the scan row keyed by the project root and the deletion-pass row keyed by the root, a NUL and `deletions`. Both name files of a project that is gone from the index, so a surviving row would hand a later project at that path a resume point into a listing it never made. Matched on the project root part of the key by the same fold and prefix rule as the file rows, so a project that merely contains `rootPrefix` keeps its rows. Returns the rows removed. */
@@ -170,7 +233,14 @@ export function findFilesUnderBlockedRoot(rootPrefix: string, dbPath: string = g
 
 // Scan all indexed files and return the absolute paths that live under the OS system temp directory (see isUnderSystemTemp's docstring), WITHOUT deleting anything. Unlike findDeletablePaths this isn't scoped to a rootPrefix -- system temp is inherently ephemeral, so any indexed row under it is stale regardless of which scratch checkout produced it. Exported so cmdProject's --dry-run can report what would be pruned before committing.
 export function findSystemTempFiles(dbPath: string = globalDbPath()): string[] {
-  return allIndexedPaths(dbPath).filter((p) => isUnderSystemTemp(p))
+  const tempDir = os.tmpdir()
+  const rawTmp = tempDir.replace(/\\/g, '/')
+  const normTmp = normalizePath(tempDir)
+  const candidates = new Set(foldedPathsUnderRoot(tempDir, dbPath))
+  if (normTmp !== rawTmp) {
+    for (const p of rawPathsUnderRoot(rawTmp, dbPath)) candidates.add(p)
+  }
+  return [...candidates].filter((p) => isUnderSystemTemp(p))
 }
 
 // Remove index rows for every indexed file under the OS system temp directory -- the retroactive half of the system-temp pollution fix (the prevention half gates hooks_edit.ts's dirty-queue enqueue). Returns the pruned paths.
@@ -421,16 +491,22 @@ export function findTopIndexedProjects(dbPath: string = globalDbPath(), limit = 
       const lower = foldPath(norm)
       if (!seen.has(lower)) seen.set(lower, norm)
     }
+    const countByRoot = db.prepare(`SELECT count(*) as c FROM files WHERE ${projectFileScope('').clause}`)
     const results: ProjectIndexConsumer[] = []
     for (const root of seen.values()) {
+      const scope = projectFileScope(root)
       const count = (
-        db.prepare("SELECT count(*) as c FROM files WHERE path LIKE ? || '/%' OR path = ?").get(root, root) as {
-          c: number
-        }
+        countByRoot.get(
+          ...scope.forwardBounds,
+          foldPath(scope.root),
+          ...(scope.legacyRoot === undefined || scope.legacyBounds === undefined
+            ? []
+            : [...scope.legacyBounds, foldPath(scope.legacyRoot)]),
+        ) as { c: number }
       ).c
       if (count > 0) results.push({ root, fileCount: count })
     }
-    results.sort((a, b) => b.fileCount - a.fileCount)
+    results.sort((a, b) => b.fileCount - a.fileCount || a.root.length - b.root.length)
     // A root nested inside another indexed root is the same tree counted twice; keep the outer one, which already holds the inner files.
     const unique: ProjectIndexConsumer[] = []
     for (const res of results) {

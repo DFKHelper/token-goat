@@ -58,6 +58,7 @@ function checkoutWhereLockChanged(): string {
   fs.copyFileSync(path.join(path.dirname(SCRIPT), 'atomic-write.mjs'), path.join(root, 'scripts', 'atomic-write.mjs'))
   fs.copyFileSync(path.join(path.dirname(SCRIPT), 'dependabot-body.mjs'), path.join(root, 'scripts', 'dependabot-body.mjs'))
   fs.copyFileSync(path.join(path.dirname(SCRIPT), 'git-executable.mjs'), path.join(root, 'scripts', 'git-executable.mjs'))
+  fs.copyFileSync(path.join(path.dirname(SCRIPT), 'is-main-module.mjs'), path.join(root, 'scripts', 'is-main-module.mjs'))
   fs.writeFileSync(path.join(root, 'build.mjs'), STUB_BUILD)
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'stub', private: true, scripts: { build: 'node build.mjs' } }))
   git(root, ['add', '.'])

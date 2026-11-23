@@ -694,7 +694,9 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
   if (opts.json === true) {
     // --json bypasses printDoctorResults' prose entirely (no `[WARN]`-prefixed lines) and emits the same DoctorResult[] runDoctorChecks() computes, one entry per check with its ok/warn/fail status -- matching cmdCommands'/cmdBridgesStatus' plain JSON.stringify convention (no envelope) rather than inventing a new shape.
     const processes = doctorOpts.fast === true ? [] : undefined
-    const results = await runDoctorChecks(doctorOpts.dataDir, doctorOpts.configPath, doctorOpts.rootDir, processes)
+    const results = await runDoctorChecks(doctorOpts.dataDir, doctorOpts.configPath, doctorOpts.rootDir, processes, {
+      fast: Boolean(opts.fast),
+    })
     out(displaySafeJson(results, 0))
     if (results.some((r) => r.status === 'fail')) {
       throw new CliError('doctor checks failed')

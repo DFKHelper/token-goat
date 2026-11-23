@@ -5,11 +5,18 @@ import * as path from 'node:path'
 
 import { autoReclaimRow, runDoctorRepair } from '../src/cli_doctor.js'
 import { checkDbExists, oversizeDbMessage } from '../src/cli_doctor_index.js'
-import { getDb } from '../src/db.js'
+import * as indexReclaimModule from '../src/index_reclaim.js'
+import { closeAllDbs, getDb } from '../src/db.js'
 import { reclaimIndex, indexSizeBytes, reclaimNotes, type ReclaimResult } from '../src/index_reclaim.js'
+import { checkDbIntegrity, MAX_FULL_SCAN_BYTES } from '../src/db_integrity.js'
 import { invalidateConfigCache } from '../src/config.js'
+import { indexFileSync } from '../src/parser.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 import { writeRealDb } from './helpers/real-db.js'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('doctor index size threshold and auto-reclaim', () => {
   let tmpHome: string
@@ -18,6 +25,7 @@ describe('doctor index size threshold and auto-reclaim', () => {
   beforeEach(() => {
     prevHome = process.env['TOKEN_GOAT_HOME']
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-doctor-thresh-'))
+    vi.spyOn(process, 'cwd').mockReturnValue(tmpHome)
     process.env['TOKEN_GOAT_HOME'] = tmpHome
     // runDoctorRepair also checks the instruction gate in the user-level files and the project root, and writes the project when none is gated: keep both inside the scratch dir, never the real home or the checkout the suite runs from.
     vi.stubEnv('HOME', tmpHome)
@@ -31,7 +39,9 @@ describe('doctor index size threshold and auto-reclaim', () => {
 
   afterEach(() => {
     clearUpdateCheck()
+    vi.restoreAllMocks()
     vi.unstubAllEnvs()
+    closeAllDbs()
     if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
     else process.env['TOKEN_GOAT_HOME'] = prevHome
     invalidateConfigCache()
@@ -71,6 +81,121 @@ describe('doctor index size threshold and auto-reclaim', () => {
     const okResult = checkDbExists(tmpHome, 5)
     expect(okResult.status).toBe('ok')
     expect(okResult.message).toContain('global.db exists')
+  })
+
+  it('skips page-walk diagnostics for fast and over-cap indexes, while keeping size and freelist advice', () => {
+    const dbPath = path.join(tmpHome, 'global.db')
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?, ?, ?, ?)').run(
+      'large.ts',
+      1,
+      10,
+      'x'.repeat(2 * 1024 * 1024),
+    )
+    closeAllDbs()
+
+    const fast = checkDbExists(tmpHome, 1, undefined, { fast: true })
+    expect(fast.status).toBe('warn')
+    expect(fast.message).toContain('global.db is')
+    expect(fast.message).toMatch(/MB of it is free pages|returns the \d+ MB of it that is free pages/)
+    expect(fast.message).not.toContain('Where it went:')
+
+    const overCap = checkDbExists(tmpHome, 1, undefined, { maxFullScanBytes: 1 })
+    expect(overCap.status).toBe('warn')
+    expect(overCap.message).not.toContain('Where it went:')
+    expect(overCap.message).toContain('smoke-checked')
+    expect(overCap.message).toContain('full page-by-page quick_check skipped due to size')
+
+    const full = checkDbExists(tmpHome, 1)
+    expect(full.message).toContain('Where it went:')
+  })
+
+  it('reports temp-dir scratch in fast size warnings without page-walk or top-project scans', () => {
+    const dbPath = path.join(tmpHome, 'global.db')
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?, ?, ?, ?)').run(
+      'large.ts',
+      1,
+      10,
+      'x'.repeat(2 * 1024 * 1024),
+    )
+    const tempFile = path.join(tmpHome, 'scratch.ts')
+    fs.writeFileSync(tempFile, 'export const scratch = 1\n')
+    indexFileSync(tempFile, dbPath)
+
+    const prepareSpy = vi.spyOn(db, 'prepare')
+    const fast = checkDbExists(tmpHome, 1, undefined, { fast: true })
+    const queries = prepareSpy.mock.calls.map(([sql]) => String(sql))
+
+    expect(fast.status).toBe('warn')
+    expect(fast.message).toContain('`token-goat project prune` removes 1 scratch file indexed under the OS temp dir')
+    expect(fast.message).not.toContain('none of it is temp-dir scratch')
+    expect(queries.some((sql) => sql.includes('dbstat'))).toBe(false)
+    expect(queries.some((sql) => sql.includes('known_roots'))).toBe(false)
+  })
+
+  it('marks healthy fast smoke checks in the existing size-and-path message', () => {
+    const dbPath = path.join(tmpHome, 'global.db')
+    writeRealDb(dbPath, 2048)
+
+    const result = checkDbExists(tmpHome, 5, undefined, { fast: true })
+
+    expect(result.status).toBe('ok')
+    expect(result.message).toContain('global.db exists (')
+    expect(result.message).toContain(`at ${dbPath} (smoke-checked)`)
+  })
+
+  it('counts WAL bytes for size warnings and full-scan decisions', async () => {
+    const dbPath = path.join(tmpHome, 'global.db')
+    const db = getDb(dbPath)
+    db.pragma('wal_autocheckpoint = 0')
+    db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?, ?, ?, ?)').run(
+      'large.ts',
+      1,
+      10,
+      'x'.repeat(2 * 1024 * 1024),
+    )
+    const mainBytes = fs.statSync(dbPath).size
+    const walBytes = fs.statSync(`${dbPath}-wal`).size
+    const totalBytes = indexSizeBytes(dbPath)
+    expect(mainBytes).toBeLessThan(1024 * 1024)
+    expect(walBytes).toBeGreaterThan(0)
+    expect(totalBytes).toBeGreaterThan(1024 * 1024)
+
+    const warning = checkDbExists(tmpHome, 1, undefined, { maxFullScanBytes: totalBytes - 1 })
+    expect(warning.status).toBe('warn')
+    expect(warning.message).toContain(`global.db is ${Math.round(totalBytes / (1024 * 1024))} MB`)
+    expect(warning.message).toContain('smoke-checked')
+    expect(warning.message).not.toContain('Where it went:')
+
+    vi.stubEnv('TOKEN_GOAT_EMBEDDINGS_ENABLED', '0')
+    invalidateConfigCache()
+    const projectRoot = path.join(tmpHome, 'project')
+    fs.mkdirSync(projectRoot)
+    const repair = await runDoctorRepair({ dataDir: tmpHome, rootDir: projectRoot, maxFullScanBytes: totalBytes - 1 })
+    expect(repair.checkedIntegrity).toEqual({ ok: true, mode: 'smoke' })
+  })
+
+  it('uses the default full-scan cap for invalid overrides', () => {
+    const dbPath = path.join(tmpHome, 'global.db')
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?, ?, ?, ?)').run(
+      'large.ts',
+      1,
+      10,
+      'x'.repeat(2 * 1024 * 1024),
+    )
+    closeAllDbs()
+
+    expect(checkDbExists(tmpHome, 1, undefined, { maxFullScanBytes: -1 }).message).toContain('Where it went:')
+    expect(checkDbIntegrity(dbPath, { sizeBytes: 1, maxFullScanBytes: -1 }).mode).toBe('full')
+    expect(checkDbIntegrity(dbPath, { sizeBytes: MAX_FULL_SCAN_BYTES + 1, maxFullScanBytes: Number.NaN }).mode).toBe(
+      'smoke',
+    )
+    expect(
+      checkDbIntegrity(dbPath, { sizeBytes: MAX_FULL_SCAN_BYTES + 1, maxFullScanBytes: Number.POSITIVE_INFINITY })
+        .mode,
+    ).toBe('smoke')
   })
 
   it('reclaimIndex with embeddingsOnly drops chunk_vectors and chunks while preserving symbols', () => {
@@ -139,6 +264,32 @@ describe('doctor index size threshold and auto-reclaim', () => {
 
     const chunkCount = (db.prepare('SELECT count(*) as c FROM chunks').get() as { c: number }).c
     expect(chunkCount).toBe(0)
+  })
+
+  it('skips automatic embedding reclaim in fast repair mode', async () => {
+    vi.stubEnv('TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS', 'true')
+    vi.stubEnv('TOKEN_GOAT_INDEXING_MAX_DB_SIZE_MB', '1')
+    invalidateConfigCache()
+
+    const dbPath = path.join(tmpHome, 'global.db')
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?, ?, ?, ?)').run(
+      'src/huge.ts',
+      1,
+      100,
+      'x'.repeat(1200 * 1024),
+    )
+    closeAllDbs()
+    const project = path.join(tmpHome, 'project-fast')
+    fs.mkdirSync(project)
+    const reclaimSpy = vi.spyOn(indexReclaimModule, 'reclaimIndex')
+    try {
+      const repairRes = await runDoctorRepair({ dataDir: tmpHome, rootDir: project, fast: true })
+      expect(reclaimSpy).not.toHaveBeenCalled()
+      expect(repairRes.checkedIntegrity).toEqual({ ok: true, mode: 'smoke' })
+    } finally {
+      reclaimSpy.mockRestore()
+    }
   })
 })
 

@@ -20,7 +20,14 @@ import { downloadAdvice, runtimeDownloadAdvice } from './embed_preflight.js'
 import { withExplicitDownload } from './model_download_gate.js'
 import { activeRuntime, ensureWasmBinary, wasmBinaryPresent } from './embed_runtime.js'
 import { cleanupDeprecatedVscodeProjectMcp } from './bridges/vscode_install.js'
-import { hasSqliteHeader, isZeroLengthDb, quarantineMalformedDb, quickCheckDb, recreateDb } from './db_integrity.js'
+import {
+  checkDbIntegrity,
+  hasSqliteHeader,
+  isSqliteCorruptionError,
+  quarantineMalformedDb,
+  recreateDb,
+  type IntegrityCheckResult,
+} from './db_integrity.js'
 import { checkParserFreshness } from './cli_doctor_index.js'
 import { comparableSizes, indexSizeBytes, mb, reclaimIndex, reclaimNotes, type ReclaimResult } from './index_reclaim.js'
 import { repairInstructionGates } from './cli_doctor_guidance.js'
@@ -29,6 +36,7 @@ export interface DoctorRepairResult {
   readonly repairs: string[]
   readonly errors: string[]
   readonly notices: string[]
+  readonly checkedIntegrity?: IntegrityCheckResult
 }
 
 /** The repair row for an automatic embeddings reclaim. The figure is the one `reclaim-index` prints (comparableSizes), so a reader-blocked checkpoint that left the DB+WAL total larger reads as no space released instead of a saving. "compacted" is said only when VACUUM ran and the checkpoint was not blocked, and the VACUUM-skipped and checkpoint-busy notes are the ones `reclaim-index` prints. */
@@ -54,6 +62,8 @@ export async function runDoctorRepair(opts?: {
   dataDir?: string | undefined
   configPath?: string | undefined
   rootDir?: string | undefined
+  fast?: boolean | undefined
+  maxFullScanBytes?: number | undefined
 }): Promise<DoctorRepairResult> {
   const repairs: string[] = []
   const errors: string[] = []
@@ -153,26 +163,80 @@ export async function runDoctorRepair(opts?: {
     errors.push(`Failed to clean up ${displaySafeText(projectMcp)}: ${extractErrorMessage(e)}`)
   }
 
-  // 5. Auto-reclaim embeddings if database exceeds max_db_size_mb and auto_reclaim_embeddings is enabled
+  // 5. Check the database before any repair can write to it.
   const actualDataDir = opts?.dataDir ?? defaultDataDir()
   const dbPath = path.join(actualDataDir, 'global.db')
-  if (cfg.indexing.auto_reclaim_embeddings && fs.existsSync(dbPath)) {
+  let rebuiltDb = false
+  let malformedDb = false
+  let checkedIntegrity: IntegrityCheckResult | undefined
+  let dbSize: number | undefined
+  try {
+    dbSize = fs.statSync(dbPath).size
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      errors.push(`Could not inspect global.db at ${displaySafeText(dbPath)}: ${extractErrorMessage(e)}; left it untouched`)
+    }
+  }
+  if (dbSize !== undefined && dbSize > 0) {
+    let headerReadFailed = false
+    let headerError: unknown
+    const validHeader = hasSqliteHeader(dbPath, (error) => {
+      headerReadFailed = true
+      headerError = error
+    })
+    if (headerReadFailed) {
+      if ((headerError as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        errors.push(
+          `Could not read global.db at ${displaySafeText(dbPath)}: ${extractErrorMessage(headerError)}; left it untouched`,
+        )
+      }
+    } else if (validHeader) {
+      const totalBytes = indexSizeBytes(dbPath)
+      const check = checkDbIntegrity(dbPath, {
+        ...(opts?.fast === undefined ? {} : { fast: opts.fast }),
+        sizeBytes: totalBytes,
+        ...(opts?.maxFullScanBytes === undefined ? {} : { maxFullScanBytes: opts.maxFullScanBytes }),
+      })
+      if (check.ok) checkedIntegrity = check
+      else if (check.corrupt) malformedDb = true
+      else {
+        checkedIntegrity = check
+        errors.push(`Database integrity probe could not complete (${check.detail}) — left ${dbPath} untouched`)
+      }
+    } else {
+      malformedDb = true
+    }
+  }
+
+  // 5b. Auto-reclaim embeddings only after integrity passes, since reclaim-index writes and vacuums the database.
+  if (
+    cfg.indexing.auto_reclaim_embeddings &&
+    fs.existsSync(dbPath) &&
+    !opts?.fast &&
+    !malformedDb &&
+    checkedIntegrity?.ok === true
+  ) {
     try {
       const sizeBytes = indexSizeBytes(dbPath)
       const thresholdMb = cfg.indexing.max_db_size_mb ?? 1500
       const maxBytes = thresholdMb * 1024 * 1024
       if (sizeBytes > maxBytes) {
+        checkedIntegrity = undefined
         const res = reclaimIndex(dbPath, { embeddingsOnly: true })
         repairs.push(autoReclaimRow(res))
       }
     } catch (e) {
-      errors.push(`Failed to auto-reclaim embeddings from global.db: ${extractErrorMessage(e)}`)
+      if (isSqliteCorruptionError(e)) {
+        malformedDb = true
+        checkedIntegrity = undefined
+      } else {
+        errors.push(`Failed to auto-reclaim embeddings from global.db: ${extractErrorMessage(e)}; database was not quarantined`)
+      }
     }
   }
 
-  // 5b. A database whose pages are malformed, or a file with no SQLite header at all (truncated, or written over), fails the Database check; move it aside (never deleted) and start a fresh one for the index to refill.
-  let rebuiltDb = false
-  if (fs.existsSync(dbPath) && !isZeroLengthDb(dbPath) && (!hasSqliteHeader(dbPath) || !quickCheckDb(dbPath).ok)) {
+  if (malformedDb) {
+    checkedIntegrity = undefined
     const quarantined = quarantineMalformedDb(dbPath, actualDataDir)
     if (quarantined.status === 'quarantined') {
       try {
@@ -228,5 +292,5 @@ export async function runDoctorRepair(opts?: {
     errors.push(`Upgrade check failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 
-  return { repairs, errors, notices }
+  return { repairs, errors, notices, ...(checkedIntegrity === undefined ? {} : { checkedIntegrity }) }
 }
