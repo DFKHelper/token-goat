@@ -298,9 +298,20 @@ function removeWhenReleased(root: string): void {
   }
 }
 
+/** Ends every tree the fixtures started and deletes their roots; the sweep lists the process table on every row. */
 export function cleanupTrees(): void {
+  endTrees('always')
+}
+
+/** `cleanupTrees` for a describe whose rows start only through spawnSync: the process-table sweep runs only for a row that recorded a pid. */
+export function cleanupTreesWhenRecorded(): void {
+  endTrees('when-recorded')
+}
+
+function endTrees(sweep: 'always' | 'when-recorded'): void {
   // Every phase runs whatever an earlier one threw (a pid whose line cannot be read, a failed listing, a locked directory), so a failure to end one tree never leaves the others running; the failures are then raised together.
   const failures: unknown[] = []
+  let startedAny = false
   const attempt = (phase: () => void): void => {
     try { phase() } catch (error) { failures.push(error) }
   }
@@ -319,7 +330,9 @@ export function cleanupTrees(): void {
   })
   attempt(() => {
     const victims = new Map<number, string>()
-    const recorded = ownedPids.splice(0).reverse().filter(alive)
+    const claimed = ownedPids.splice(0).reverse()
+    startedAny = claimed.length > 0
+    const recorded = claimed.filter(alive)
     // The tree walk needs the table only while a recorded pid is still alive: a row that started nothing, or whose helpers have all exited, has no tree to walk.
     const table = recorded.length === 0 ? new Map<number, { ppid: number; args: string }>() : listProcesses()
     const walk = (pid: number): void => {
@@ -330,8 +343,9 @@ export function cleanupTrees(): void {
     for (const pid of recorded) walk(pid)
     killAndVerify(victims)
   })
-  // Sweep what the fixture started that no recorded pid reaches, such as an owner that outlived its dead parent.
+  // Sweeps strays no recorded pid reaches. A 'when-recorded' row with no pid skips it: a listing costs ~1 s here.
   attempt(() => {
+    if (sweep === 'when-recorded' && !startedAny) return
     const roots = ownedRoots.map((root) => root.toLowerCase().replaceAll('/', '\\'))
     const strays = new Map<number, string>()
     for (const [pid, entry] of listProcesses()) {

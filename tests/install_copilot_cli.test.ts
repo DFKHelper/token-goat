@@ -33,7 +33,7 @@ import {
 } from '../src/bridges/copilot_cli_install.js'
 import { writeInProcessFake } from './helpers/copilot_inprocess_fake.js'
 import { runNodeAsync } from './helpers/copilot_shim_run.js'
-import { assertOwedDeliveredOnce, assertTreeDead, cleanupTrees, DEADLINE_FAIL_OPEN, installStartupOwner, ownedRoots, premiseBranch, runTreeShim, treeFixture } from './helpers/copilot_session_start_tree.js'
+import { assertOwedDeliveredOnce, assertTreeDead, cleanupTreesWhenRecorded, DEADLINE_FAIL_OPEN, installStartupOwner, ownedRoots, premiseBranch, runTreeShim, treeFixture } from './helpers/copilot_session_start_tree.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MAX_MS } from '../src/bridges/shim_common.js'
 import { VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END } from '../src/bridges/visualstudio_install.js'
@@ -783,7 +783,7 @@ function writeFakeEntry(cwd: string): { entryPath: string; capturePath: string }
 }
 
 describe('COPILOT_CLI_HOOK_SCRIPT', () => {
-  afterEach(cleanupTrees, 0)
+  afterEach(cleanupTreesWhenRecorded, 0)
 
   it("invokes the baked entry path (argv[3]) directly via process.execPath, bypassing PATH resolution entirely, when the shim receives one", () => {
     const cwd = mkIsolated()
