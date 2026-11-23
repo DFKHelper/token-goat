@@ -506,12 +506,18 @@ mod tests {
             panic!("the child never recorded its pid");
         };
         assert_eq!(pid, child.id(), "the recorded pid is the child's");
+        // The waiter reaps the child when it exits; process_is_gone alone counts an unreaped zombie as alive.
+        let (exited, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = exited.send(child.wait());
+        });
         drop(reap);
-        let gone = poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some();
-        // Whatever the guard did, this test ends its own child.
-        let _ = child.kill();
-        let _ = child.wait();
-        assert!(gone, "the guard left pid {pid} of the hung child running");
+        let ended = ended.recv_timeout(BACKSTOP);
+        // Whatever the guard did, this test ends its own child, so the waiter returns.
+        if ended.is_err() {
+            kill_pid(pid);
+        }
+        assert!(matches!(&ended, Ok(Ok(status)) if !status.success()), "the guard left pid {pid} of the hung child running");
     }
 
     /// Whether no process, not even an unreaped zombie, answers to `pid`.

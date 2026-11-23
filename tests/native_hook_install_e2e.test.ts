@@ -749,8 +749,8 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
   it('writes the Node form when the binary this build ships fails its self-test, and restores the native form when it passes again', () => {
     const { sb, packaged, good, row, expectOk, wiredBin, bin } = wiredSandbox()
     replace(packaged, FAILING_BINARY)
-    // An install never replaces a stamped copy with an unstamped client, so the machine starts without a copy.
-    fs.rmSync(bin, { force: true })
+    // An install never replaces a stamped copy with an unstamped client, so the machine starts without a copy. On POSIX the wired binary is the packaged one replaced above, so there is no copy to remove.
+    if (WIN) fs.rmSync(bin, { force: true })
     const printed = install(sb, ['--codex'])
     expect(wiredBin(), `install printed: ${printed}`).toBeUndefined()
     const failing = row()
@@ -773,9 +773,9 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
       expect(absent.message).toContain(`, but this build ships no native hook client for ${TARGET}; run \`${run}\` to switch to the Node form`)
       expect(absent.message).not.toContain('self-test passed')
     } else {
-      // The entries ran the packaged binary itself, which has gone with it.
-      expect(absent.status, absent.message).toBe('fail')
-      expect(absent.message).toContain('which no longer exists')
+      // The entries are the guarded form, so with the packaged binary gone they fall back to the Node shim and doctor warns rather than fails.
+      expect(absent.status, absent.message).toBe('warn')
+      expect(absent.message).toContain(`the native hook client at ${packaged} no longer exists; the guarded hook entries fall back to the Node shim meanwhile`)
     }
     install(sb, ['--codex'])
     expect(wiredBin()).toBeUndefined()
