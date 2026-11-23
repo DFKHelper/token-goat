@@ -7,7 +7,7 @@ import { HookSelftestError, setHookSelftestRunnerForTesting } from '../src/hook_
 
 import type * as NodeOs from 'node:os'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.copilot/` (mirrors the pattern in install_codex.test.ts / install_pi.test.ts).
 vi.mock('node:os', async (importOriginal) => {
@@ -33,7 +33,7 @@ import {
 } from '../src/bridges/copilot_cli_install.js'
 import { writeInProcessFake } from './helpers/copilot_inprocess_fake.js'
 import { runNodeAsync } from './helpers/copilot_shim_run.js'
-import { assertOwedDeliveredOnce, assertTreeDead, cleanupTreesWhenRecorded, DEADLINE_FAIL_OPEN, installStartupOwner, ownedRoots, premiseBranch, runTreeShim, treeFixture } from './helpers/copilot_session_start_tree.js'
+import { assertOwedDeliveredOnce, assertTreeDead, cleanupTrees, cleanupTreesWhenRecorded, DEADLINE_FAIL_OPEN, installStartupOwner, ownedRoots, premiseBranch, runTreeShim, treeFixture } from './helpers/copilot_session_start_tree.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MAX_MS } from '../src/bridges/shim_common.js'
 import { VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END } from '../src/bridges/visualstudio_install.js'
@@ -784,6 +784,8 @@ function writeFakeEntry(cwd: string): { entryPath: string; capturePath: string }
 
 describe('COPILOT_CLI_HOOK_SCRIPT', () => {
   afterEach(cleanupTreesWhenRecorded, 0)
+  // Ruling 98: the full stray sweep runs once after this describe's rows, so a stray with no recorded pid ends with the file.
+  afterAll(cleanupTrees, 0)
 
   it("invokes the baked entry path (argv[3]) directly via process.execPath, bypassing PATH resolution entirely, when the shim receives one", () => {
     const cwd = mkIsolated()
@@ -944,13 +946,13 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.permissionDecisionReason).toBe('already read this session')
   })
 
-  // HAND-DERIVED: the hook is made slower than the 3000 ms the shim used to allow it by spinning 4.5 s before it answers, so the outcome cannot depend on how fast the machine is; a faster machine changes nothing and a slower one only adds time.
+  // HAND-DERIVED: the hook holds 3.5 s, past the 3000 ms the shim used to allow it, before it answers; the hold sleeps in Atomics.wait instead of spinning a CPU. The clock is still the only signal (no shim event marks its cap), so this stays a clock wait.
   it('waits for a hook that takes longer than the old 3 s cap and relays its deny, instead of answering an empty allow', () => {
     const cwd = mkIsolated()
     const entryPath = path.join(cwd, 'slow-entry.js')
     fs.writeFileSync(
       entryPath,
-      `const until = Date.now() + 4500\nwhile (Date.now() < until) { /* hold the hook open */ }\nprocess.stdout.write(JSON.stringify({ decision: 'block', reason: 'slow but decided' }))\n`,
+      `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3500)\nprocess.stdout.write(JSON.stringify({ decision: 'block', reason: 'slow but decided' }))\n`,
       'utf8',
     )
     const scriptPath = path.join(cwd, 'shim.js')
