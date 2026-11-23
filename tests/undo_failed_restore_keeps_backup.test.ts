@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createdBackupsFor, undoCreatedOnFailure } from '../src/bridges/created_configs.js'
 import { atomicWriteBytes, backupFile } from '../src/util.js'
+import { canonicalPath, textNamesPath } from './helpers/canonical_path.js'
 
 let TMP: string
 
@@ -53,15 +54,15 @@ describe('a failed install whose restore of one file fails', () => {
     }
     const kept = fs.readdirSync(TMP).filter((f) => f.startsWith('a.json.bak.')).map((f) => path.join(TMP, f))
     expect(kept.length, 'backup still exists').toBe(1)
-    const same = (list: string[]): string[] => list.map((p) => fs.realpathSync.native(path.resolve(p)).toLowerCase())
+    const same = (list: string[]): string[] => list.map(canonicalPath)
     expect(same(createdBackupsFor(a)), 'the ledger still names it').toEqual(same(kept))
     expect(fs.readFileSync(kept[0]!, 'utf8'), 'the backup holds the earlier bytes').toBe(EARLIER)
-    expect(reported, 'the error names the file').toContain(a)
-    expect(reported.toLowerCase(), 'the error names the backup').toContain(kept[0]!.toLowerCase())
+    expect(textNamesPath(reported, a), `the error names the file: ${reported}`).toBe(true)
+    expect(textNamesPath(reported, kept[0]!), `the error names the backup: ${reported}`).toBe(true)
     expect(reported, 'the error still carries the install failure').toContain('the probe failed')
     expect(fs.readFileSync(b, 'utf8'), 'the second file was restored').toBe(EARLIER)
     expect(createdBackupsFor(b), 'the restored file has no backup of this install left').toEqual([])
-    expect(reported, 'a restored file is not reported').not.toContain(b)
+    expect(textNamesPath(reported, b), 'a restored file is not reported').toBe(false)
   })
 
   it('removes the backups of every file when each restore is confirmed', () => {

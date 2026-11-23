@@ -328,7 +328,7 @@ function atomicWriteCore(requested: string, content: string | Uint8Array): void 
   // Write through a symlinked destination (a dotfiles setup) so the link survives: renaming the temp file over the link itself would replace the link with a regular file and leave its target untouched. Scope is checked again on the real file, so a project-scope link is followed only where it stays inside the project.
   const dest = resolveSymlinkChain(requested)
   if (dest !== requested) assertWriteInScope(dest)
-  // A link left unfollowed is another user's (a planted link is the threat); a rename would replace it.
+  // A link still standing here is another user's, which resolveSymlinkChain does not follow (a planted link is the threat); writing through it lands in the victim's file and a rename would replace it, so the write is refused.
   if (lstatSync(dest, { throwIfNoEntry: false })?.isSymbolicLink()) {
     const why = 'a symbolic link owned by another user, which is neither followed nor replaced'
     throw Object.assign(

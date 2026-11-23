@@ -121,7 +121,8 @@ describe('a failed and-chain blames a check only when the check ends it', () => 
 
 let work = ''
 beforeAll(() => {
-  work = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fx24-')).split(path.sep).join('/')
+  // The OS spelling, not os.tmpdir()'s: a Windows runner's temp dir is a RUNNER~1 short name, and enteredDirectory treats any `~` in a cd target as an expansion it cannot resolve, so the absolute-target row would see no directory.
+  work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fx24-'))).split(path.sep).join('/')
   fs.mkdirSync(path.join(work, 'pkg', 'sub'), { recursive: true })
 })
 afterAll(() => {

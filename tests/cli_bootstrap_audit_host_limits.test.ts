@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { buildBootstrapAudit, runBootstrapAudit } from '../src/cli_bootstrap_audit.js'
 import { MAX_OLD_FILE_BYTES_FOR_DIFF } from '../src/write_target.js'
+import { samePath, textNamesPath } from './helpers/canonical_path.js'
 
 // Every readFileSync the audit makes is recorded, and a path listed in refuseReads throws instead of being read, so a FIFO row proves the audit never reached for it without a real read that would hang the worker thread. The wrapper otherwise delegates.
 const readPaths = vi.hoisted(() => [] as string[])
@@ -131,11 +132,11 @@ describe('bootstrap-audit host limits: Codex AGENTS.md', () => {
     const result = await buildBootstrapAudit({ project: scratch.project, home: scratch.home })
     const finding = findingFor(result, 'AGENTS.md', 'codex')
     expect(result.host_limits.codex).toMatchObject({ budget_bytes: 300, budget_source: 'project config' })
-    // The audit may spell the scratch path differently from os.tmpdir() (drive letter case, a Windows 8.3 RUNNER~1 name, macOS /private/var), so both sides go through the OS and are folded.
-    expect(fs.realpathSync.native(result.host_limits.codex.config_path).toLowerCase()).toBe(fs.realpathSync.native(projectConfig).toLowerCase())
+    // The audit may spell the scratch path differently from os.tmpdir() (drive letter case, a Windows 8.3 RUNNER~1 name, macOS /private/var), so every comparison goes through canonical_path.
+    expect(samePath(result.host_limits.codex.config_path, projectConfig), `the audit named ${result.host_limits.codex.config_path}`).toBe(true)
     expect(finding.outcome).toBe('cut')
     expect(finding.not_loaded_bytes).toBe(200)
-    expect(finding.advice?.toLowerCase()).toContain(projectConfig.toLowerCase())
+    expect(textNamesPath(finding.advice ?? '', projectConfig), `the advice was ${finding.advice}`).toBe(true)
   })
 
   // FORMAT-DERIVED: the layer list in https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/config/src/loader/mod.rs (lines 125-135, read 2026-10-19) puts `user` before `repo`, and the file's comment at line 109 says layers are collected in ascending precedence order, so the project value wins and an unset project key falls through to the user's.
@@ -270,8 +271,14 @@ describe('bootstrap-audit host limits: the Codex config read is bounded', () => 
   const BUDGET_300 = 'project_doc_max_bytes = 300\n'
   const projectConfigPath = (): string => path.join(scratch.project, '.codex', 'config.toml')
   const userConfigPath = (): string => path.join(scratch.codexHome, 'config.toml')
-  const reasonFor = (result: Awaited<ReturnType<typeof buildBootstrapAudit>>, file: string): string | undefined =>
-    result.host_limits.diagnostics.find((d) => d.path.toLowerCase() === file.toLowerCase())?.reason
+  const reasonFor = (result: Awaited<ReturnType<typeof buildBootstrapAudit>>, file: string): string => {
+    const found = result.host_limits.diagnostics.find((d) => samePath(d.path, file))
+    if (found === undefined) {
+      throw new Error(`no diagnostic for ${file}; the audit reported ${JSON.stringify(result.host_limits.diagnostics.map((d) => d.path))}`)
+    }
+    return found.reason
+  }
+  const wasRead = (file: string): boolean => readPaths.some((p) => samePath(p, file))
 
   const canSymlink = ((): boolean => {
     const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-hostlimits-link-'))
@@ -294,7 +301,7 @@ describe('bootstrap-audit host limits: the Codex config read is bounded', () => 
     expect(made.status, made.stderr).toBe(0)
     refuseReads.add(file)
     const result = await buildBootstrapAudit({ project: scratch.project, home: scratch.home })
-    expect(readPaths).not.toContain(file)
+    expect(wasRead(file), 'the audit read the FIFO').toBe(false)
     expect(reasonFor(result, file)).toContain('not a regular file')
     expect(result.host_limits.codex.budget_source).toBe('default')
   })
@@ -304,8 +311,8 @@ describe('bootstrap-audit host limits: the Codex config read is bounded', () => 
     fs.mkdirSync(projectConfigPath(), { recursive: true })
     fs.mkdirSync(userConfigPath(), { recursive: true })
     const result = await buildBootstrapAudit({ project: scratch.project, home: scratch.home })
-    expect(readPaths).not.toContain(projectConfigPath())
-    expect(readPaths).not.toContain(userConfigPath())
+    expect(wasRead(projectConfigPath()), 'the audit read the project config directory').toBe(false)
+    expect(wasRead(userConfigPath()), 'the audit read the user config directory').toBe(false)
     expect(reasonFor(result, projectConfigPath())).toContain('not a regular file')
     expect(reasonFor(result, userConfigPath())).toContain('not a regular file')
     expect(result.host_limits.codex).toMatchObject({ budget_bytes: 32768, budget_source: 'default' })
@@ -339,8 +346,8 @@ describe('bootstrap-audit host limits: the Codex config read is bounded', () => 
     fs.mkdirSync(path.dirname(projectConfigPath()), { recursive: true })
     fs.symlinkSync(outside, projectConfigPath())
     const refused = await buildBootstrapAudit({ project: scratch.project, home: scratch.home })
-    expect(readPaths).not.toContain(projectConfigPath())
-    expect(reasonFor(refused, projectConfigPath())).toContain('leads outside the project')
+    expect(wasRead(projectConfigPath()), 'the audit read the outside link').toBe(false)
+    expect(reasonFor(refused,projectConfigPath())).toContain('leads outside the project')
     expect(refused.host_limits.codex).toMatchObject({ budget_bytes: 32768, budget_source: 'default' })
     fs.unlinkSync(projectConfigPath())
     const inside = path.join(scratch.project, 'shared.toml')

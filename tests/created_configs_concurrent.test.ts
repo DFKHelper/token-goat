@@ -32,7 +32,8 @@ let TMP: string
 const children: ChildProcess[] = []
 
 beforeEach(() => {
-  TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-created-concurrent-'))
+  // The ledger keys a path through normalizePath, which expands a Windows 8.3 name and rewrites macOS /var to /private/var, so an entry this test writes by hand is only found when the scratch root is already spelled the way the OS spells it.
+  TMP = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-created-concurrent-')))
 })
 
 afterEach(() => {
@@ -45,13 +46,16 @@ afterEach(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
+// The child's data-dir override is derived from dataDirForHome, the same function the test expects the writer to land in, so every platform agrees: darwin reads XDG_DATA_HOME in dataDir() (constants.ts::defaultDataDir), and its home-relative answer is Library/Application Support, not .local/share.
 function childEnv(home: string): NodeJS.ProcessEnv {
+  const dir = dataDirForHome(home)
+  const base = path.dirname(process.platform === 'win32' ? path.dirname(dir) : dir)
   return {
     ...process.env,
     HOME: home,
     USERPROFILE: home,
-    LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
-    XDG_DATA_HOME: path.join(home, '.local', 'share'),
+    LOCALAPPDATA: process.platform === 'win32' ? base : path.join(home, 'AppData', 'Local'),
+    XDG_DATA_HOME: process.platform === 'win32' ? path.join(home, '.local', 'share') : base,
   }
 }
 

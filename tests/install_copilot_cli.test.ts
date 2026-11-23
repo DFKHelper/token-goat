@@ -170,13 +170,14 @@ describe('installCopilotCli (user scope)', () => {
     if (entry?.exec !== undefined) {
       expect(entry.args).toContain(process.argv[1])
     } else {
-      for (const command of [entry?.bash, entry?.powershell]) {
-        expect(command).toBeDefined()
-        // The Node fallback, the last occurrence of each word, runs execPath, scriptPath, event, entryPath.
-        const order = [process.execPath, result.scriptPath, 'preToolUse', process.argv[1] ?? '']
-        const at = order.map((word) => command?.lastIndexOf(word) ?? -1)
-        expect(at.every((i) => i >= 0)).toBe(true)
-        expect([...at].sort((a, b) => a - b)).toEqual(at)
+      for (const [field, command] of [['bash', entry?.bash], ['powershell', entry?.powershell]] as const) {
+        expect(command, field).toBeDefined()
+        // The guard's first route reads back as an argv: a native client's words, then `--`, then the Node command; or the Node command alone. The Node command is execPath, scriptPath, event, entryPath, in that order.
+        const parsed = parseGuardedCommand(String(command))
+        expect(parsed?.kind, field).toBe('v1')
+        const argv = parsed?.kind === 'v1' ? parsed.native : []
+        const node = argv.includes('--') ? argv.slice(argv.indexOf('--') + 1) : argv
+        expect(node, field).toEqual([process.execPath, result.scriptPath, 'preToolUse', process.argv[1]])
       }
     }
   })
