@@ -402,12 +402,14 @@ export function doctorRows(sb: Sandbox, env: Env = {}): DoctorRow[] {
   return list
 }
 
-/** Ends each still-running launched child and its tree by the handle launch recorded. */
-function endLaunched(sb: Sandbox): void {
+/** Ends each still-running launched child's tree; throws once, naming each pid it could not end. */
+export function endLaunched(sb: Sandbox): void {
+  const failed: number[] = []
   for (const child of sb.children) {
     if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) continue
-    if (!killProcessTree(child.pid).ok) child.kill('SIGKILL')
+    if (!killProcessTree(child.pid).ok) failed.push(child.pid)
   }
+  if (failed.length > 0) throw new Error(`could not end the launched hook client tree of pid ${failed.join(', ')}`)
 }
 
 export function stopServer(sb: Sandbox): void {

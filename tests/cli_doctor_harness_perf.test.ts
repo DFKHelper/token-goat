@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import { once } from 'node:events'
 import type * as ChildProcessModule from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import {
   AV_EXCLUSION_DISCLAIMER,
   checkHarnessSessionStorage,
@@ -14,6 +15,7 @@ import {
 } from '../src/cli_doctor_harness_perf.js'
 import { runDoctorChecks } from '../src/cli_doctor.js'
 import type * as HookClientModule from '../src/hook_client.js'
+import { killProcessTree } from '../src/process_tree.js'
 
 // Event log: Defender query sync/spawn/settle and hook-server status asks, in call order.
 const defenderQueries = vi.hoisted(() => ({ events: [] as string[] }))
@@ -211,6 +213,7 @@ describe('cli_doctor_harness_perf', () => {
     defenderOverride.mode = 'hang'
     defenderChildren.length = 0
     Object.defineProperty(process, 'platform', { value: 'win32' })
+    let unendedPid: number | undefined
     try {
       const paths = await startWindowsDefenderExclusionQuery()
       expect(paths).toBeNull()
@@ -220,9 +223,14 @@ describe('cli_doctor_harness_perf', () => {
       if (child.exitCode === null && child.signalCode === null) await once(child, 'exit')
       expect(child.exitCode, 'the deadline must end the child, not its own exit after 15 s').not.toBe(0)
     } finally {
+      const stray: ChildProcess | undefined = defenderChildren[0]
+      if (stray?.pid !== undefined && stray.exitCode === null && stray.signalCode === null && !killProcessTree(stray.pid).ok) {
+        unendedPid = stray.pid
+      }
       defenderOverride.mode = 'real'
       if (realPlatform) Object.defineProperty(process, 'platform', realPlatform)
     }
+    if (unendedPid !== undefined) throw new Error(`could not end the Defender query tree of pid ${unendedPid}`)
   })
 
   it('reports no paths and no posture row when the Defender query cannot be spawned (throw path)', async () => {

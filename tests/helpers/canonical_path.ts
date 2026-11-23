@@ -7,12 +7,12 @@ import { normalizePath } from '../../src/paths.js'
 /** Whether the volume compares names without regard to case, which is true of NTFS and the default APFS but not of ext4. */
 const FOLDS_CASE = process.platform === 'win32' || process.platform === 'darwin'
 
-/** `p` as the OS spells it: realpath.native expands a Windows 8.3 RUNNER~1 name and a macOS /var link, then case is folded where the volume folds it. A path that does not exist is resolved through its nearest existing ancestor, so a missing leaf still compares equal to the same leaf under a differently spelled parent. */
-// The undo row's keys come from src/bridges/created_configs.ts::keyOf, which is normalizePath(path.resolve(...)).
+// Compared in this fold, not keyOf's case-preserved form (src/bridges/created_configs.ts::keyOf).
 function product(s: string): string {
   return normalizePath(FOLDS_CASE ? s.toLowerCase() : s)
 }
 
+/** `realpath.native` of `p`'s nearest existing ancestor, case-folded on win32 and darwin, then normalizePath. */
 export function canonicalPath(p: string): string {
   const absolute = path.resolve(p)
   const tail: string[] = []

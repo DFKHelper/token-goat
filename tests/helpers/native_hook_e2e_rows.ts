@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { parse as parseToml } from 'smol-toml'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { computeCodexHookHash } from '../../src/bridges/codex_install.js'
 import { SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MIN_MS } from '../../src/bridges/shim_common.js'
@@ -25,6 +25,7 @@ import {
   driveHarness,
   driveNodeForm,
   doctorRows,
+  endLaunched,
   eventOf,
   forms,
   install,
@@ -64,6 +65,18 @@ export function registerSandboxLifecycle(): void {
   beforeAll(() => {
     buildNative()
   }, 900_000)
+
+  afterEach(() => {
+    let failure: unknown
+    for (const sb of sandboxes) {
+      try {
+        endLaunched(sb)
+      } catch (err) {
+        failure ??= err
+      }
+    }
+    if (failure !== undefined) throw failure
+  })
 
   afterAll(async () => {
     // A pid whose command line could not be read is reported after every sandbox has been cleaned up.
