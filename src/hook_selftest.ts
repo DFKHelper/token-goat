@@ -211,8 +211,21 @@ export interface Job {
   readonly input: string
 }
 
+let resultOverride: ((command: string, run: ShellRun | null) => ShellRun | null) | undefined
+
+/** Test seam: rewrites each job's result after its real run, so every job still runs in the real shell. */
+export function setHookSelftestResultOverrideForTesting(next: typeof resultOverride): void {
+  resultOverride = next
+}
+
 /** Each job's result in order: real shells in parallel through one helper, an injected runner one by one. */
 export function runJobs(jobs: readonly Job[]): (ShellRun | null)[] {
+  const runs = runJobsOnce(jobs)
+  const override = resultOverride
+  return override === undefined ? runs : runs.map((run, i) => override(jobs[i]!.command, run))
+}
+
+function runJobsOnce(jobs: readonly Job[]): (ShellRun | null)[] {
   const sequential = (): (ShellRun | null)[] => jobs.map((j) => runner(j.shell, j.command, j.input))
   if (runner !== realShellRunner || jobs.length < 2) return sequential()
   const specs = jobs.map((j) => shellSpawn(j.shell, j.command))

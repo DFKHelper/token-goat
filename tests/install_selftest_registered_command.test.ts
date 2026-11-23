@@ -19,6 +19,7 @@ import {
   HookSelftestError,
   realShellRunner,
   selftestRegisteredCommands,
+  setHookSelftestResultOverrideForTesting,
   setHookSelftestRunnerForTesting,
   type ShellRun,
 } from '../src/hook_selftest.js'
@@ -129,11 +130,13 @@ describe.runIf(NATIVE)('the install self-test', () => {
   })
 
   it('fails when only the Node route is broken, naming it', () => {
-    setHookSelftestRunnerForTesting((shell, command, input) => {
-      const run = realShellRunner(shell, command, input)
-      return command.includes('no-such-dir') && run !== null ? { status: 0, stdout: '', stderr: '' } : run
-    })
-    expect(() => installHooks('user', { dev: true })).toThrow(/Node route/)
+    setHookSelftestResultOverrideForTesting((command, run) =>
+      command.includes('no-such-dir') && run !== null ? { status: 0, stdout: '', stderr: '' } : run)
+    try {
+      expect(() => installHooks('user', { dev: true })).toThrow(/Node route/)
+    } finally {
+      setHookSelftestResultOverrideForTesting(undefined)
+    }
     expect(fs.existsSync(settingsPath('user'))).toBe(false)
   })
 
