@@ -1,27 +1,47 @@
-/** `install --vscode` defaults to PROJECT scope -- against the REAL built bundle, not source. The defect this pins: VS Code resolves an agent hook's working directory from the hook FILE's own location (`workspaceService.getWorkspaceFolder(hookFile.uri) ?? folders[0]`). A user-scope hooks file lives in `~/.copilot/hooks`, which is inside no workspace folder, so every invocation is pinned to `folders[0]` -- captured live against VS Code 1.137.0 on 2026-09-12 (`%TEMP%\tg-dblfire\armD_multiroot.jsonl`: the user copy reported `cwd=...\multiroot\rootA` for an event raised in rootB, while a project copy in rootB reported `cwd=...\multiroot\rootB`). Read hints, image shrinking and edit interception are therefore inert for every folder past the first. Project scope is the fix, and it has to be the DEFAULT: an opt-in flag leaves every existing install broken. So this asserts the literal set of files each scope writes, end to end, by walking both trees -- a `toContain` on one path would not have caught the migration leaving the old user-scope install behind to double-fire beside the new one. */
-import { spawnSync } from 'node:child_process'
+/** `install --vscode` defaults to PROJECT scope -- run in-process against src (not the spawned built bundle). The defect this pins: VS Code resolves an agent hook's working directory from the hook FILE's own location (`workspaceService.getWorkspaceFolder(hookFile.uri) ?? folders[0]`). A user-scope hooks file lives in `~/.copilot/hooks`, which is inside no workspace folder, so every invocation is pinned to `folders[0]` -- captured live against VS Code 1.137.0 on 2026-09-12 (`%TEMP%\tg-dblfire\armD_multiroot.jsonl`: the user copy reported `cwd=...\multiroot\rootA` for an event raised in rootB, while a project copy in rootB reported `cwd=...\multiroot\rootB`). Read hints, image shrinking and edit interception are therefore inert for every folder past the first. Project scope is the fix, and it has to be the DEFAULT: an opt-in flag leaves every existing install broken. So this asserts the literal set of files each scope writes, end to end, by walking both trees -- a `toContain` on one path would not have caught the migration leaving the old user-scope install behind to double-fire beside the new one. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   VSCODE_PROJECT_SCOPE_COVERAGE_NOTE,
   VSCODE_USER_SCOPE_MIGRATED_NOTE,
   VSCODE_USER_SCOPE_MULTIROOT_NOTE,
 } from '../src/cli_doctor_platforms.js'
+import { _resetDataDirCacheForTesting } from '../src/constants.js'
+import { run } from '../src/cli.js'
+import { closeAllDbs } from '../src/db.js'
 
-import { BUNDLE } from './helpers/bundle.js'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
+import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let root: string
 let project: string
 let home: string
-let env: NodeJS.ProcessEnv
+let saved: Record<string, string | undefined>
+let origCwd: string
+let stdout: string[]
+let stderr: string[]
+let stdoutSpy: WriteSpy
+let stderrSpy: WriteSpy
+let consoleLogSpy: { mockRestore: () => void }
 
-function tg(args: string[], cwd = project): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [BUNDLE, ...args], { cwd, env, encoding: 'utf8', timeout: 120000 })
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+useStubbedHookSelftest()
+
+/** One CLI invocation in-process from `project`; the scope env and cwd are set per row in beforeEach. */
+async function tg(args: string[]): Promise<{ status: number; stdout: string; stderr: string }> {
+  const prevExit = process.exitCode
+  process.exitCode = 0
+  stdout.length = 0
+  stderr.length = 0
+  try {
+    await run(['node', 'token-goat', ...args])
+    return { status: Number(process.exitCode), stdout: stdout.join(''), stderr: stderr.join('') }
+  } finally {
+    process.exitCode = prevExit
+  }
 }
 
 /** Every file under `dir`, as forward-slash relative paths, sorted. Directories are not listed. Timestamped `.bak.<iso>` files are excluded: `writeGuidance` snapshots the guidance file on the user-scope path, so their names are unstable run to run and they say nothing about scope, which is what this file is about. Their behaviour is covered by `tests/install_backs_up_preexisting_config_before_overwrite.test.ts`. */
@@ -76,8 +96,7 @@ beforeEach(() => {
   home = path.join(root, 'home')
   fs.mkdirSync(project, { recursive: true })
   fs.mkdirSync(path.join(home, 'AppData', 'Roaming'), { recursive: true })
-  env = {
-    ...process.env,
+  const scopeEnv: Record<string, string> = {
     TOKEN_GOAT_HOME: path.join(root, 'tg-home'),
     LOCALAPPDATA: path.join(root, 'data'),
     XDG_DATA_HOME: path.join(root, 'data'),
@@ -88,15 +107,39 @@ beforeEach(() => {
     XDG_CONFIG_HOME: path.join(home, '.config'),
     TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
   }
+  saved = Object.fromEntries(Object.keys(scopeEnv).map((k) => [k, process.env[k]]))
+  Object.assign(process.env, scopeEnv)
+  _resetDataDirCacheForTesting()
+  origCwd = process.cwd()
+  process.chdir(project)
+  stdout = []
+  stderr = []
+  stdoutSpy = spyOnWrite(process.stdout, stdout)
+  stderrSpy = spyOnWrite(process.stderr, stderr)
+  // doctor reports through console.log rather than process.stdout.write, so its lines are captured here too.
+  consoleLogSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    stdout.push(`${args.map(String).join(' ')}\n`)
+  })
 })
 
 afterEach(() => {
+  // recordStat opens global.db under the scratch data dir; Windows will not delete the directory while the handle is open.
+  closeAllDbs()
+  stdoutSpy.mockRestore()
+  stderrSpy.mockRestore()
+  consoleLogSpy.mockRestore()
+  process.chdir(origCwd)
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  _resetDataDirCacheForTesting()
   fs.rmSync(root, { recursive: true, force: true })
 })
 
 describe('install --vscode scope, against the built bundle', () => {
-  it('writes the project install and touches nothing in the home directory by default', () => {
-    const r = tg(['install', '--dev', '--vscode'])
+  it('writes the project install and touches nothing in the home directory by default', async () => {
+    const r = await tg(['install', '--dev', '--vscode'])
     expect(r.status, r.stderr).toBe(0)
     expect(tree(project)).toEqual(PROJECT_FILES)
     // The whole point of the flip: no hooks file lands where VS Code would pin it to folders[0].
@@ -107,8 +150,8 @@ describe('install --vscode scope, against the built bundle', () => {
     expect(r.stdout).toContain('.github')
   })
 
-  it('writes the user install, and only the user install, under --user', () => {
-    const r = tg(['install', '--dev', '--vscode', '--user'])
+  it('writes the user install, and only the user install, under --user', async () => {
+    const r = await tg(['install', '--dev', '--vscode', '--user'])
     expect(r.status, r.stderr).toBe(0)
     expect(tree(home)).toEqual(USER_FILES)
     expect(tree(project)).toEqual([])
@@ -117,12 +160,12 @@ describe('install --vscode scope, against the built bundle', () => {
     expect(r.stdout).not.toContain(VSCODE_PROJECT_SCOPE_COVERAGE_NOTE)
   })
 
-  it('migrates an existing user-scope install to the project instead of double-firing beside it', () => {
-    expect(tg(['install', '--dev', '--vscode', '--user']).status).toBe(0)
+  it('migrates an existing user-scope install to the project instead of double-firing beside it', async () => {
+    expect((await tg(['install', '--dev', '--vscode', '--user'])).status).toBe(0)
     expect(tree(home)).toEqual(USER_FILES)
 
     // The first post-upgrade run of the command every existing user already types.
-    const migrate = tg(['install', '--dev', '--vscode'])
+    const migrate = await tg(['install', '--dev', '--vscode'])
     expect(migrate.status, migrate.stderr).toBe(0)
     expect(migrate.stdout).toContain(VSCODE_USER_SCOPE_MIGRATED_NOTE)
 
@@ -137,10 +180,10 @@ describe('install --vscode scope, against the built bundle', () => {
     if (fs.existsSync(userMcp)) expect(fs.readFileSync(userMcp, 'utf8')).not.toContain('token-goat')
   })
 
-  it('leaves the shared ~/.copilot hooks in place when install --copilot still owns them', () => {
-    expect(tg(['install', '--dev', '--copilot']).status).toBe(0)
-    expect(tg(['install', '--dev', '--vscode', '--user']).status).toBe(0)
-    expect(tg(['install', '--dev', '--vscode']).status).toBe(0)
+  it('leaves the shared ~/.copilot hooks in place when install --copilot still owns them', async () => {
+    expect((await tg(['install', '--dev', '--copilot'])).status).toBe(0)
+    expect((await tg(['install', '--dev', '--vscode', '--user'])).status).toBe(0)
+    expect((await tg(['install', '--dev', '--vscode'])).status).toBe(0)
     // Copilot CLI's own install is the other owner of ~/.copilot/hooks; migrating VS Code out of user scope releases token-goat's vscode claim, it does not uninstall Copilot CLI.
     expect(fs.existsSync(path.join(home, '.copilot', 'hooks', 'token-goat.json'))).toBe(true)
     expect(fs.readFileSync(path.join(home, '.copilot', 'hooks', 'token-goat.owners'), 'utf8').trim().split(/\r?\n/)).toEqual([
@@ -148,44 +191,44 @@ describe('install --vscode scope, against the built bundle', () => {
     ])
   })
 
-  it('still refuses the user-scope install when the project one already exists', () => {
-    expect(tg(['install', '--dev', '--vscode']).status).toBe(0)
-    const r = tg(['install', '--dev', '--vscode', '--user'])
+  it('still refuses the user-scope install when the project one already exists', async () => {
+    expect((await tg(['install', '--dev', '--vscode'])).status).toBe(0)
+    const r = await tg(['install', '--dev', '--vscode', '--user'])
     // The error wall is relaxed in the user -> project direction only. The reverse still duplicates the server registration in this workspace, so it stays an error with a way out.
     expect(r.status).not.toBe(0)
     expect(`${r.stdout}${r.stderr}`).toContain('already registered in VS Code project scope')
     expect(`${r.stdout}${r.stderr}`).toContain('uninstall --vscode --project')
   })
 
-  it('surfaces a lingering user-scope install through doctor, and stops once it is migrated', () => {
-    expect(tg(['install', '--dev', '--vscode', '--user']).status).toBe(0)
-    const before = tg(['doctor'])
+  it('surfaces a lingering user-scope install through doctor, and stops once it is migrated', async () => {
+    expect((await tg(['install', '--dev', '--vscode', '--user'])).status).toBe(0)
+    const before = await tg(['doctor'])
     // A check that runDoctor never calls is a check that never fires; only the real command proves the wiring, which is why this runs `doctor` rather than the exported function.
     expect(`${before.stdout}${before.stderr}`).toContain('VS Code hooks scope')
     expect(`${before.stdout}${before.stderr}`).toContain('FIRST folder')
 
-    expect(tg(['install', '--dev', '--vscode']).status).toBe(0)
-    const after = tg(['doctor'])
+    expect((await tg(['install', '--dev', '--vscode'])).status).toBe(0)
+    const after = await tg(['doctor'])
     expect(`${after.stdout}${after.stderr}`).not.toContain('VS Code hooks scope')
   })
 
-  it('rejects -p and --user together rather than silently preferring one', () => {
-    const r = tg(['install', '--dev', '--vscode', '--project', '--user'])
+  it('rejects -p and --user together rather than silently preferring one', async () => {
+    const r = await tg(['install', '--dev', '--vscode', '--project', '--user'])
     expect(r.status).not.toBe(0)
     expect(`${r.stdout}${r.stderr}`).toContain('not both')
     expect(tree(project)).toEqual([])
     expect(tree(home)).toEqual([])
   })
 
-  it('uninstalls the project scope by default and the user scope under --user', () => {
-    expect(tg(['install', '--dev', '--vscode']).status).toBe(0)
-    expect(tg(['uninstall', '--vscode']).status).toBe(0)
+  it('uninstalls the project scope by default and the user scope under --user', async () => {
+    expect((await tg(['install', '--dev', '--vscode'])).status).toBe(0)
+    expect((await tg(['uninstall', '--vscode'])).status).toBe(0)
     expect(tree(project)).not.toContain('.github/hooks/token-goat.json')
     expect(tree(project)).not.toContain('.vscode/mcp.json')
 
-    expect(tg(['install', '--dev', '--vscode', '--user']).status).toBe(0)
+    expect((await tg(['install', '--dev', '--vscode', '--user'])).status).toBe(0)
     expect(tree(home)).toEqual(USER_FILES)
-    expect(tg(['uninstall', '--vscode', '--user']).status).toBe(0)
+    expect((await tg(['uninstall', '--vscode', '--user'])).status).toBe(0)
     expect(tree(home)).not.toContain('.copilot/hooks/token-goat.json')
   })
 })
