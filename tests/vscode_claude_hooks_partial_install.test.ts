@@ -11,6 +11,10 @@ import { checkVscodeClaudeHooks } from '../src/cli_doctor_platforms.js'
 import { printDoctorResults, runDoctor } from '../src/cli_doctor.js'
 import { repairHarnessHooks } from '../src/cli_doctor_hooks.js'
 import { claudeHooksInstalledAnyScope, installHooks, settingsPath } from '../src/install.js'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
+
+// Each install here runs its hook commands in real shells for the self-test (about 6 s per install on Windows), so the row times that, not the doctor check; the sibling install tests stub it the same way.
+useStubbedHookSelftest()
 
 let home: string
 let project: string
