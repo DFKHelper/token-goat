@@ -188,9 +188,10 @@ describe('file readers that print or summarize the text they read', () => {
   it('baseline --suggest-mem skips a denied CLAUDE.md and counts an allowed one', () => {
     put(project, 'secrets/CLAUDE.md', '- prefer SECRETBULLETX always\n- also SECRETBULLETX\n')
     put(project, 'CLAUDE.md', '- prefer tabs\n- prefer OPENBULLETY\n')
+    const projectDir = process.platform === 'darwin' ? project.replace(/^\/private\/var(?=\/|$)/, '/var') : project
     const run = runBundle(['baseline', '--suggest-mem', '--json'], {
       cwd: path.join(project, 'secrets'),
-      env: { ...env, CLAUDE_PROJECT_DIR: project },
+      env: { ...env, CLAUDE_PROJECT_DIR: projectDir },
       timeout: 60000,
     })
     expect(text(run)).not.toContain('SECRETBULLETX')

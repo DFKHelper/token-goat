@@ -10,6 +10,8 @@ import type * as NodeFs from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { dataDirForHome } from '../src/constants.js'
+import { normalizePath } from '../src/paths.js'
+import { CAN_JUNCTION } from './helpers/can-symlink.js'
 
 // Every path existsSync is asked about, to show backup removal does not check before it unlinks (CodeQL #424).
 const existsAsked = vi.hoisted(() => [] as string[])
@@ -46,13 +48,15 @@ afterEach(() => {
 })
 
 function childEnv(home: string): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: home,
     USERPROFILE: home,
     LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
     XDG_DATA_HOME: path.join(home, '.local', 'share'),
   }
+  if (process.platform === 'darwin') delete env['XDG_DATA_HOME']
+  return env
 }
 
 function runWriter(script: string, home: string, tag: string): Promise<string> {
@@ -125,6 +129,43 @@ describe('created-configs ledger under concurrent writers', () => {
     try {
       fs.writeFileSync(ledgerFile, `${JSON.stringify([target.replace(/\\/g, '/')])}\n`)
       expect(hasCreatedConfig(target)).toBe(true)
+    } finally {
+      if (before === null) fs.rmSync(ledgerFile, { force: true })
+      else fs.writeFileSync(ledgerFile, before)
+    }
+  })
+
+  it.skipIf(process.platform !== 'win32' || !CAN_JUNCTION)('normalizes legacy marker paths through an 8.3-style alias', async () => {
+    const created = await import('../src/bridges/created_configs.js')
+    const { hasCreatedConfig, takeCreatedRootKey, takeHookConfig, takeTurnedOffSetting } = created
+    const { dataDir } = await import('../src/constants.js')
+    fs.mkdirSync(dataDir(), { recursive: true })
+    const realHome = path.join(TMP, 'long-profile')
+    const aliasHome = path.join(TMP, 'RUNNER~1')
+    fs.mkdirSync(realHome)
+    fs.symlinkSync(realHome, aliasHome, 'junction')
+    const rawTarget = path.join(realHome, 'settings.json')
+    fs.writeFileSync(rawTarget, '{}\n')
+    const target = fs.realpathSync.native(rawTarget)
+    const legacy = path.join(aliasHome, 'settings.json').replace(/\\/g, '/')
+    expect(normalizePath(legacy)).toBe(normalizePath(target))
+
+    const ledgerFile = path.join(dataDir(), 'created-configs.json')
+    const before = fs.existsSync(ledgerFile) ? fs.readFileSync(ledgerFile, 'utf8') : null
+    try {
+      fs.writeFileSync(
+        ledgerFile,
+        `${JSON.stringify([
+          legacy,
+          `${legacy}#root-key=servers`,
+          `${legacy}#hook-config`,
+          `${legacy}#turned-off=hooks:true`,
+        ])}\n`,
+      )
+      expect(hasCreatedConfig(target)).toBe(true)
+      expect(takeCreatedRootKey(target, 'servers')).toBe(true)
+      expect(takeHookConfig(target)).toBe(true)
+      expect(takeTurnedOffSetting(target, 'hooks')).toBe(true)
     } finally {
       if (before === null) fs.rmSync(ledgerFile, { force: true })
       else fs.writeFileSync(ledgerFile, before)

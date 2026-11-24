@@ -462,7 +462,9 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     writeFileSync(path.join(file('sbin'), 'sleep'), '#!/usr/bin/env bash\nexit 1\n')
     const got = runLib([
       'exec 9<&-',
-      'PATH="$(cygpath -u "$DRIVER_DIR/sbin"):$PATH"',
+      'SBIN_DIR="$DRIVER_DIR/sbin"',
+      'command -v cygpath >/dev/null 2>&1 && SBIN_DIR="$(cygpath -u "$SBIN_DIR")"',
+      'PATH="$SBIN_DIR:$PATH"',
       '( tick; tick; tick; tick; tick; tick; echo survived=yes )',
       'echo status=$?',
     ])

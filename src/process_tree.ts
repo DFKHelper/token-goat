@@ -101,14 +101,33 @@ export function killProcessTree(pid: number | undefined): KillResult {
   if (!settled) note = `the tree was still growing after ${MAX_FREEZE_PASSES} passes, so it was killed as found`
   // Deepest first, root last; every member is stopped, so the order only matters for tidiness. A member is killed only if the last listing, taken just before, still shows it under the root: one that left the table or was reparented is not proven ours.
   const proven = new Set(lastTable === null ? [] : descendantsOf(pid, lastTable))
-  for (const p of frozen.reverse()) {
+  for (const p of [...frozen].reverse()) {
     if (p !== pid && !proven.has(p)) continue
     const failure = signalPid(p, 'SIGKILL')
     if (p === pid) rootFailure = failure
   }
+  waitForPosixExit(frozen)
   // The root's last signal decides: one that refused the stop but took the kill is ended. A root that refuses the kill (EPERM) is still running, so the caller must not read this as an ended tree.
   if (rootFailure !== undefined) note = `pid ${pid} could not be signalled (${rootFailure})${note === undefined ? '' : `; ${note}`}`
   return note === undefined ? { ok: true } : { ok: false, note }
+}
+
+function waitForPosixExit(pids: readonly number[]): void {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const result = spawnSync('ps', ['-o', 'pid=', '-o', 'stat=', '-p', pids.join(',')], {
+      encoding: 'utf8',
+      timeout: 50,
+      windowsHide: true,
+    })
+    if (result.error === undefined && result.status !== null) {
+      const live = result.stdout.split(/\r?\n/).some((line) => {
+        const match = /^\s*[1-9]\d*\s+(\S+)/.exec(line)
+        return match !== null && !/^[ZX]/.test(match[1] ?? '')
+      })
+      if (!live) return
+    }
+    sleepSync(5)
+  }
 }
 
 // Each owned Linux child carries this variable with a comma-separated chain of per-spawn tokens (outermost owner first), so an orphan is still found and a nested runner's tree is also found by the outer owner.
@@ -308,3 +327,4 @@ export function spawnOwned(file: string, args: string[], options: SpawnOptions):
   })
   return { child, kill, endLeftovers, release }
 }
+import { sleepSync } from './process_util.js'

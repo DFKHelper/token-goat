@@ -750,7 +750,7 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
     const { sb, packaged, good, row, expectOk, wiredBin, bin } = wiredSandbox()
     replace(packaged, FAILING_BINARY)
     // An install never replaces a stamped copy with an unstamped client, so the machine starts without a copy.
-    fs.rmSync(bin, { force: true })
+    if (path.resolve(bin) !== path.resolve(packaged)) fs.rmSync(bin, { force: true })
     const printed = install(sb, ['--codex'])
     expect(wiredBin(), `install printed: ${printed}`).toBeUndefined()
     const failing = row()

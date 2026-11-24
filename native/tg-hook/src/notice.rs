@@ -34,7 +34,17 @@ pub fn iso_utc(now: SystemTime) -> String {
 }
 
 fn clip(text: &str) -> String {
-    text.chars().take(MAX_FIELD_CHARS).collect()
+    let prefix = text.chars().take(MAX_FIELD_CHARS + 1).collect::<Vec<_>>();
+    if prefix.len() <= MAX_FIELD_CHARS {
+        return prefix.into_iter().collect();
+    }
+
+    let retained_chars = MAX_FIELD_CHARS - 3;
+    let head_chars = retained_chars / 2;
+    let tail_chars = retained_chars - head_chars;
+    let head = prefix.iter().copied().take(head_chars).collect::<String>();
+    let tail = text.chars().rev().take(tail_chars).collect::<Vec<_>>().into_iter().rev().collect::<String>();
+    format!("{head}...{tail}")
 }
 
 /// Folds one event into `previous` (the old file's content, if it parsed).
@@ -211,6 +221,17 @@ mod tests {
     fn iso_utc_matches_known_instants() {
         assert_eq!(iso_utc(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
         assert_eq!(iso_utc(UNIX_EPOCH + std::time::Duration::from_millis(1_709_164_800_123)), "2024-02-29T00:00:00.123Z");
+    }
+
+    #[test]
+    fn clip_keeps_the_start_and_filename_of_long_fields() {
+        let path = format!("/private/var/folders/{}/Library/Application Support/token-goat/hook-entry.json", "x".repeat(MAX_FIELD_CHARS),);
+        let clipped = clip(&path);
+        assert_eq!(clip("short/path"), "short/path");
+        assert_eq!(clipped.chars().count(), MAX_FIELD_CHARS);
+        assert!(clipped.starts_with("/private/var/folders/"));
+        assert!(clipped.ends_with("hook-entry.json"));
+        assert!(clipped.contains("..."));
     }
 
     #[test]

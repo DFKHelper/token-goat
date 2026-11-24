@@ -115,6 +115,8 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddin
   // VACUUM cannot run inside a transaction, hence its position outside the block above.
   const vacuumDeferred = !vacuumOrDefer(db, { noWait })
   const finalCheckpointBusy = checkpoint(db)
+  const checkpointBusyAny = checkpointBusy || finalCheckpointBusy
+  if (!checkpointBusyAny && !vacuumDeferred) optimizeDbPlanner(db, dbPath)
 
   return {
     beforeBytes,
@@ -124,7 +126,7 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddin
     dropped,
     rebuilt: rebuild,
     embeddingsOnly,
-    checkpointBusy: checkpointBusy || finalCheckpointBusy,
+    checkpointBusy: checkpointBusyAny,
     vacuumDeferred,
   }
 }
@@ -232,3 +234,4 @@ export function reclaimNotes(result: ReclaimResult, dbName: string): string[] {
   }
   return notes
 }
+import { optimizeDbPlanner } from './db.js'

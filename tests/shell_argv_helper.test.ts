@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { OWNER_VAR, POSIX_SH, REAP_SCRIPT, SH_LIVE, SH_SCRIPT, TICK_FN, probeAlive, reapOwned, shRunAll } from './helpers/shell_argv.js'
 import { startWatchdog } from './helpers/stall_proof_watchdog.js'
+import { hasUnparenthesizedCaseInCommandSubstitution } from './helpers/shell_static.js'
 
 // A pass-through spy on spawnSync, so a row can read the timeout the helper handed to the spawn call.
 vi.mock('node:child_process', async (importOriginal) => {
@@ -19,6 +20,12 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   const sh = POSIX_SH!
+
+  it('keeps the reap script valid Bash without unparenthesized case arms in command substitutions', () => {
+    const parsed = spawnSync(sh, ['-n', '-c', REAP_SCRIPT], { encoding: 'utf8', timeout: 10_000, windowsHide: true })
+    expect(parsed.status, parsed.stderr).toBe(0)
+    expect(hasUnparenthesizedCaseInCommandSubstitution(REAP_SCRIPT)).toBe(false)
+  })
 
   // Narrows the reap's token scan from every process in the table to the pids a row names, each read from a file when the scan starts: the rows that use it test the scan's repeat or its kin search, not how many processes the machine has, and the full-table grep took seconds per scan under load.
   const narrowScan = (script: string, pidFiles: string[]): string => {

@@ -226,3 +226,4 @@ export const SKELETON_SYMBOL_CAP = 5000
 
 /** Per-process capture cap (stdout and stderr each). Beyond this the child is killed and an overflow marker is appended — 32 MiB covers any real command. Held here, not in bash_runner.ts, so the hook that reads it does not import bash_runner.ts and process_tree.ts. */
 export const MAX_CAPTURE_BYTES = 32 * 1024 * 1024
+export const MAX_FULL_SCAN_BYTES = 512 * 1024 * 1024

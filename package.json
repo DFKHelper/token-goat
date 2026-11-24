@@ -36,6 +36,7 @@
     "test:watch": "vitest",
     "test:vscode-extension": "npm --prefix vscode-extension test",
     "lint": "eslint src tests scripts evals vscode-extension/src vscode-extension/tests",
+    "lint:rust": "cargo clippy --manifest-path native/tg-hook/Cargo.toml --all-targets -- -D warnings",
     "typecheck:vscode-extension": "npm --prefix vscode-extension run compile",
     "typecheck:vscode-extension:tests": "npm --prefix vscode-extension run typecheck:tests",
     "dev": "tsx src/main.ts",

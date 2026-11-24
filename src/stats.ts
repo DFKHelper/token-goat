@@ -626,14 +626,22 @@ export const UNMAPPED_TOOL_RETENTION_DAYS = 30
 /** How often the rollup+prune pass (a full aggregate scan) is allowed to run, regardless of how often recordStat() itself fires. */
 const STATS_ROLLUP_INTERVAL_MS = 6 * 60 * 60 * 1000
 
+const STATS_LOCAL_DAY_FUNCTION = 'TG_STATS_LOCAL_DAY'
+const STATS_LOCAL_DAY_EXPRESSION = `${STATS_LOCAL_DAY_FUNCTION}(ts)`
+
+function registerStatsLocalDay(db: SqliteDatabase): void {
+  db.function(STATS_LOCAL_DAY_FUNCTION, {}, (ts: number) => toLocalDateKey(new Date(ts * 1000)))
+}
+
 /** Aggregate every `stats` row older than `retentionDays` into `stats_daily_rollup` (summed by day/kind/harness/tg_version) and delete those rows from `stats`, in one transaction. Transactional, not two independent statements: the INSERT...ON CONFLICT accumulates onto whatever a prior rollup already summed for that day, so if the DELETE ran without the matching INSERT already having committed, the next run's aggregation over the still-present rows would double-count them into the rollup. Wrapping both in one transaction means an interruption (crash, SIGTERM) rolls back to before either ran -- the next scheduled pass sees the exact same un-rolled-up rows and redoes the same work, never double-counts, and never loses a row. Bounded by `ts < cutoff` on both statements, so it is safe to run against a database this function has never seen before (no schema-version assumption beyond the two tables this module already owns). Fail-soft, matching every other write path in this module. */
 export function rollupAndPruneStats(db: SqliteDatabase, retentionDays: number = STATS_RETENTION_DAYS): void {
   try {
+    registerStatsLocalDay(db)
     const cutoffTs = Math.floor(Date.now() / 1000) - retentionDays * 86400
     const run = db.transaction((cutoff: number) => {
       db.prepare(
         `INSERT INTO stats_daily_rollup (day, kind, harness, tg_version, events, bytes_saved, tokens_saved)
-         SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') AS day,
+         SELECT ${STATS_LOCAL_DAY_EXPRESSION} AS day,
                 kind,
                 COALESCE(harness, '') AS harness,
                 COALESCE(tg_version, '') AS tg_version,
@@ -1048,12 +1056,13 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   const dbMissing = testDb === undefined && !globalDbExists(homeDir)
   let totalsUnknownReason: string | null = dbMissing ? GLOBAL_DB_MISSING_REASON : null
   const db = testDb ?? readGlobalDb(homeDir)
+  registerStatsLocalDay(db)
   // Selected only when the column is actually there: an injected `testDb` may carry a table this module never migrated, and naming a missing column would throw out of summarize() entirely rather than degrading to "harness not recorded".
   const hasHarness = statsHasHarnessColumn(db)
   const hasVersion = statsHasVersionColumn(db)
   // Aggregate in SQLite so JavaScript receives only distinct reporting buckets instead of materializing every event.
   // Local-day grouping matches rollups; ordering by MAX(ts) preserves newest-first map insertion order.
-  const dayExpr = "strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime')"
+  const dayExpr = STATS_LOCAL_DAY_EXPRESSION
   const harnessExpr = hasHarness ? "COALESCE(harness, '')" : "''"
   const versionExpr = hasVersion ? "COALESCE(tg_version, '')" : "''"
   const query = `

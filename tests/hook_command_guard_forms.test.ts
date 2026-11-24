@@ -162,7 +162,7 @@ function run(row: Row, layout: Layout): Outcome {
           path.dirname(prog.program),
           path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0'),
         ]
-      : [path.dirname(prog.program)]
+      : [path.dirname(prog.program), ...(row.shell === 'sh' && !WIN ? ['/usr/bin'] : [])]
   const pathEnv = (layout.nodeOnPath ? [path.dirname(process.execPath), ...shellDirs] : shellDirs).join(
     path.delimiter,
   )

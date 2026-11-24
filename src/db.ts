@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import Database from './sqlite_driver.js'
 import type { SqliteDatabase } from './sqlite_driver.js'
 
-import { dataDir, globalDbPath, SYMBOL_BODY_CHAR_CAP } from './constants.js'
+import { dataDir, globalDbPath, MAX_FULL_SCAN_BYTES, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { isDotenvPath } from './dotenv_redact.js'
 import { safeJoin } from './paths.js'
 import { projectScopeClause } from './sql_path.js'
@@ -19,6 +19,14 @@ const _require = createRequire(import.meta.url)
 
 // One Database handle per absolute db path. Keyed by the resolved path so two callers naming the same file via different relative strings share a handle.
 const _connections = new Map<string, SqliteDatabase>()
+
+const BOUNDED_COMPOSITE_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_symbols_file_span ON symbols(file_path, line_start, line_end)',
+  'CREATE INDEX IF NOT EXISTS idx_symbols_file_span_folded ON symbols(TG_LOWER(file_path), line_start, line_end)',
+  'CREATE INDEX IF NOT EXISTS idx_chunks_file_span ON chunks(file_path, start_line, end_line)',
+  'CREATE INDEX IF NOT EXISTS idx_chunks_file_span_folded ON chunks(TG_LOWER(file_path), start_line, end_line)',
+  'CREATE INDEX IF NOT EXISTS idx_hint_emissions_session_emitted ON hint_emissions(session_id, emitted_at)',
+]
 
 /** Index-DB schema (matches the spec for Layer 2). Tables: - files   — one row per indexed source file. - symbols — extracted definitions (functions, classes, types, ...). - refs    — references/usages of names, for caller lookups. - chunks  — semantic search chunk metadata (filePath, startLine, endLine, text, kind). - notes   — file/symbol-attached architecture notes with a staleness fingerprint (notes.ts). - outline_listing_cache — bounded, redacted outline-listing cache. - symbols_fts — FTS5 mirror of symbols for full-text name/body search. The FTS5 table is content-linked to `symbols` (external-content) so the row data lives once in `symbols`; triggers keep the index in sync on write. `index_retries` holds the worker's transient-read-failure counters instead of a column on `files`. The count has to survive across processes -- the edit hook is a short-lived CLI process, the drain loop a long-lived daemon -- so it has to be on disk in the DB they share. Putting it in `files` meant minting a row there for a path that had never been indexed, and a `files` row is what three readers take to mean "this file is in the index": indexMatchesDisk (index_freshness.ts) and healStaleIndex/staleWarning (read_commands.ts) each read a row with no sha as a pre-fingerprinting legacy row and accept it as-is, so a never-indexed file that hit one transient lock during a drain looked indexed and lost its on-demand self-heal for good. `files.retry_count` is still created for older databases and is no longer read or written. Prose belongs in this comment rather than in an SQL `--` line inside the template literal below: a comment here is stripped by the bundler, while one inside the string ships verbatim in every hook process's eager chunk set. tests/guards/dist_chunks_deduped.test.ts holds the ceiling that catches the difference. */
 const SCHEMA_SQL = `
@@ -569,6 +577,58 @@ function initConnection(conn: SqliteDatabase, walStopOn?: (e: unknown) => boolea
   if (storedVersion < SCHEMA_VERSION) {
     runMigrations(conn, storedVersion, SCHEMA_VERSION)
     conn.pragma(`user_version = ${SCHEMA_VERSION}`)
+  }
+
+  let isBelowFullScanLimit = false
+  try {
+    const pageCount = conn.pragma('page_count', { simple: true })
+    const pageSize = conn.pragma('page_size', { simple: true })
+    if (
+      typeof pageCount === 'number' &&
+      Number.isSafeInteger(pageCount) &&
+      pageCount >= 0 &&
+      typeof pageSize === 'number' &&
+      Number.isSafeInteger(pageSize) &&
+      pageSize > 0
+    ) {
+      const databaseBytes = pageCount * pageSize
+      isBelowFullScanLimit = Number.isFinite(databaseBytes) && databaseBytes < MAX_FULL_SCAN_BYTES
+    }
+  } catch {
+    // These indexes are optional; if SQLite cannot report the size, skip them.
+  }
+  if (isBelowFullScanLimit) {
+    for (const statement of BOUNDED_COMPOSITE_INDEXES) {
+      try {
+        conn.exec(statement)
+      } catch {
+        // A legacy schema that cannot support one additive index keeps the existing query paths.
+      }
+    }
+  }
+}
+
+// Keep the optional path accepted for existing callers; SQLite page metadata is now the size source.
+export function optimizeDbPlanner(db: SqliteDatabase, _dbPath?: string): void {
+  try {
+    const pageCount = db.pragma('page_count', { simple: true })
+    const pageSize = db.pragma('page_size', { simple: true })
+    if (
+      typeof pageCount !== 'number' ||
+      !Number.isSafeInteger(pageCount) ||
+      pageCount < 0 ||
+      typeof pageSize !== 'number' ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize <= 0
+    ) {
+      return
+    }
+    const databaseBytes = pageCount * pageSize
+    if (!Number.isFinite(databaseBytes) || databaseBytes >= MAX_FULL_SCAN_BYTES) return
+    db.pragma('analysis_limit = 400')
+    db.pragma('optimize')
+  } catch {
+    // Planner statistics are optional; index reads remain valid without them.
   }
 }
 

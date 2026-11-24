@@ -172,11 +172,13 @@ describe('installCopilotCli (user scope)', () => {
     } else {
       for (const command of [entry?.bash, entry?.powershell]) {
         expect(command).toBeDefined()
-        // The Node fallback, the last occurrence of each word, runs execPath, scriptPath, event, entryPath.
-        const order = [process.execPath, result.scriptPath, 'preToolUse', process.argv[1] ?? '']
-        const at = order.map((word) => command?.lastIndexOf(word) ?? -1)
-        expect(at.every((i) => i >= 0)).toBe(true)
-        expect([...at].sort((a, b) => a - b)).toEqual(at)
+        // Both shRoute (`[ -f shim ] && [ -x execPath ]`) and psRoute (`Test-Path shim`) test the shim before invoking `[execPath, shim, event, entry]`, so parse the guarded argv directly.
+        const parsed = parseGuardedCommand(command!)
+        expect(parsed?.kind).toBe('v1')
+        if (parsed?.kind === 'v1') {
+          const tail = parsed.native.includes('--') ? parsed.native.slice(parsed.native.indexOf('--') + 1) : parsed.native
+          expect(tail).toEqual([process.execPath, result.scriptPath, 'preToolUse', process.argv[1] ?? ''])
+        }
       }
     }
   })

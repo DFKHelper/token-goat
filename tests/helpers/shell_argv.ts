@@ -121,6 +121,7 @@ export const REAP_SCRIPT = [
   SH_LIVE,
   // The listing function holds one bare command; measured on bash 5.2.37 (msys) with a wrapper script as ps, the wrapper's parent was the main shell for this function form and for the inlined case alike, so the function costs one fork, not two.
   'case $OSTYPE in msys* | cygwin*) tg_ps() { ps -e; } ;; *) tg_ps() { ps -A -o pid=,ppid=,pgid=,stat=; } ;; esac',
+  'tg_ps_env() { ps -wwAE -o pid= -o command= 2>/dev/null | while read -r tg_p tg_rest; do case " $tg_rest " in (*" $tg_needle "*) echo "$tg_p" ;; esac; done | xargs; }',
   `tg_kin() {`,
   `  tg_tbl=$(tg_ps); ${KIN_SH}`,
   '}',
@@ -156,7 +157,7 @@ export const REAP_SCRIPT = [
   '      for tg_f in $tg_out; do tg_f=${tg_f#/proc/}; tg_found="$tg_found ${tg_f%/environ}"; done',
   '    fi',
   '  else',
-  '    tg_found="$tg_found $(ps -wwAE -o pid= -o command= 2>/dev/null | while read -r tg_p tg_rest; do case " $tg_rest " in *" $tg_needle "*) echo "$tg_p" ;; esac; done | xargs)"',
+  '    tg_found="$tg_found $(tg_ps_env)"',
   '  fi',
   // The real listing is taken by the first scan that has seen an owned process, and again by a light scan (no token grep) while an owned process is still alive or the seed set changed since the last listing: a child its parent forked after the first listing is found only by listing again. A light scan whose seeds are all gone and unchanged since the last listing skips it, and the full scans keep to the token scan, since the listing reads the whole process table and cost seconds per pass on a loaded host. The first scan after the KILL always lists once (tg_postkill): a child created after the last pre-kill listing by a seed that was only signalled has no readable token, and the dead seeds make the signature and liveness tests skip the listing that would name it.
   '  tg_sig=" $tg_found $tg_all "; tg_need=1',

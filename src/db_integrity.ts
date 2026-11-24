@@ -3,13 +3,14 @@
 import * as fs from 'node:fs'
 
 import { closeDb, getDb } from './db.js'
+import { MAX_FULL_SCAN_BYTES } from './constants.js'
 import Database from './sqlite_driver.js'
 import { extractErrorMessage } from './util.js'
 import { isWorkerRunning, stopWorkerDetailed, workerLeftRunningNote } from './worker_lifecycle.js'
 
 export type QuickCheckResult = { ok: true } | { ok: false; detail: string; corrupt: boolean }
 
-export const MAX_FULL_SCAN_BYTES = 512 * 1024 * 1024
+export { MAX_FULL_SCAN_BYTES } from './constants.js'
 
 export type IntegrityCheckMode = 'full' | 'smoke'
 export type IntegrityCheckResult = QuickCheckResult & { mode: IntegrityCheckMode }

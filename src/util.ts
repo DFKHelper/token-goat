@@ -279,6 +279,10 @@ export function resolveSymlinkChain(p: string): string {
   throw Object.assign(new Error(`ELOOP: too many levels of symbolic links, resolving ${p}`), { code: 'ELOOP' })
 }
 
+function writePathKey(filePath: string): string {
+  return foldPath(normalizePath(path.resolve(filePath)))
+}
+
 /** Files whose writes are held in memory while an install is probed; undefined when nothing is staged. */
 let stagedWrites: Map<string, { bytes?: Buffer }> | undefined
 
@@ -287,7 +291,7 @@ export function withStagedWrites<T>(
   files: readonly string[],
   work: () => T,
 ): { result: T; staged: Map<string, Buffer> } {
-  const stageKey = (f: string): string => foldPath(path.resolve(f))
+  const stageKey = (f: string): string => writePathKey(f)
   const held = new Map<string, { bytes?: Buffer }>(files.map((f) => [stageKey(f), {}]))
   const outer = stagedWrites
   stagedWrites = held
@@ -320,7 +324,7 @@ export function tracingWrites<T>(into: Map<string, Buffer>, work: () => T): T {
 /** Shared atomic-write core for text and bytes. Writes `content` to a sibling temp file (created with 0o600 so it is never world-readable even transiently on POSIX), then renames over `dest`. On Windows a brief exclusive-lock window can make the rename fail with EPERM/EBUSY/ETXTBSY; we retry up to 5 times with a `50 * attempt` ms backoff. Any failure past this point -- a failed write (ENOSPC, EIO, ...) just as much as a failed rename -- tries to remove the temp file (twice) before the original error propagates; removal is best effort, so a `.tmp` file can remain next to `dest` when the unlink is refused. On POSIX the temp takes the destination's mode and, when they differ and the chown is allowed, its uid and gid; ACLs and extended attributes are not carried over. */
 function atomicWriteCore(requested: string, content: string | Uint8Array): void {
   assertWriteInScope(requested)
-  const held = stagedWrites?.get(foldPath(path.resolve(requested)))
+  const held = stagedWrites?.get(writePathKey(requested))
   if (held !== undefined) {
     held.bytes = typeof content === 'string' ? Buffer.from(content, 'utf-8') : Buffer.from(content)
     return
@@ -386,8 +390,8 @@ function atomicWriteCore(requested: string, content: string | Uint8Array): void 
     withRetryOnLock(() => renameSync(tmp, dest))
     const published = typeof content === 'string' ? Buffer.from(content, 'utf-8') : Buffer.from(content)
     for (const trace of writeTraces) {
-      trace.set(foldPath(path.resolve(requested)), published)
-      if (dest !== requested) trace.set(foldPath(path.resolve(dest)), published)
+      trace.set(writePathKey(requested), published)
+      if (dest !== requested) trace.set(writePathKey(dest), published)
     }
   } catch (err) {
     // Clean up the orphaned temp file on ANY failure past this point, not just a failed rename: the temp file is created by openSync before the write attempt, so it exists (and leaks) whether the write or the rename is what failed. Best-effort: a failed cleanup-unlink must never mask the original error.

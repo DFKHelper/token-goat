@@ -79,6 +79,9 @@ jobs:
           rustup toolchain install
           rustup target add "${targets[@]}"
           for t in "${targets[@]}"; do cargo check --locked --target "$t"; done
+      - name: Lint native/tg-hook
+        working-directory: native/tg-hook
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Check native/tg-hook on its minimum supported Rust version
         shell: bash
         working-directory: native/tg-hook

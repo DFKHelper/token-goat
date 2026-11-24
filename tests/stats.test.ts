@@ -290,12 +290,10 @@ describe('stats', () => {
     })
 
     it('buckets an evening-local timestamp into the local day, not the later UTC day it rolls into', () => {
-      // Regression test for a bug where stats appeared to happen "tomorrow": summarize() used to derive dateKey via toISOString() (always UTC), so any event recorded in the evening in a negative UTC-offset zone (UTC is already past local midnight) got bucketed into the next calendar day. Etc/GMT+5 is a fixed UTC-5 zone with no DST, so this is deterministic regardless of the host machine's real timezone.
       const originalTz = process.env['TZ']
-      process.env['TZ'] = 'Etc/GMT+5'
+      process.env['TZ'] = 'Etc/GMT+12'
       try {
-        // 2026-01-16T03:00:00Z == 2026-01-15T22:00:00 local (UTC-5): local day is the 15th, UTC day is already the 16th.
-        const ts = Math.floor(Date.UTC(2026, 0, 16, 3, 0, 0) / 1000)
+        const ts = Math.floor(Date.UTC(2026, 0, 16, 11, 30, 0) / 1000)
 
         const dbPath = path.join(tempDir, 'test.db')
         const db = openStatsDb(dbPath)
@@ -869,6 +867,29 @@ describe('stats', () => {
 
   // S2 regression: `stats` had no retention policy at all (411,208 rows / ~54 MB with indexes measured on one real install) -- rollupAndPruneStats aggregates old rows into stats_daily_rollup and deletes them, and summarize() folds the rollup back in so a long --window-days report keeps its totals even after the raw rows are gone.
   describe('rollupAndPruneStats', () => {
+    it('uses the same process-local day for rollups and summaries', () => {
+      const originalTz = process.env['TZ']
+      process.env['TZ'] = 'Etc/GMT+12'
+      let db: Database | undefined
+      try {
+        db = openStatsDb(path.join(tempDir, 'rollup-local-day-test.db'))
+        const ts = Math.floor(Date.UTC(2026, 0, 16, 11, 30, 0) / 1000)
+        db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, 'read_replacement', 100, 10)`).run(ts)
+
+        rollupAndPruneStats(db, 0)
+
+        const rollup = db.prepare(`SELECT day FROM stats_daily_rollup WHERE kind = 'read_replacement'`).get() as
+          | { day: string }
+          | undefined
+        expect(rollup?.day).toBe('2026-01-15')
+        expect(summarize(0, db).by_day.map((row) => row.date)).toEqual(['2026-01-15'])
+      } finally {
+        db?.close()
+        if (originalTz === undefined) delete process.env['TZ']
+        else process.env['TZ'] = originalTz
+      }
+    })
+
     it('aggregates rows older than retentionDays into stats_daily_rollup and deletes them, keeping recent rows raw', () => {
       const dbPath = path.join(tempDir, 'rollup-test.db')
       const db = openStatsDb(dbPath)

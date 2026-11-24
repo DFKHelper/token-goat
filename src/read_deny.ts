@@ -2,6 +2,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { normalizeDarwinSystemAlias, normalizePath } from './paths.js'
 import { CliError } from './command_error.js'
 import { loadConfig } from './config.js'
 import { emitErr } from './emit.js'
@@ -73,7 +74,12 @@ function foldsCase(platform: NodeJS.Platform): boolean {
 }
 
 function posixForMatch(p: string, platform: NodeJS.Platform): string {
-  let s = platform === 'win32' ? p.replace(/\\/g, '/') : p
+  let input = p
+  if (platform === process.platform) {
+    if (platform === 'win32') input = normalizePath(p)
+    else if (platform === 'darwin') input = normalizeDarwinSystemAlias(p)
+  }
+  let s = platform === 'win32' ? input.replace(/\\/g, '/') : input
   const drive = /^([A-Za-z]):(?:\/|$)/.exec(s)
   if (drive !== null) s = `/${drive[1] as string}${s.slice(2)}`
   s = s.replace(/\/{2,}/g, '/')

@@ -507,7 +507,11 @@ mod tests {
         };
         assert_eq!(pid, child.id(), "the recorded pid is the child's");
         drop(reap);
-        let gone = poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some();
+        let gone = poll_within(BACKSTOP, || {
+            let _ = child.try_wait();
+            process_is_gone(pid).then_some(())
+        })
+        .is_some();
         // Whatever the guard did, this test ends its own child.
         let _ = child.kill();
         let _ = child.wait();

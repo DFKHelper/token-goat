@@ -68,10 +68,12 @@ export function projectFileScope(rootPrefix: string, preserveRawPrefix = false):
   }
 }
 
-// Every distinct indexed path folded under rootPrefix, WITHOUT filtering by disk existence. Shared by findDeletablePaths and countFilesUnderRoot so both match the same fold/prefix rule.
+// Every indexed path folded under the canonical root or its raw alias, without checking disk existence.
 function foldedPathsUnderRoot(rootPrefix: string, dbPath: string, preserveRawPrefix = false): string[] {
-  const { foldedRootPrefix, foldedPrefix } = foldedBounds(rootPrefix)
+  const rawRoot = normalizePath(path.resolve(rootPrefix))
   const scope = projectFileScope(rootPrefix, preserveRawPrefix)
+  const canonicalBounds = foldedBounds(scope.root)
+  const rawBounds = foldedBounds(rawRoot)
   const rows = getDb(dbPath)
     .prepare(`SELECT path FROM files WHERE ${scope.clause}`)
     .all(
@@ -81,9 +83,15 @@ function foldedPathsUnderRoot(rootPrefix: string, dbPath: string, preserveRawPre
         ? []
         : [...scope.legacyBounds, foldPath(scope.legacyRoot)]),
     ) as Array<{ path: string }>
-  return rows.map((row) => row.path).filter((p) => {
-    const foldedP = foldPath(normalizePath(p))
-    return foldedP === foldedRootPrefix || foldedP.startsWith(foldedPrefix)
+  const candidates = new Set([...rows.map((row) => row.path), ...rawPathsUnderRoot(rawRoot, dbPath)])
+  return [...candidates].filter((value) => {
+    const folded = foldPath(normalizePath(value))
+    return (
+      folded === canonicalBounds.foldedRootPrefix ||
+      folded.startsWith(canonicalBounds.foldedPrefix) ||
+      folded === rawBounds.foldedRootPrefix ||
+      folded.startsWith(rawBounds.foldedPrefix)
+    )
   })
 }
 
@@ -525,3 +533,4 @@ export function findTopIndexedProjects(dbPath: string = globalDbPath(), limit = 
 }
 
 
+import * as path from 'node:path'

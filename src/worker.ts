@@ -822,7 +822,9 @@ export function idleReclaim(dbPath: string): boolean {
   const total = Number(db.pragma('page_count', { simple: true }))
   if (!(total > 0) || free / total < IDLE_VACUUM_MIN_FREE_SHARE) {
     // A reader that refuses the truncation leaves the log full-size, so the pass is not settled and the next cycle asks again; the checkpoint does not wait, so asking every cycle costs a lock attempt and no page copying while the reader stays, and stalls nothing.
-    return !walCheckpointBusyNoWait(db)
+    const settled = !walCheckpointBusyNoWait(db)
+    if (settled) optimizeDbPlanner(db, dbPath)
+    return settled
   }
   // Neither of the pass's own checkpoints waits for a reader either: while one stays, a wait would hold the whole worker for the connection's busy_timeout on every poll.
   const reclaimed = reclaimIndex(dbPath, { rebuild: false, waitForReaders: false })
@@ -1004,10 +1006,16 @@ export async function runWorkerLoop(
     if (pidFileSaysRetire()) break
     // The two cases the takeover check above cannot see, both of which strand a daemon that nothing can then find or stop. A pid file that is gone for longer than the grace: `stopWorker` and a `rm -rf` of the data dir both remove it, and on Windows the second cannot remove the rest (this daemon holds global.db and a watch on queue/ open), so the directory-gone exit never fires; a single missing read is still ignored, since a successor claiming the slot removes and recreates the file. And a pid file naming another process after a whole grace in which it never named us: the daemon it was handed to lost the slot before it ever owned it.
     let processed = 0
+    let drainCompleted = false
     try {
       processed = drainOnce(dir)
+      drainCompleted = true
     } catch {
       // A bad batch must not kill the daemon; skip and retry next cycle.
+    }
+    if (drainCompleted && processed > 0) {
+      const dbPath = path.join(dir, 'global.db')
+      optimizeDbPlanner(getDb(dbPath), dbPath)
     }
     if (retiringNow()) break
     // Projects a hook asked to have swept because it could not list the files a branch switch changed (see reconcile_requests.ts). After the dirty queue so the sweep's own enqueues wait for the next cycle, as the deferred requeues in drainOnce do. Awaited here rather than run inside drainOnce, which is synchronous: the sweep's git must not block the event loop. Counts as work so an idle daemon does not retire in the middle of a catch-up.
@@ -1153,3 +1161,4 @@ export function runDetachedWorkerDaemon(options?: { claimSlot: boolean }): void 
     void sigtermDrainDeadline().finally(() => process.exit(0))
   })
 }
+import { optimizeDbPlanner } from './db.js'

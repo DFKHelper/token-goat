@@ -27,6 +27,7 @@ import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from './sem
 import { guardJsonRows, guardText, largestFileSize, readFileText, recordReadStat, warnIfFilesStale } from './read_commands.js'
 import { dropDeniedRows, ReadDeniedError } from './read_deny.js'
 import { previewLines } from './read_meta.js'
+import { computeLexicalOverlapBoost, refineSemanticWindow } from './semantic_window.js'
 import { deniedFileFilter, resolveProjectConfinement } from './read_spec.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, extractErrorMessage, isTestFile } from './util.js'
@@ -109,10 +110,29 @@ interface FusedSemanticHit {
   kind: string | null
   distance: number | null
   previewText: string
+  windowStartLine: number
+  windowEndLine: number
   rrf: number
   // Which of the two retrievals produced this row. Derivable from `distance` for the dense leg alone, but not for the lexical one: a row the dense pass found and the FTS pass also voted for keeps its dense fields and only accumulates rank into `rrf`, so before these flags a both-lists row and a dense-only row rendered identically while sorting differently. That is the whole of what a reader cannot otherwise reconstruct from the printed output.
   inDense: boolean
   inLexical: boolean
+}
+
+function semanticHitWindowFields(
+  text: string,
+  startLine: number,
+  query: string,
+  name: string | null,
+  rrf: number,
+): Pick<FusedSemanticHit, 'previewText' | 'windowStartLine' | 'windowEndLine' | 'rrf'> {
+  const redacted = redactReadText(text)
+  const window = refineSemanticWindow(redacted, startLine, query)
+  return {
+    previewText: window.text,
+    windowStartLine: window.windowStartLine,
+    windowEndLine: window.windowEndLine,
+    rrf: rrf + computeLexicalOverlapBoost(query, name ?? '', '', redacted),
+  }
 }
 
 /** The fields every `--json` answer carries when matching on meaning took no part in it: the preflight's status, summary and required action when the embeddings are not ready, or the error the dense search raised when they were. Nothing when it ran, so a consumer reads a degraded answer the same way whether hits came back, none did, or the index is empty. */
@@ -334,8 +354,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       name: enclosing?.name ?? null,
       kind: enclosing?.kind ?? null,
       distance: h.distance,
-      previewText: redactReadText(h.text),
-      rrf: 1 / (RRF_K + denseRank),
+      ...semanticHitWindowFields(h.text, h.startLine, query, enclosing?.name ?? null, 1 / (RRF_K + denseRank)),
       inDense: true,
       inLexical: false,
     })
@@ -355,8 +374,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
         name: s.name,
         kind: s.kind,
         distance: null,
-        previewText: redactReadText(s.body),
-        rrf: 1 / (RRF_K + ftsRank),
+        ...semanticHitWindowFields(s.body, s.lineStart, query, s.name, 1 / (RRF_K + ftsRank)),
         inDense: false,
         inLexical: true,
       })
@@ -401,6 +419,8 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
         kind: h.kind,
         startLine: h.startLine,
         endLine: h.endLine,
+        windowStartLine: h.windowStartLine,
+        windowEndLine: h.windowEndLine,
         rank: i + 1,
         rrf: h.rrf,
         retrieval: h.inDense && h.inLexical ? 'both' : h.inDense ? 'dense' : 'lexical',

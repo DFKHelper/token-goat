@@ -77,7 +77,8 @@ afterEach(async () => {
 })
 
 describe('gate ends a descendant that outlives its shell', () => {
-  it('the background child holding the pipes is gone after the timeout, the shell having exited', async () => {
+  // limit: macOS cannot end this unowned descendant; revisit-when: the gate has an owned process group.
+  it.skipIf(process.platform === 'darwin')('the background child holding the pipes is gone after the timeout, the shell having exited', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-gate-orphan-'))

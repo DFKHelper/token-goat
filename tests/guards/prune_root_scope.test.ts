@@ -87,6 +87,22 @@ describe('a root spelling that normalizes to a whole volume is refused', () => {
 })
 
 describe('what sits at a path decides whether the indexed file is still there', () => {
+  it('prunes a deleted path under a raw alias without touching a sibling root', () => {
+    const realRoot = path.join(dir, 'alias-target')
+    const aliasRoot = path.join(dir, 'raw-alias')
+    const siblingRoot = path.join(dir, 'root-other')
+    fs.mkdirSync(realRoot)
+    fs.mkdirSync(siblingRoot)
+    fs.symlinkSync(realRoot, aliasRoot, process.platform === 'win32' ? 'junction' : 'dir')
+    const deleted = path.join(aliasRoot, 'gone.ts').split(path.sep).join('/')
+    const sibling = path.join(siblingRoot, 'live.ts').split(path.sep).join('/')
+    seedRow(deleted)
+    seedRow(sibling)
+    expect(pruneDeletedFiles(aliasRoot.split(path.sep).join('/'), dbPath)).toBe(1)
+    expect(rowsFor(deleted)).toBe(0)
+    expect(rowsFor(sibling)).toBe(1)
+  })
+
   it('prunes a file whose path is now occupied by a directory', () => {
     const p = path.join(dir, 'config.ts')
     fs.mkdirSync(p)

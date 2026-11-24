@@ -4,11 +4,22 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { buildBootstrapAudit, runBootstrapAudit } from '../src/cli_bootstrap_audit.js'
+import { foldPath } from '../src/path_containment.js'
+import { normalizePath } from '../src/paths.js'
 import { MAX_OLD_FILE_BYTES_FOR_DIFF } from '../src/write_target.js'
 
 // Every readFileSync the audit makes is recorded, and a path listed in refuseReads throws instead of being read, so a FIFO row proves the audit never reached for it without a real read that would hang the worker thread. The wrapper otherwise delegates.
 const readPaths = vi.hoisted(() => [] as string[])
 const refuseReads = vi.hoisted(() => new Set<string>())
+
+function samePath(a: string, b: string): boolean {
+  return foldPath(normalizePath(a)) === foldPath(normalizePath(b))
+}
+
+function wasRead(file: string): boolean {
+  return readPaths.some((readPath) => samePath(readPath, file))
+}
+
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   return {
@@ -271,7 +282,7 @@ describe('bootstrap-audit host limits: the Codex config read is bounded', () => 
   const projectConfigPath = (): string => path.join(scratch.project, '.codex', 'config.toml')
   const userConfigPath = (): string => path.join(scratch.codexHome, 'config.toml')
   const reasonFor = (result: Awaited<ReturnType<typeof buildBootstrapAudit>>, file: string): string | undefined =>
-    result.host_limits.diagnostics.find((d) => d.path.toLowerCase() === file.toLowerCase())?.reason
+    result.host_limits.diagnostics.find((d) => samePath(d.path, file))?.reason
 
   const canSymlink = ((): boolean => {
     const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-hostlimits-link-'))
@@ -293,8 +304,9 @@ describe('bootstrap-audit host limits: the Codex config read is bounded', () => 
     const made = spawnSync('mkfifo', [file], { encoding: 'utf8' })
     expect(made.status, made.stderr).toBe(0)
     refuseReads.add(file)
+    refuseReads.add(normalizePath(file))
     const result = await buildBootstrapAudit({ project: scratch.project, home: scratch.home })
-    expect(readPaths).not.toContain(file)
+    expect(wasRead(file), 'the FIFO path was read through another spelling').toBe(false)
     expect(reasonFor(result, file)).toContain('not a regular file')
     expect(result.host_limits.codex.budget_source).toBe('default')
   })
@@ -304,8 +316,8 @@ describe('bootstrap-audit host limits: the Codex config read is bounded', () => 
     fs.mkdirSync(projectConfigPath(), { recursive: true })
     fs.mkdirSync(userConfigPath(), { recursive: true })
     const result = await buildBootstrapAudit({ project: scratch.project, home: scratch.home })
-    expect(readPaths).not.toContain(projectConfigPath())
-    expect(readPaths).not.toContain(userConfigPath())
+    expect(wasRead(projectConfigPath()), 'the project directory was read through another spelling').toBe(false)
+    expect(wasRead(userConfigPath()), 'the user directory was read through another spelling').toBe(false)
     expect(reasonFor(result, projectConfigPath())).toContain('not a regular file')
     expect(reasonFor(result, userConfigPath())).toContain('not a regular file')
     expect(result.host_limits.codex).toMatchObject({ budget_bytes: 32768, budget_source: 'default' })
@@ -339,7 +351,7 @@ describe('bootstrap-audit host limits: the Codex config read is bounded', () => 
     fs.mkdirSync(path.dirname(projectConfigPath()), { recursive: true })
     fs.symlinkSync(outside, projectConfigPath())
     const refused = await buildBootstrapAudit({ project: scratch.project, home: scratch.home })
-    expect(readPaths).not.toContain(projectConfigPath())
+    expect(wasRead(projectConfigPath()), 'the outside symlink was read through another spelling').toBe(false)
     expect(reasonFor(refused, projectConfigPath())).toContain('leads outside the project')
     expect(refused.host_limits.codex).toMatchObject({ budget_bytes: 32768, budget_source: 'default' })
     fs.unlinkSync(projectConfigPath())
