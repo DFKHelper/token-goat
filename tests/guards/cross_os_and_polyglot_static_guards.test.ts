@@ -189,4 +189,16 @@ describe('cross-OS and polyglot static checks', () => {
     expect(hasUnparenthesizedCaseInCommandSubstitution('value=$(case "$x" in bad) echo ok ;; esac)')).toBe(true)
     expect(hasUnparenthesizedCaseInCommandSubstitution('value=$(case "$x" in (*pat*) echo ok ;; esac)')).toBe(false)
   })
+
+  const hasCargoFmt = spawnSync('cargo', ['fmt', '--version'], { cwd: ROOT, encoding: 'utf8', timeout: 10_000, windowsHide: true }).status === 0
+
+  it.skipIf(!hasCargoFmt)('keeps native/tg-hook Rust sources formatted per rustfmt', () => {
+    const check = spawnSync('cargo', ['fmt', '--manifest-path', 'native/tg-hook/Cargo.toml', '--', '--check'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 15_000,
+      windowsHide: true,
+    })
+    expect({ status: check.status, stdout: check.stdout, stderr: check.stderr }).toMatchObject({ status: 0 })
+  })
 })

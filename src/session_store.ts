@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { registerReset } from './reset.js'
 import { ensureDirSync, atomicWriteText, foldPath, sanitizeIdForFilename, withFileLock, withRetryOnLock } from './util.js'
 import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
@@ -591,10 +592,16 @@ export function listSiblingSessionStates(sessionId: string): SerializedSession[]
 /** What a session with nothing on disk starts from. */
 const EMPTY_SESSION: SerializedSession = { files: [], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] }
 
+/** Unsaved per-session snapshots retained in-process when {@link saveSessionState} skips a write after {@link SESSION_SAVE_LOCK_WAIT_MS} behind another live lock holder, so a subsequent {@link loadSessionState} or {@link saveSessionState} in the same process merges rather than drops the skipped delta. Cleared only on full module reset (`clearModuleCaches`), not between resident hook-server requests (`perRequest: false`), so a resident server serving back-to-back hooks for the same session preserves skipped writes too. */
+const _pendingUnsavedBySession = new Map<string, SerializedSession>()
+registerReset(() => _pendingUnsavedBySession.clear())
+
 /** Load the persisted state for `sessionId` into the in-memory session maps. A clean session when no file exists or the id is empty/unusable, never the previous one's: the pi, opencode and OpenClaw bridges call relayInProcess inside their long-lived host process, which serves one session after another (pi re-fires session_start with a new id on new, resume and fork). Fail-soft: a corrupt file leaves the session empty rather than throwing. */
 export function loadSessionState(sessionId: string): void {
   const p = sessionPath(sessionId)
-  importSessionState((p ? readDiskState(p) : null) ?? EMPTY_SESSION)
+  const disk = (p ? readDiskState(p) : null) ?? EMPTY_SESSION
+  const pending = sessionId ? _pendingUnsavedBySession.get(sessionId) : undefined
+  importSessionState(pending ? capFiles(mergeSessionState(disk, pending), MAX_FILES) : disk)
   applySessionCompaction(sessionId)
 }
 
@@ -627,7 +634,9 @@ export function saveSessionState(sessionId: string): void {
     // saveSessionState is the actual race: every hook call is a fresh OS process, and two concurrent processes for the same session can each read the pre-update disk state, merge it with their own view, and write -- whichever write lands last silently clobbers the other's update, with no error. A short-lived lockfile around just this read-merge-write section serializes concurrent savers, so each one's disk read reflects every write that already landed.
     const writeMerged = (): true => {
       const disk = readDiskStateForMerge(p)
-      const merged = capFiles(disk ? mergeSessionState(disk, mem) : mem, MAX_FILES)
+      const pending = _pendingUnsavedBySession.get(sessionId)
+      const local = pending ? mergeSessionState(pending, mem) : mem
+      const merged = capFiles(disk ? mergeSessionState(disk, local) : local, MAX_FILES)
       // Stamp the cache's creation time exactly once, on the first write that produces no inherited value (disk had none and mem carries none). Every later write inherits it via readDiskStateForMerge -> coerce -> mergeSessionState, so it represents creation, not last-modification. Unit: seconds, matching compact.ts's `Date.now() / 1000 - created_ts` age computation.
       if (merged.created_ts === undefined) merged.created_ts = Date.now() / 1000
       // Defense-in-depth backstop, not the primary control: individual fields (e.g. recordOutstandingAgentSpawn in session.ts) redact at their own write sites, but CLAUDE.arch.md documents that this file is the one place a *new* SerializedSession field does not automatically inherit redaction -- relying on every future field's author to remember a redactSecrets() call is exactly the gap that shipped outstandingAgentSpawns unredacted. Sweeping the fully-serialized JSON here, at the sole place this state ever reaches disk, means a future field is covered whether or not its author remembered. Fail-safe like storeBlob(): if redaction itself throws, skip this write rather than risk persisting unredacted content -- the next successful save still merges from disk.
@@ -638,12 +647,20 @@ export function saveSessionState(sessionId: string): void {
         return true
       }
       atomicWriteText(p, json)
+      _pendingUnsavedBySession.delete(sessionId)
       return true
     }
     // Two concurrent hook processes for the same session_id contend on this lock for their entire lifetime (every save re-acquires it), and a saver that writes without it can clobber the other's update with no error.
     let heldByAnother = false
-    // A hook is the agent's tool call, so it waits SESSION_SAVE_LOCK_WAIT_MS and no longer. A lock still held after that skips this save: the next call's save merges from disk, whereas an unlocked write is the clobber the lock exists to prevent.
-    if (withFileLock(`${p}.lock`, writeMerged, { waitMs: SESSION_SAVE_LOCK_WAIT_MS, onContended: () => { heldByAnother = true } }) === undefined && !heldByAnother) writeMerged()
+    // A hook is the agent's tool call, so it waits SESSION_SAVE_LOCK_WAIT_MS and no longer. A lock still held after that skips this save: we retain `mem` in `_pendingUnsavedBySession` so the next in-process load/save merges it rather than wiping it, whereas an unlocked write is the clobber the lock exists to prevent.
+    const wrote = withFileLock(`${p}.lock`, writeMerged, { waitMs: SESSION_SAVE_LOCK_WAIT_MS, onContended: () => { heldByAnother = true } })
+    if (wrote === undefined) {
+      if (!heldByAnother) writeMerged()
+      else {
+        const prev = _pendingUnsavedBySession.get(sessionId)
+        _pendingUnsavedBySession.set(sessionId, capFiles(prev ? mergeSessionState(prev, mem) : mem, MAX_FILES))
+      }
+    }
   } catch {
     // fail-soft: never let persistence break a hook
   }
