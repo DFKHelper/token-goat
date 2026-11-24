@@ -70,10 +70,10 @@ export function projectFileScope(rootPrefix: string, preserveRawPrefix = false):
 
 // Every indexed path folded under the canonical root or its raw alias, without checking disk existence.
 function foldedPathsUnderRoot(rootPrefix: string, dbPath: string, preserveRawPrefix = false): string[] {
-  const rawRoot = normalizePath(path.resolve(rootPrefix))
+  const rawRoot = normalizeRootPrefix(path.resolve(rootPrefix), true)
   const scope = projectFileScope(rootPrefix, preserveRawPrefix)
   const canonicalBounds = foldedBounds(scope.root)
-  const rawBounds = foldedBounds(rawRoot)
+  const rawBounds = foldedBounds(rawRoot, true)
   const rows = getDb(dbPath)
     .prepare(`SELECT path FROM files WHERE ${scope.clause}`)
     .all(
@@ -86,11 +86,12 @@ function foldedPathsUnderRoot(rootPrefix: string, dbPath: string, preserveRawPre
   const candidates = new Set([...rows.map((row) => row.path), ...rawPathsUnderRoot(rawRoot, dbPath)])
   return [...candidates].filter((value) => {
     const folded = foldPath(normalizePath(value))
+    const rawFolded = foldPath(value.replace(/\\/g, '/'))
     return (
       folded === canonicalBounds.foldedRootPrefix ||
       folded.startsWith(canonicalBounds.foldedPrefix) ||
-      folded === rawBounds.foldedRootPrefix ||
-      folded.startsWith(rawBounds.foldedPrefix)
+      rawFolded === rawBounds.foldedRootPrefix ||
+      rawFolded.startsWith(rawBounds.foldedPrefix)
     )
   })
 }

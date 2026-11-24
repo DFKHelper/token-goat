@@ -116,7 +116,7 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddin
   const vacuumDeferred = !vacuumOrDefer(db, { noWait })
   const finalCheckpointBusy = checkpoint(db)
   const checkpointBusyAny = checkpointBusy || finalCheckpointBusy
-  if (!checkpointBusyAny && !vacuumDeferred) optimizeDbPlanner(db, dbPath)
+  if (rebuild && !checkpointBusyAny && !vacuumDeferred) optimizeDbPlanner(db, dbPath)
 
   return {
     beforeBytes,

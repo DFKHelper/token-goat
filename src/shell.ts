@@ -18,6 +18,12 @@ function isExecutable(p: string): boolean {
   }
 }
 
+export function resolveGitBashUserland(bash: string, isExe: (p: string) => boolean = isExecutable): string {
+  if (!/[\\/]git[\\/]bin[\\/]bash\.exe$/i.test(bash)) return bash
+  const direct = path.win32.join(path.win32.dirname(path.win32.dirname(bash)), 'usr', 'bin', 'bash.exe')
+  return isExe(direct) ? direct : bash
+}
+
 // True when any path segment of *dir* is a known WSL-launcher directory. Splits on both separators via regex (not path.basename, which only splits the host platform's separator) so the check behaves identically when unit-tested on a POSIX runner with Windows-style paths.
 function isWslLauncherDir(dir: string): boolean {
   return dir
@@ -34,7 +40,7 @@ export function locateBashOnPath(
   for (const dir of (pathValue ?? '').split(path.delimiter)) {
     if (!dir || isWslLauncherDir(dir)) continue
     const cand = path.join(dir, 'bash.exe')
-    if (isExe(cand)) return cand
+    if (isExe(cand)) return resolveGitBashUserland(cand, isExe)
   }
   return null
 }
@@ -63,11 +69,11 @@ function knownGitBashPaths(): string[] {
 export function resolveWindowsBash(): string | null {
   if (process.platform !== 'win32') return null
   const override = process.env['TOKEN_GOAT_BASH']
-  if (override && isExecutable(override)) return override
+  if (override && isExecutable(override)) return resolveGitBashUserland(override)
   const onPath = locateBashOnPath(process.env['PATH'])
   if (onPath) return onPath
   for (const cand of knownGitBashPaths()) {
-    if (isExecutable(cand)) return cand
+    if (isExecutable(cand)) return resolveGitBashUserland(cand)
   }
   return null
 }

@@ -774,8 +774,8 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
       expect(absent.message).not.toContain('self-test passed')
     } else {
       // The entries ran the packaged binary itself, which has gone with it.
-      expect(absent.status, absent.message).toBe('fail')
-      expect(absent.message).toContain('which no longer exists')
+      expect(absent.status, absent.message).toBe('warn')
+      expect(absent.message).toContain('no longer exists; the guarded hook entries fall back to the Node shim meanwhile')
     }
     install(sb, ['--codex'])
     expect(wiredBin()).toBeUndefined()

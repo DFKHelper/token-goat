@@ -124,6 +124,7 @@ function semanticHitWindowFields(
   query: string,
   name: string | null,
   rrf: number,
+  source: 'dense' | 'fts',
 ): Pick<FusedSemanticHit, 'previewText' | 'windowStartLine' | 'windowEndLine' | 'rrf'> {
   const redacted = redactReadText(text)
   const window = refineSemanticWindow(redacted, startLine, query)
@@ -131,7 +132,7 @@ function semanticHitWindowFields(
     previewText: window.text,
     windowStartLine: window.windowStartLine,
     windowEndLine: window.windowEndLine,
-    rrf: rrf + computeLexicalOverlapBoost(query, name ?? '', '', redacted),
+    rrf: rrf + (source === 'dense' ? computeLexicalOverlapBoost(query, name ?? '', '', redacted) : 0),
   }
 }
 
@@ -354,7 +355,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       name: enclosing?.name ?? null,
       kind: enclosing?.kind ?? null,
       distance: h.distance,
-      ...semanticHitWindowFields(h.text, h.startLine, query, enclosing?.name ?? null, 1 / (RRF_K + denseRank)),
+      ...semanticHitWindowFields(h.text, h.startLine, query, enclosing?.name ?? null, 1 / (RRF_K + denseRank), 'dense'),
       inDense: true,
       inLexical: false,
     })
@@ -374,7 +375,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
         name: s.name,
         kind: s.kind,
         distance: null,
-        ...semanticHitWindowFields(s.body, s.lineStart, query, s.name, 1 / (RRF_K + ftsRank)),
+        ...semanticHitWindowFields(s.body, s.lineStart, query, s.name, 1 / (RRF_K + ftsRank), 'fts'),
         inDense: false,
         inLexical: true,
       })

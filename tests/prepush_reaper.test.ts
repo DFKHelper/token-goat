@@ -1,6 +1,6 @@
 /** The pre-push cleanup process (.lefthook-scripts/prepush-reaper.sh), run for real from a small driver that sources prepush-cap.sh, registers a leg and exits as the hook does: the leg and its tree must be ended within REAP_GRACE_S of the hook's exit even where taskkill leaves a child or hangs, a process it cannot end must be named in the record, and the cleanup process itself must be gone. */
 import { spawnSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,6 +112,7 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
         '',
       ].join('\n'),
     )
+    chmodSync(file('leg.sh'), 0o755)
   }
 
   // Runs one driver: it sources the cap, starts the leg through cap_register, waits until the leg's sleep exists, runs `extra`, writes the cleanup process's Windows pid and returns, which is the hook's exit. Returns once the driver has exited.
@@ -167,7 +168,9 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     const stub = file('stub-reaper')
     mkdirSync(stub)
     const body = delayS === null ? ['exit 3'] : [`sleep ${delayS}`, `exec "$BASH" "${slash(REAPER_SCRIPT)}" "$@"`]
-    writeFileSync(path.join(stub, 'prepush-reaper.sh'), ['#!/usr/bin/env bash', ...body, ''].join('\n'))
+    const script = path.join(stub, 'prepush-reaper.sh')
+    writeFileSync(script, ['#!/usr/bin/env bash', ...body, ''].join('\n'))
+    chmodSync(script, 0o755)
     return slash(stub)
   }
 
@@ -196,7 +199,9 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     // The stand-in records its own Windows pid first, never writes `up`, and ends by itself when the row's sentinel file is gone (the row removes it in `finally`) or after 300 ticks.
     const sentinel = file('stub.alive')
     writeFileSync(sentinel, '')
-    writeFileSync(path.join(stub, 'prepush-reaper.sh'), ['#!/usr/bin/env bash', ...(ignoreTerm ? ["trap '' TERM"] : []), 'w=$$; if [[ -r "/proc/$$/winpid" ]]; then read -r w <"/proc/$$/winpid"; fi', 'echo "$w" >"$D/stub.winpid"', 'i=0; while [[ -e "$D/stub.alive" ]] && (( i < 300 )); do sleep 1; i=$((i + 1)); done', ''].join('\n'))
+    const script = path.join(stub, 'prepush-reaper.sh')
+    writeFileSync(script, ['#!/usr/bin/env bash', ...(ignoreTerm ? ["trap '' TERM"] : []), 'w=$$; if [[ -r "/proc/$$/winpid" ]]; then read -r w <"/proc/$$/winpid"; fi', 'echo "$w" >"$D/stub.winpid"', 'i=0; while [[ -e "$D/stub.alive" ]] && (( i < 300 )); do sleep 1; i=$((i + 1)); done', ''].join('\n'))
+    chmodSync(script, 0o755)
     try {
       runDriver([], { STUB_REAPER_DIR: slash(stub), PREPUSH_HARD_STOP_S: '3' }, undefined, 1)
       expect(readFileSync(file('driver.out'), 'utf8')).toContain('the cleanup process was not up by the 3s hard-stop budget')
@@ -251,10 +256,12 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
   const writeHangTaskkill = (): string => {
     const bin = file('hangbin')
     mkdirSync(bin)
+    const taskkill = path.join(bin, 'taskkill')
     writeFileSync(
-      path.join(bin, 'taskkill'),
+      taskkill,
       ['#!/usr/bin/env bash', 'w=$$; if [[ -r "/proc/$$/winpid" ]]; then read -r w <"/proc/$$/winpid"; fi', 'echo "$w" >>"$DRIVER_DIR/hung-taskkill.pids"', `sleep 300.${tag} 9<&-`, ''].join('\n'),
     )
+    chmodSync(taskkill, 0o755)
     return slash(bin)
   }
   const hungTaskkillPids = (): number[] =>
@@ -300,7 +307,9 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
   it.skipIf(!bashAvailable)('names a process it cannot end as left running, and exits by its deadline', () => {
     const bin = file('bin')
     mkdirSync(bin)
-    writeFileSync(path.join(bin, 'taskkill'), '#!/usr/bin/env bash\nexit 0\n')
+    const taskkill = path.join(bin, 'taskkill')
+    writeFileSync(taskkill, '#!/usr/bin/env bash\nexit 0\n')
+    chmodSync(taskkill, 0o755)
     const shadow = file('kill-shadow.sh')
     writeFileSync(
       shadow,
@@ -319,7 +328,9 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
   it.skipIf(!bashAvailable)('records a leg as ended, and it is gone, when ending its child lets it finish', () => {
     const bin = file('bin')
     mkdirSync(bin)
-    writeFileSync(path.join(bin, 'taskkill'), '#!/usr/bin/env bash\nexit 0\n')
+    const taskkill = path.join(bin, 'taskkill')
+    writeFileSync(taskkill, '#!/usr/bin/env bash\nexit 0\n')
+    chmodSync(taskkill, 0o755)
     const shadow = file('kill-shadow.sh')
     writeFileSync(
       shadow,
@@ -337,7 +348,9 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
   it.skipIf(!bashAvailable)('exits by the grace after the hook is gone even when it was ending a request at that moment', () => {
     const bin = file('bin')
     mkdirSync(bin)
-    writeFileSync(path.join(bin, 'taskkill'), '#!/usr/bin/env bash\nexit 0\n')
+    const taskkill = path.join(bin, 'taskkill')
+    writeFileSync(taskkill, '#!/usr/bin/env bash\nexit 0\n')
+    chmodSync(taskkill, 0o755)
     const shadow = file('kill-shadow.sh')
     writeFileSync(
       shadow,
@@ -459,7 +472,9 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
 
   it.skipIf(!bashAvailable)('ends itself when sleep keeps failing and the timed read returns at once', () => {
     mkdirSync(file('sbin'))
-    writeFileSync(path.join(file('sbin'), 'sleep'), '#!/usr/bin/env bash\nexit 1\n')
+    const sleep = path.join(file('sbin'), 'sleep')
+    writeFileSync(sleep, '#!/usr/bin/env bash\nexit 1\n')
+    chmodSync(sleep, 0o755)
     const got = runLib([
       'exec 9<&-',
       'SBIN_DIR="$DRIVER_DIR/sbin"',

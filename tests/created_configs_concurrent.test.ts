@@ -50,6 +50,7 @@ afterEach(() => {
 function childEnv(home: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    VITEST_ALLOW_REAL_DATA_DIR: '1',
     HOME: home,
     USERPROFILE: home,
     LOCALAPPDATA: path.join(home, 'AppData', 'Local'),

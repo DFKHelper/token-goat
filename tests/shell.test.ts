@@ -28,6 +28,19 @@ describe('locateBashOnPath', () => {
     expect(locateBashOnPath(PATH_OF(GIT_DIR), exists(gitBash))).toBe(gitBash)
   })
 
+  it('uses the direct Git-Bash sibling when PATH finds the bin launcher', () => {
+    const launcherDir = 'root\\Git\\bin'
+    const launcher = path.join(launcherDir, 'bash.exe')
+    const direct = path.win32.join('root\\Git', 'usr', 'bin', 'bash.exe')
+    expect(locateBashOnPath(PATH_OF(launcherDir), exists(launcher, direct))).toBe(direct)
+  })
+
+  it('keeps the Git-Bash launcher when its direct sibling is absent', () => {
+    const launcherDir = 'root\\Git\\bin'
+    const launcher = path.join(launcherDir, 'bash.exe')
+    expect(locateBashOnPath(PATH_OF(launcherDir), exists(launcher))).toBe(launcher)
+  })
+
   it('skips WSL-launcher dirs even when their bash.exe exists and precedes Git-Bash', () => {
     // Both a System32 and a WindowsApps bash.exe "exist" and sit before Git-Bash on PATH. The resolver must skip both and return Git-Bash. This is the mutation anchor: drop the WSL-launcher skip and this returns the System32 launcher instead.
     const found = locateBashOnPath(PATH_OF(WSL_DIR, APPS_DIR, GIT_DIR), exists(wslBash, appsBash, gitBash))

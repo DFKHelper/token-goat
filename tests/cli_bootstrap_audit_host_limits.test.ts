@@ -146,7 +146,7 @@ describe('bootstrap-audit host limits: Codex AGENTS.md', () => {
     expect(fs.realpathSync.native(result.host_limits.codex.config_path).toLowerCase()).toBe(fs.realpathSync.native(projectConfig).toLowerCase())
     expect(finding.outcome).toBe('cut')
     expect(finding.not_loaded_bytes).toBe(200)
-    expect(finding.advice?.toLowerCase()).toContain(projectConfig.toLowerCase())
+    expect(finding.advice?.toLowerCase()).toContain(fs.realpathSync.native(projectConfig).toLowerCase())
   })
 
   // FORMAT-DERIVED: the layer list in https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/config/src/loader/mod.rs (lines 125-135, read 2026-10-19) puts `user` before `repo`, and the file's comment at line 109 says layers are collected in ascending precedence order, so the project value wins and an unset project key falls through to the user's.
