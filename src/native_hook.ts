@@ -11,6 +11,7 @@ import { noopFor } from './hook_adapters.js'
 import { buildGuardedCommand, parseGuardedCommand, HookCommandRewriteError } from './hook_guard.js'
 import { clearHookBroken, hookBrokenPath, writeHookPointer } from './hook_pointer.js'
 import { displaySafeText } from './paths.js'
+import { installNodePath, plainWindowsPath } from './process_util.js'
 import { nativeBuildStamp, newerBuild } from './native_build_stamp.js'
 import { registerReset } from './reset.js'
 import { withRetryOnLock } from './util.js'
@@ -373,7 +374,7 @@ const PATH_FLAGS: ReadonlySet<string> = new Set(['--entry', '--script-dir'])
 function nativeWords(bin: string, harness: NativeHarness, scriptPath: string, event: string, entry: string): Word[] {
   const flags = nativeHookFlags(harness, event, entry, scriptPath)
   const flagWords = flags.map((text, i) => ({ text, quote: i > 0 && PATH_FLAGS.has(flags[i - 1]!) }))
-  return [{ text: bin, quote: true }, ...flagWords, { text: '--', quote: false }, { text: process.execPath, quote: true }, { text: scriptPath, quote: true }, { text: event, quote: false }, { text: entry, quote: true }]
+  return [{ text: bin, quote: true }, ...flagWords, { text: '--', quote: false }, { text: installNodePath(), quote: true }, { text: scriptPath, quote: true }, { text: event, quote: false }, { text: entry, quote: true }]
 }
 
 /** Guarded command line for `shell`; undefined without an entry path. `bin` leads, else Node alone. */
@@ -396,7 +397,7 @@ export function nativeHookCommandLine(
 /** The native exec-form entry (Claude Code >= 2.1.139): the binary as `command`, everything else as `args`, with no shell in between. */
 export function nativeHookExecParts(bin: string, harness: NativeHarness, scriptPath: string, event: string, entry: string | undefined = process.argv[1]): { command: string; args: string[] } | undefined {
   if (nodeHookArgv(scriptPath, event, entry) === undefined) return undefined
-  return { command: bin, args: nativeWords(bin, harness, scriptPath, event, entry!).slice(1).map((w) => w.text) }
+  return { command: plainWindowsPath(bin), args: nativeWords(bin, harness, plainWindowsPath(scriptPath), event, plainWindowsPath(entry!)).slice(1).map((w) => w.text) }
 }
 
 /** Split a hook command string into the argv its harness's shell hands the program, for the quoting token-goat writes: single quotes (with `'\''` in a POSIX shell, `''` in PowerShell), double quotes (backslash escapes only in a POSIX shell off Windows, where hookCommandFor writes them), and bare words. A leading PowerShell call operator is dropped, and a PowerShell line ends at its first unquoted `;` (what follows is POWERSHELL_EXIT_SUFFIX, not the program's argv). Not a general shell parser: variables, globs and operators are not expanded, because nothing token-goat writes contains them. */

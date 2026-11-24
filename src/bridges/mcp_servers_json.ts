@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import type { ParseError } from 'jsonc-parser'
 import { jsonc, stripBom } from '../jsonc_text.js'
 import { hasCreatedConfig, recordCreatedRootKey, takeCreatedRootKey } from './created_configs.js'
+import { installNodePath } from '../process_util.js'
 
 /** Resolves the shipping `dist/token-goat.mjs` path from within a bridge module; shared with `./zed_install.ts`'s shim script, which needs the identical bundle path but cannot use `managedServer()`'s stdio-args shape (Zed shell-executes a single `command` string, not `command`+`args`). */
 export function bundledCliPath(): string {
@@ -18,7 +19,7 @@ export function bundledCliPath(): string {
 export function managedServer(): Record<string, unknown> {
   return {
     type: 'stdio',
-    command: process.execPath,
+    command: installNodePath(),
     args: [bundledCliPath(), 'mcp-serve'],
   }
 }

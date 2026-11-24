@@ -24,7 +24,7 @@ import {
 } from './native_hook.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
-import { resolveOnPath, spawnResolvedSync } from './process_util.js'
+import { plainWindowsPath, resolveOnPath, spawnResolvedSync } from './process_util.js'
 import type { HookEventName } from './types.js'
 import {
   ensureDirRecordingCreation,
@@ -161,6 +161,8 @@ function realPathOrNull(p: string): string | null {
 /** Two argv words name the same thing: the same spelling, or two spellings of one file that exists. The bundle path in a hook comes from `process.argv[1]` of whichever process ran `install`, so a global npm install reached through a symlink or `npm link` writes one spelling and a `doctor` launched the other way expects the other, while both run the same file. */
 function sameHookWord(a: string, b: string): boolean {
   if (a === b) return true
+  // A device-prefixed word is never the plain word of the same file: a registered `\\?\C:\x` is rewritten.
+  if (plainWindowsPath(a) !== a || plainWindowsPath(b) !== b) return false
   const realA = realPathOrNull(a)
   return realA !== null && realA === realPathOrNull(b)
 }
@@ -372,8 +374,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
 
   // The shim is a generated, never-user-edited file: refresh it on every install call so it tracks the running token-goat version, independent of whether the settings.json wiring itself needs any change. Mirrors bridges/codex_install.ts. writeIfDifferent rather than an unconditional atomicWriteText so a genuine no-op install touches nothing on disk, and so a repaired shim (user deleted ~/.claude/hooks, or an older build left stale content) counts as a real change via `scriptChanged` -- reporting "already installed" while having just rewritten the file the hooks depend on would be a lie to anyone running install precisely to repair it.
   const scriptPath = claudeHookScriptPath()
-  // The shim is home-scoped even on a project-scope install -- BOTH scopes share the one copy at `~/.claude/hooks/token-goat-shim.cjs` (see uninstallHooks' anyScopeReferencesShim) -- so this write is declared user scope explicitly rather than inheriting the project confinement, which would otherwise refuse it. Written down rather than exempted by path: `~/.claude` is the user's own directory, and a dotfiles symlink pointing it elsewhere is the setup bridges/project_scope_guard.ts deliberately allows.
-  // limit: shim goes live before its probe, put back on failure; revisit-when: the probe runs staged files
+  // The shim is home-scoped even on a project-scope install -- BOTH scopes share the one copy at `~/.claude/hooks/token-goat-shim.cjs` (see uninstallHooks' anyScopeReferencesShim) -- so this write is declared user scope explicitly rather than inheriting the project confinement, which would otherwise refuse it. Written down rather than exempted by path: `~/.claude` is the user's own directory, and a dotfiles symlink pointing it elsewhere is the setup bridges/project_scope_guard.ts deliberately allows. limit: shim goes live before its probe, put back on failure; revisit-when: the probe runs staged files
   const shimPaths = [claudeLegacyHookScriptPath(), scriptPath]
   const shimWrite = tracedFileWrites(shimPaths, () => withInstallScope(undefined, () => {
     ensureDirRecordingCreation(path.dirname(scriptPath))

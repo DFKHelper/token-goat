@@ -8,6 +8,7 @@ import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedCo
 import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { atomicWriteBytes, backupFile, writeConfigText, writeIfDifferent } from '../util.js'
 import { echoedValue } from '../hint_suggestion_guard.js'
+import { installNodePath } from '../process_util.js'
 
 const CONTEXT_SERVERS_KEY = 'context_servers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -39,7 +40,7 @@ export function zedShimPath(): string {
 
 /** Builds the shim script content for the current platform, invoking the same absolute Node binary + bundle path `managedServer()` (`./mcp_servers_json.ts`) uses for VS Code/Visual Studio, since Zed's `command` field is a single shell-executed string rather than a `command`+`args` pair. */
 function buildShimScript(): string {
-  const nodePath = process.execPath
+  const nodePath = installNodePath()
   const cliPath = bundledCliPath()
   if (process.platform === 'win32') {
     return `@echo off\r\n"${nodePath}" "${cliPath}" mcp-serve\r\n`

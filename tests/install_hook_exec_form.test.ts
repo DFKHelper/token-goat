@@ -155,6 +155,61 @@ describe('exec-form hook registration', () => {
   })
 })
 
+describe('a registered device-prefixed command is rewritten to the plain form', () => {
+  it('a stored \\\\?\\ spelling of the same shim is not the same word, so install replaces it', () => {
+    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '0'
+    const shim = claudeHookScriptPath()
+    fs.mkdirSync(path.dirname(shim), { recursive: true })
+    fs.writeFileSync(shim, '// shim\n')
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const plainCommand = expectedHookEntryFor(shim, 'pre_tool_use').command
+    const deviceShim = `\\\\?\\${fs.realpathSync.native(shim)}`
+    const stored = plainCommand.split(shim).join(deviceShim)
+    expect(stored, 'the seeded command names the device-prefixed spelling').not.toBe(plainCommand)
+    fs.writeFileSync(p, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '', hooks: [{ type: 'command', command: stored }] }] } }))
+
+    installHooks('project')
+    const hooks = readSettingsFile(p).hooks?.['PreToolUse']?.flatMap((g) => g.hooks) ?? []
+    expect(hooks[0]?.command, 'the stored command is rewritten to the plain shim spelling').toBe(plainCommand)
+  })
+})
+
+describe('exec-form parts never name a device-prefixed path', () => {
+  let origArgv1: string | undefined
+  let origExecPath: string
+
+  beforeEach(() => {
+    origArgv1 = process.argv[1]
+    origExecPath = process.execPath
+  })
+
+  afterEach(() => {
+    process.argv[1] = origArgv1!
+    process.execPath = origExecPath
+  })
+
+  it('the node binary, the shim and the entry are each written in plain form', () => {
+    process.argv[1] = '\\\\?\\C:\\tgwt\\dist\\token-goat.mjs'
+    process.execPath = '\\\\?\\C:\\Program Files\\nodejs\\node.exe'
+    const parts = hookExecPartsFor('\\\\?\\C:\\Users\\me\\.claude\\hooks\\token-goat-shim.cjs', 'pre_tool_use')
+    expect(parts.command, 'the node binary is the plain drive form').toBe('C:\\Program Files\\nodejs\\node.exe')
+    expect(parts.args, 'the shim and the entry are the plain drive form').toEqual([
+      'C:\\Users\\me\\.claude\\hooks\\token-goat-shim.cjs',
+      'pre_tool_use',
+      'C:\\tgwt\\dist\\token-goat.mjs',
+    ])
+  })
+
+  it('a plain UNC entry and node binary are written unchanged', () => {
+    process.argv[1] = '\\\\host\\share\\token-goat.mjs'
+    process.execPath = '\\\\host\\share\\node.exe'
+    const parts = hookExecPartsFor('C:\\Users\\me\\.claude\\hooks\\token-goat-shim.cjs', 'pre_tool_use')
+    expect(parts.command, 'a plain UNC node binary is not rewritten').toBe('\\\\host\\share\\node.exe')
+    expect(parts.args[2], 'a plain UNC entry is not rewritten').toBe('\\\\host\\share\\token-goat.mjs')
+  })
+})
+
 // CAPTURE: on the maintainer's machine the global npm install is a directory link to the checkout, ~/.claude/settings.json held the exec-form entry `node.exe [shim, "pre_tool_use", "C:\Projects\token-goat\dist\token-goat.mjs"]`, and `token-goat doctor` launched through the npm shim (process.argv[1] = `...\npm\node_modules\token-goat\dist\token-goat.mjs`) reported all eight wired events as missing, while the same doctor launched by the checkout path reported none of them. The junction below reproduces that pair of spellings for one file.
 describe('a bundle reached through a directory link is the same hook', () => {
   let origArgv1: string | undefined

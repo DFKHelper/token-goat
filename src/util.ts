@@ -40,6 +40,8 @@ export {
   installEpipeGuard,
 } from './process_util.js'
 import {
+  installEntryPath,
+  installNodePath,
   plainWindowsPath,
   quoteShellPath,
   quotePowershellPath,
@@ -454,7 +456,7 @@ export function installSingleFilePlugin(filePath: string, sidecarPath: string, t
     existing = undefined
   }
 
-  const entryPath = process.argv[1]
+  const entryPath = installEntryPath()
   if (entryPath) {
     ensureDirSync(path.dirname(filePath))
     atomicWriteText(sidecarPath, JSON.stringify({ entryPath }))
@@ -892,8 +894,8 @@ export function hookCommandFor(scriptPath: string, event: string): string {
 /** hookCommandFor's exec-form parts, for a harness whose hook schema accepts an `args` array alongside `command` (Claude Code >= 2.1.139): the harness spawns `command` directly with that argv, so nothing needs shell-quoting and no shell process sits in front of every hook call. */
 export function hookExecPartsFor(scriptPath: string, event: string): { command: string; args: string[] } {
   const script = plainWindowsPath(scriptPath)
-  const entryPath = process.argv[1]
-  return { command: process.execPath, args: entryPath ? [script, event, plainWindowsPath(entryPath)] : [script, event] }
+  const entryPath = installEntryPath()
+  return { command: installNodePath(), args: entryPath ? [script, event, entryPath] : [script, event] }
 }
 
 /** hookCommandFor's PowerShell form: the same shape, single-quoted so PowerShell cannot expand a `$` in any embedded path. */

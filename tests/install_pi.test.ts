@@ -89,6 +89,18 @@ describe('installPi entry-path sidecar (PATH-hardening for the extension\'s inne
     expect(sidecar.entryPath).toBe(process.argv[1])
   })
 
+  it('stores the entry in plain form when process.argv[1] carries a device prefix', () => {
+    const saved = process.argv[1]
+    process.argv[1] = '\\\\?\\C:\\tgwt\\dist\\token-goat.mjs'
+    try {
+      installPi()
+      const sidecar = JSON.parse(fs.readFileSync(piEntrySidecarPath(), 'utf8')) as { entryPath: string }
+      expect(sidecar.entryPath, 'the device prefix is stripped before the sidecar is written').toBe('C:\\tgwt\\dist\\token-goat.mjs')
+    } finally {
+      process.argv[1] = saved!
+    }
+  })
+
   it('writes the sidecar for a --local install too, next to the local extension path', () => {
     const result = installPi({ local: true })
     const sidecarPath = piEntrySidecarPath({ local: true })

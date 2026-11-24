@@ -287,6 +287,30 @@ describe("installOpenclaw entry-path sidecar (PATH-hardening for the plugin's in
     expect(sidecar.entryPath).toBe(process.argv[1])
   })
 
+  it('stores the entry in plain form when process.argv[1] carries a device prefix', () => {
+    const saved = process.argv[1]
+    process.argv[1] = '\\\\?\\C:\\tgwt\\dist\\token-goat.mjs'
+    try {
+      installOpenclaw()
+      const sidecar = JSON.parse(fs.readFileSync(openclawEntrySidecarPath(), 'utf8')) as { entryPath: string }
+      expect(sidecar.entryPath, 'the device prefix is stripped before the sidecar is written').toBe('C:\\tgwt\\dist\\token-goat.mjs')
+    } finally {
+      process.argv[1] = saved!
+    }
+  })
+
+  it('stores a plain UNC entry in the sidecar unchanged', () => {
+    const saved = process.argv[1]
+    process.argv[1] = '\\\\host\\share\\token-goat.mjs'
+    try {
+      installOpenclaw()
+      const sidecar = JSON.parse(fs.readFileSync(openclawEntrySidecarPath(), 'utf8')) as { entryPath: string }
+      expect(sidecar.entryPath, 'a plain UNC path is not rewritten').toBe('\\\\host\\share\\token-goat.mjs')
+    } finally {
+      process.argv[1] = saved!
+    }
+  })
+
   it('uninstallOpenclaw removes the sidecar along with the plugin file', () => {
     installOpenclaw()
     expect(fs.existsSync(openclawEntrySidecarPath())).toBe(true)

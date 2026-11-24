@@ -6,6 +6,7 @@ import { writeJsonSettings } from '../util_config.js';
 import { removeCreatedBackups } from './created_configs.js';
 import { assertProjectScopeTarget, withInstallScope } from './project_scope_guard.js';
 import { bundledCliPath } from './mcp_servers_json.js';
+import { installNodePath } from '../process_util.js';
 import { stripBom } from '../jsonc_text.js';
 import { echoedValue } from '../hint_suggestion_guard.js'
 
@@ -122,7 +123,7 @@ function installJetbrainsScoped(options: JetbrainsScopeOptions = {}): JetbrainsI
   // Register token-goat MCP server for JetBrains
   const mcpServers = (currentConfig['mcpServers'] as Record<string, unknown> | undefined) ?? {};
   mcpServers['token-goat'] = {
-    command: process.execPath,
+    command: installNodePath(),
     args: [bundledCliPath(), 'mcp-serve'],
     env: {
       TOKEN_GOAT_HARNESS_OVERRIDE: 'jetbrains',

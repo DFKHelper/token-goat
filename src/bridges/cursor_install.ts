@@ -8,6 +8,7 @@ import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry,
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { backupFile, ensureDirSync, removeFileInScope, writeConfigText } from '../util.js'
 import { echoedValue } from '../hint_suggestion_guard.js'
+import { installNodePath } from '../process_util.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -35,7 +36,7 @@ export function cursorMcpPath(opts: CursorScopeOptions = {}): string {
 
 /** The `mcpServers.token-goat` entry token-goat writes: `command` + `args` only, per this file's header docblock -- Cursor's schema has no `type` field and rejects unknown properties. */
 export function cursorManagedServer(): { command: string; args: [string, string] } {
-  return { command: process.execPath, args: [bundledCliPath(), 'mcp-serve'] }
+  return { command: installNodePath(), args: [bundledCliPath(), 'mcp-serve'] }
 }
 
 /** True for an entry token-goat wrote: `command` is our own Node binary, `args` is exactly `[<...>/token-goat.mjs, 'mcp-serve']`. */
@@ -44,7 +45,7 @@ export function isCursorManagedServer(value: unknown): boolean {
   const entry = value as Record<string, unknown>
   const args = entry['args']
   return (
-    entry['command'] === process.execPath &&
+    entry['command'] === installNodePath() &&
     Array.isArray(args) &&
     args.length === 2 &&
     typeof args[0] === 'string' &&

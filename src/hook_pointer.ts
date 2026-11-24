@@ -4,6 +4,7 @@ import * as path from 'node:path'
 
 import { dataDir, VERSION } from './constants.js'
 import { atomicWriteText } from './util.js'
+import { installNodePath } from './process_util.js'
 
 export const HOOK_POINTER_FILE = 'hook-entry.json'
 export const HOOK_BROKEN_FILE = 'hook-broken.json'
@@ -184,7 +185,7 @@ export function writeHookPointer(entry: string, nativeBin: string, home: string 
       version: VERSION,
       bundleDir: path.dirname(resolved),
       entry: resolved,
-      node: existingFile(process.execPath) ? process.execPath : null,
+      node: existingFile(process.execPath) ? installNodePath() : null,
       shim: Object.values(shims)[0] ?? null,
       shims,
       nativeBin: path.resolve(nativeBin),

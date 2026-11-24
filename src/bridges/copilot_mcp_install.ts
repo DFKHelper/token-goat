@@ -7,6 +7,7 @@ import { bundledCliPath, dropEmptyServers, hasManagedServer, noteRootKeyCreation
 import { copilotCliUserRoot } from '../copilot_home.js'
 import { backupFile, ensureDirSync, removeFileInScope, writeConfigText } from '../util.js'
 import { echoedValue } from '../hint_suggestion_guard.js'
+import { installNodePath } from '../process_util.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -19,7 +20,7 @@ export function copilotMcpConfigPath(): string {
 
 /** The entry token-goat writes, in the shape `copilot mcp add` writes. */
 export function copilotManagedServer(): { tools: string[]; type: 'local'; command: string; args: [string, string] } {
-  return { tools: ['*'], type: 'local', command: process.execPath, args: [bundledCliPath(), 'mcp-serve'] }
+  return { tools: ['*'], type: 'local', command: installNodePath(), args: [bundledCliPath(), 'mcp-serve'] }
 }
 
 /** True for an entry token-goat wrote: a `local` server whose `args` are exactly `[<...>/token-goat.mjs, 'mcp-serve']`. The Node binary in `command` is not compared: after a Node upgrade or a switch of version manager the entry still names this server, and install must refresh it rather than refuse it as someone else's. */

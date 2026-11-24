@@ -97,6 +97,17 @@ export function plainWindowsPath(value: string): string {
   return value.replace(DEVICE_DRIVE_PREFIX, '').replace(DEVICE_UNC_PREFIX, '\\\\')
 }
 
+/** The running Node binary as an install writes it into a config, shim or sidecar: `process.execPath` with its device prefix stripped. */
+export function installNodePath(): string {
+  return plainWindowsPath(process.execPath)
+}
+
+/** The running token-goat entry (`process.argv[1]`) as an install writes it into a config, shim or sidecar; undefined when there is none. */
+export function installEntryPath(): string | undefined {
+  const entry = process.argv[1]
+  return entry ? plainWindowsPath(entry) : undefined
+}
+
 /** Wraps a path in double quotes for embedding in a generated hook command line, after plainWindowsPath. */
 export function quoteShellPath(value: string): string {
   value = plainWindowsPath(value)

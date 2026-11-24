@@ -5,6 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
+import { installEntryPath } from '../process_util.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath, isSingleFilePluginStale } from '../util.js'
 import { parseJsonOrJsonc } from '../jsonc_text.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
@@ -121,7 +122,7 @@ function installOpenclawFiles(): OpenclawInstallResult {
   const settings = readOpenclawConfig(configPath, { strict: true })
 
   // process.argv[1] is the absolute path to whichever token-goat entry point launched this install run. Written unconditionally on every successful run past the strict parse above (even when the plugin itself is already up to date) so re-running install after moving/upgrading the token-goat install refreshes a stale sidecar too.
-  const entryPath = process.argv[1]
+  const entryPath = installEntryPath()
   if (entryPath) {
     ensureDirSync(path.dirname(pluginPath))
     atomicWriteText(openclawEntrySidecarPath(), JSON.stringify({ entryPath }))
