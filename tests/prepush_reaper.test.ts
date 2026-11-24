@@ -187,8 +187,7 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     expect(existsSync(file('leg.winpid')), 'a leg started with no cleanup process running').toBe(false)
   })
 
-  // The cleanup process stays alive and never says it is up: the wait ends at the hard stop, lowered here through the existing PREPUSH_HARD_STOP_S override, the stand-in is ended, the push fails with the budget notice and no leg starts.
-  // The second case is a stand-in that ignores the first TERM, which is what a signal sent while the process is still starting looks like: one kill is not enough, the hook must confirm the process is gone and end it.
+  // The cleanup process stays alive and never says it is up: the wait ends at the hard stop, lowered here through the existing PREPUSH_HARD_STOP_S override, the stand-in is ended, the push fails with the budget notice and no leg starts. The second case is a stand-in that ignores the first TERM, which is what a signal sent while the process is still starting looks like: one kill is not enough, the hook must confirm the process is gone and end it.
   for (const [name, ignoreTerm] of [['', false], [', even when it ignores TERM', true]] as const) {
   it.skipIf(!bashAvailable)(`fails the push at the hard stop when the cleanup process is alive but never up, and ends it${name}`, () => {
     const stub = file('stub-hang')
@@ -414,10 +413,7 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     expect(got.nolimit, 'a run with no life limit and a live hook must not stop itself').toBe('survived')
   })
 
-  // Two cleanup processes spun a core each for 7 to 13 hours past their hook and life limit (11-11, 11-17).
-  // The tick fix did not end the second pair, so the process is also bounded from outside and by its directory.
-  // The driver stays up as the parent (an orphaned stopped process is continued) and ends the hook last.
-  // `mid` runs once the cleanup process is up, then the driver waits for its exit.
+  // Two cleanup processes spun a core each for 7 to 13 hours past their hook and life limit (11-11, 11-17). The tick fix did not end the second pair, so the process is also bounded from outside and by its directory. The driver stays up as the parent (an orphaned stopped process is continued) and ends the hook last. `mid` runs once the cleanup process is up, then the driver waits for its exit.
   const runWatched = (life: number, mid: string[]): number | null => {
     const lines = [
       'D="$DRIVER_DIR"',
@@ -459,10 +455,12 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
 
   it.skipIf(!bashAvailable)('ends itself when sleep keeps failing and the timed read returns at once', () => {
     mkdirSync(file('sbin'))
-    writeFileSync(path.join(file('sbin'), 'sleep'), '#!/usr/bin/env bash\nexit 1\n')
+    // POSIX PATH lookup skips a sleep stub without the exec bit; cygpath exists only on Windows.
+    writeFileSync(path.join(file('sbin'), 'sleep'), '#!/usr/bin/env bash\nexit 1\n', { mode: 0o755 })
     const got = runLib([
       'exec 9<&-',
-      'PATH="$(cygpath -u "$DRIVER_DIR/sbin"):$PATH"',
+      'if command -v cygpath >/dev/null 2>&1; then SBIN=$(cygpath -u "$DRIVER_DIR/sbin"); else SBIN="$DRIVER_DIR/sbin"; fi',
+      'PATH="$SBIN:$PATH"',
       '( tick; tick; tick; tick; tick; tick; echo survived=yes )',
       'echo status=$?',
     ])
