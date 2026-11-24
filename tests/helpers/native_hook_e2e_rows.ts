@@ -64,7 +64,7 @@ const PROJECT_SWITCH_TITLE = 'the project scope switches the same way, and unins
 export function registerSandboxLifecycle(): void {
   beforeAll(() => {
     buildNative()
-  }, 900_000)
+  })
 
   afterEach(() => {
     let failure: unknown
@@ -103,13 +103,13 @@ export function registerSandboxLifecycle(): void {
     }
     if (unreadable !== undefined) throw unreadable
     expect(fs.existsSync(path.join(ROOT, 'package.json'))).toBe(true)
-  }, 60_000)
+  })
 }
 
 /** Registers the harness rows named in `parts` for `harness`, in the describe the e2e file always had. */
 export function registerHarnessRows(harness: PayloadHarness, parts: readonly HarnessPart[]): void {
   const has = (part: HarnessPart): boolean => parts.includes(part)
-  // Claude Code's switch row is split at its user and project scope boundary, so each half runs in its own shard.
+  // Claude Code's switch row is split at its user and project scope boundary, so each half registers its own row.
   const splitSwitch = harness === 'claudecode'
 
   describe.runIf(NATIVE)(`${harness}: native hook commands as installed`, () => {
