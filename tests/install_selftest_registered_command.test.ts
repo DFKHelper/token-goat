@@ -23,6 +23,7 @@ import {
   setHookSelftestRunnerForTesting,
   type ShellRun,
 } from '../src/hook_selftest.js'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 import { buildNative } from './helpers/native_bin.js'
 
 const WIN = process.platform === 'win32'
@@ -96,7 +97,11 @@ function oldForm(command: string): string {
 }
 
 describe.runIf(NATIVE)('the install self-test', () => {
+  useStubbedHookSelftest()
+
   it('runs every registered command on the exe route and the Node route in the real shell, and passes', () => {
+    // This row asserts the real shell results, so it keeps the real runner the stub replaces.
+    setHookSelftestRunnerForTesting(undefined)
     installHooks('user', { dev: true })
     const commands = tokenGoatCommands(readSettings())
     expect(commands.length).toBeGreaterThan(3)
@@ -131,6 +136,7 @@ describe.runIf(NATIVE)('the install self-test', () => {
   })
 
   it('fails when only the Node route is broken, naming it', () => {
+    setHookSelftestRunnerForTesting(undefined)
     setHookSelftestResultOverrideForTesting((command, run) =>
       command.includes('no-such-dir') && run !== null ? { status: 0, stdout: '', stderr: '' } : run)
     try {
@@ -142,6 +148,7 @@ describe.runIf(NATIVE)('the install self-test', () => {
   })
 
   it('a refused install leaves no hook-broken notice in the data dir', () => {
+    setHookSelftestRunnerForTesting(undefined)
     fs.rmSync(hookBrokenPath(), { force: true })
     // Every command answers text no host accepts: the self-test runs both routes, then refuses.
     fs.writeFileSync(path.join(root, 'bundle', 'token-goat.mjs'), "process.stdout.write('not json')\n")
@@ -158,6 +165,7 @@ describe.runIf(NATIVE)('the install self-test', () => {
     fs.writeFileSync(hookBrokenPath(), before)
     try {
       fs.writeFileSync(path.join(root, 'bundle', 'token-goat.mjs'), "process.stdout.write('not json')\n")
+      setHookSelftestRunnerForTesting(undefined)
       const outcome = selftestRegisteredCommands(commands)
       expect(outcome.failures.length, 'the self-test should fail').toBeGreaterThan(0)
       const after = fs.readFileSync(hookBrokenPath())
@@ -175,6 +183,8 @@ describe.runIf(NATIVE)('the install self-test', () => {
 })
 
 describe.runIf(NATIVE)('migration of an older registration', () => {
+  useStubbedHookSelftest()
+
   const FORMS: ReadonlyArray<readonly [string, (command: string) => Hook]> = [
     ['the string form without the guard', (c) => ({ type: 'command', command: oldForm(c) })],
     ['the exec form (command and args)', (c) => {
@@ -245,6 +255,8 @@ const HOSTS: HostRow[] = [
 ]
 
 describe.runIf(NATIVE)('the other hosts: self-test, migration and rollback', () => {
+  useStubbedHookSelftest()
+
   for (const host of HOSTS) {
     it(`${host.name}: installs guarded commands, migrates old forms, a second run changes no byte`, () => {
       fs.rmSync(path.dirname(host.config()), { recursive: true, force: true })
@@ -266,7 +278,7 @@ describe.runIf(NATIVE)('the other hosts: self-test, migration and rollback', () 
       setHookSelftestRunnerForTesting(() => ({ status: 3, stdout: '', stderr: 'boom' }))
       expect(() => host.install()).toThrow(HookSelftestError)
       expect(fs.readFileSync(host.config(), 'utf8')).toBe(old)
-      setHookSelftestRunnerForTesting(undefined)
+      setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
 
       host.install()
       const migrated = fs.readFileSync(host.config(), 'utf8')

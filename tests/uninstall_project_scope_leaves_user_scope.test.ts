@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { _resetDataDirCacheForTesting } from '../src/constants.js'
 import { run } from '../src/cli.js'
 import { closeAllDbs } from '../src/db.js'
+import { useStubbedHookSelftest } from './helpers/hook_selftest_stub.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 const ENV_KEYS = ['HOME', 'USERPROFILE', 'TOKEN_GOAT_HOME', 'LOCALAPPDATA', 'XDG_DATA_HOME', 'APPDATA', 'CLAUDE_CONFIG_DIR', 'COPILOT_HOME'] as const
@@ -23,6 +24,8 @@ let saved: Record<string, string | undefined>
 let stdout: string[]
 let stdoutSpy: WriteSpy
 let stderrSpy: WriteSpy
+
+useStubbedHookSelftest()
 
 beforeEach(() => {
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
