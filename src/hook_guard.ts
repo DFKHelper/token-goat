@@ -67,26 +67,23 @@ export function guardNoticeJson(nativeBin: string): string {
 const BS = String.fromCharCode(92)
 const PS_QUOTES = /['‘’‚‛]/g
 const UNC_BACKSLASHES = /^\\\\[^\\/]/
+// A device prefix on a drive path (`\\?\C:\x`, `//?/C:/x`). Node 22 cannot load that spelling as the script path (`EISDIR: lstat 'C:'`) where Node 26 can, so every route names the plain drive form. `\\?\UNC\` is not matched: it is left as written.
+const DEVICE_DRIVE_PREFIX = /^(?:\\\\\?\\|\/\/\?\/)(?=[A-Za-z]:[\\/])/
 
-function quoteWord(shell: GuardShell, text: string): string {
-  if (/[\0\r\n]/.test(text)) {
+function quoteWord(shell: GuardShell, raw: string): string {
+  if (/[\0\r\n]/.test(raw)) {
     throw new HookCommandRewriteError(
-      `a hook command cannot hold a NUL or line break (${JSON.stringify(text)})`,
+      `a hook command cannot hold a NUL or line break (${JSON.stringify(raw)})`,
     )
   }
+  const text = raw.replace(DEVICE_DRIVE_PREFIX, '')
   // Git Bash halves the leading backslash pair of a UNC path; forward slashes reach it whole.
   const word = shell === 'sh' && UNC_BACKSLASHES.test(text) ? text.split(BS).join('/') : text
   // PowerShell reads four typographic quotes as single quotes too, so each is doubled like the ASCII one.
   return shell === 'sh' ? `'${word.replace(/'/g, "'\\''")}'` : `'${text.replace(PS_QUOTES, (q) => q + q)}'`
 }
 
-// A route's outcome is a hook answer only as exit 0, or exit 2 that speaks: a stderr message or a stdout
-// decision. Node's own failures exit 1, 9, 13 or by signal, and a silent exit 2 is a crash, so any other
-// outcome falls through to the next route. Both streams are held in files ($1 stderr, $2 stdout) until the
-// outcome is accepted, so a failed route never reaches the host. No $NAME word: Grok CLI substitutes those
-// itself in a hook command, so the temp files are parameters 1 and 2.
-// mktemp is tried in TMPDIR then /tmp; with no hold files ($1, $2 empty) no route runs: the safe answer prints.
-// limit: no writable temp directory gives the safe answer and no hook work; revisit-when: a machine reports it
+// A route's outcome is a hook answer only as exit 0, or exit 2 that speaks: a stderr message or a stdout decision. Node's own failures exit 1, 9, 13 or by signal, and a silent exit 2 is a crash, so any other outcome falls through to the next route. Both streams are held in files ($1 stderr, $2 stdout) until the outcome is accepted, so a failed route never reaches the host. No $NAME word: Grok CLI substitutes those itself in a hook command, so the temp files are parameters 1 and 2. mktemp is tried in TMPDIR then /tmp; with no hold files ($1, $2 empty) no route runs: the safe answer prints. limit: no writable temp directory gives the safe answer and no hook work; revisit-when: a machine reports it
 const SH_RM_ERR = '[ ! -f "$1" ] || rm -f "$1"; [ ! -f "$2" ] || rm -f "$2"'
 const SH_REPLAY = `cat "$1" >&3; [ -z "$2" ] || cat "$2" >&4; ${SH_RM_ERR}`
 // Stdout with its whitespace removed is an answer when empty, or opening with `{` and ending with `}`.
@@ -107,8 +104,7 @@ const caseSh = (rule: AnswerRule): string =>
 const ASYNC_QUOTED = `'{"async":true}'`
 // Events whose payloads isAsyncDetachEligible can accept: only their guards carry the early-forwarding stage.
 const ASYNC_EVENTS: ReadonlySet<string> = new Set(['subagent_stop', 'post_tool_use'])
-// sh status travels as `x<status>x` and `m` (forwarded) in the capture of fd 6, landing in $3 (no $NAME word).
-// The route's reader takes 15 bytes (marker and LF) into the hold $2; exactly the marker goes to fd 4 at once.
+// sh status travels as `x<status>x` and `m` (forwarded) in the capture of fd 6, landing in $3 (no $NAME word). The route's reader takes 15 bytes (marker and LF) into the hold $2; exactly the marker goes to fd 4 at once.
 const SH_LEAD =
   'dd bs=1 count=15 >>"$2" 2>/dev/null; ' +
   `if [ "$(cat "$2" 2>/dev/null; echo .)" = ${ASYNC_QUOTED}"$(echo; echo .)" ]; then ` +
@@ -136,12 +132,9 @@ function shRoute(test: string, argv: readonly string[], forward: boolean, rule: 
 
 // The merge of stderr into the held output, as the statement reader returns it.
 const PS_ERR_REDIRECT_WORD = '2>&1'
-// A route's stdout lines and stderr records are held in one variable (no $NAME word) and written only once
-// its exit is accepted. A stderr line is an ErrorRecord, whose message is the raw line (a `2>file` redirect
-// would wrap it in a decorated record on Windows PowerShell 5.1, even a blank one).
+// A route's stdout lines and stderr records are held in one variable (no $NAME word) and written only once its exit is accepted. A stderr line is an ErrorRecord, whose message is the raw line (a `2>file` redirect would wrap it in a decorated record on Windows PowerShell 5.1, even a blank one).
 const PS_OUT_SINK = ['|', 'Tee-Object', '-Variable', 'tgo', '|', 'Out-Null']
-// Per-line stage: the pipeline item is read as `Get-Variable _` (a `$_` word is one Grok CLI rewrites).
-// New-Variable -Force, not Set-Variable: two Set-Variable words in one cmd-form command line failed (observed).
+// Per-line stage: the pipeline item is read as `Get-Variable _` (a `$_` word is one Grok CLI rewrites). New-Variable -Force, not Set-Variable: two Set-Variable words in one cmd-form command line failed (observed).
 const PS_ITEM = '(Get-Variable _ -ValueOnly)'
 const PS_FLAG = (name: string): string => `(Get-Variable ${name} -ValueOnly -ErrorAction Ignore)`
 const PS_STAGE = 'tgm'
@@ -162,12 +155,10 @@ const PS_ERR_DEF = `function tgs { (${PS_HELD} -Match ${PS_RECORD} | ForEach-Obj
   'ForEach-Object Message) -join [char]10 }'
 const PS_ERR = '(tgs)'
 const PS_REPLAY = `[Console]::Error.Write(${PS_ERR})`
-// Latin-1 maps every byte to one char and back, so the route's stdout bytes are replayed as they were written.
-// With no console attached the assignment throws, so it has its own try and the route runs regardless.
+// Latin-1 maps every byte to one char and back, so the route's stdout bytes are replayed as they were written. With no console attached the assignment throws, so it has its own try and the route runs regardless.
 const PS_BYTE_ENCODING = 'try { [Console]::OutputEncoding | Tee-Object -Variable tge | Out-Null; ' +
   '[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(28591) } catch { }'
-// Puts the console's earlier output encoding back; unset or unwritable, it leaves the console as it is.
-// A function, defined once: cmd.exe refuses a command line over 8191 characters, and the routes call it often.
+// Puts the console's earlier output encoding back; unset or unwritable, it leaves the console as it is. A function, defined once: cmd.exe refuses a command line over 8191 characters, and the routes call it often.
 const PS_ENCODING_BACK = 'tgb'
 const PS_ENCODING_BACK_DEF =
   'function tgb { try { [Console]::OutputEncoding = (Get-Variable tge -ValueOnly) } catch { } }'
