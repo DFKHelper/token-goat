@@ -671,12 +671,13 @@ describe('busy servers', () => {
       [
         "import { pathToFileURL } from 'node:url'",
         'const [clientPath, input] = process.argv.slice(2)',
-        'const { relayViaServer } = await import(pathToFileURL(clientPath).href)',
-        // The slow request's command takes a moment to run, and the slot is rightly busy until it has, so the call is retried until it is served or the deadline passes.
-        'const deadline = Date.now() + 20000',
+        'const { callServer } = await import(pathToFileURL(clientPath).href)',
+        'const env = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined))',
+        // The slow request's command takes a moment to run, and the slot is rightly busy until it has, so the call is retried until it is served or the deadline passes. Matching the sibling test above, handshakeMs is raised past its 150ms fallback default so a loaded CI runner does not fail a test that is about whether a stalled reader blocks the next caller, not handshake latency tuning.
+        'const deadline = Date.now() + 25000',
         'let served = false',
         'while (!served && Date.now() < deadline) {',
-        "  served = (await relayViaServer('pre_tool_use', input)) !== undefined",
+        "  served = (await callServer({ kind: 'hook', event: 'pre_tool_use', input, elapsedMs: performance.now(), env, cwd: process.cwd() }, { handshakeMs: 10000 })) !== undefined",
         '  if (!served) await new Promise((r) => setTimeout(r, 200))',
         '}',
         'process.stdout.write(String(served))',

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Database from '../src/sqlite_driver.js'
 
-import { closeAllDbs, closeDb, getDb, SCHEMA_VERSION, WAL_SIZE_LIMIT_BYTES } from '../src/db.js'
+import { closeAllDbs, closeDb, getDb, optimizeDbPlanner, SCHEMA_VERSION, WAL_SIZE_LIMIT_BYTES } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 const tmpDirs: string[] = []
@@ -502,6 +502,43 @@ describe('folded-path expression indexes (full table scan fix)', () => {
       const detail = plan.map((row) => row.detail).join(' | ')
       expect(detail).toMatch(/SEARCH/)
       expect(detail).not.toMatch(/SCAN/)
+    })
+
+    describe('bounded composite indexes and planner optimization', () => {
+      it('creates span and session-emission indexes on a small database', () => {
+        const db = getDb(tmpDbPath())
+        const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{ name: string }>
+        const names = new Set(rows.map((row) => row.name))
+        expect([
+          'idx_symbols_file_span',
+          'idx_symbols_file_span_folded',
+          'idx_chunks_file_span',
+          'idx_chunks_file_span_folded',
+          'idx_hint_emissions_session_emitted',
+        ].every((name) => names.has(name))).toBe(true)
+      })
+
+      it('runs bounded planner optimization for a database below the full-scan cap', () => {
+        const dbPath = tmpDbPath()
+        const db = getDb(dbPath)
+        const pragma = vi.spyOn(db, 'pragma')
+        optimizeDbPlanner(db, dbPath)
+        expect(pragma).toHaveBeenCalledWith('page_count', { simple: true })
+        expect(pragma).toHaveBeenCalledWith('page_size', { simple: true })
+        expect(pragma).toHaveBeenCalledWith('analysis_limit = 400')
+        expect(pragma).toHaveBeenCalledWith('optimize')
+      })
+
+      it('skips planner optimization when SQLite cannot report the database size', () => {
+        const db = getDb(tmpDbPath())
+        const pragma = vi.spyOn(db, 'pragma').mockImplementation(() => {
+          throw new Error('size unavailable')
+        })
+        optimizeDbPlanner(db)
+        expect(pragma).toHaveBeenCalledWith('page_count', { simple: true })
+        expect(pragma).not.toHaveBeenCalledWith('analysis_limit = 400')
+        expect(pragma).not.toHaveBeenCalledWith('optimize')
+      })
     })
   }
 

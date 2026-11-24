@@ -360,7 +360,7 @@ const PLAIN_CD = /^cd\s+(?:--\s+)?[^\s;&|<>$`()]+$/
 /** The directory a plain `cd` enters, resolved from `from`, or null when it cannot be shown to exist: a target `cd` expands (`-`, `~`, a glob, quotes, braces), a relative one with no known starting directory, or one that is not a directory. */
 function enteredDirectory(from: string | undefined, operand: string): string | null {
   const target = operand.replace(/^cd\s+(?:--\s+)?/, '')
-  if (target === '-' || /['"~*?[\]{}]/.test(target)) return null
+  if (target === '-' || target.startsWith('~') || /['"*?[\]{}]/.test(target)) return null
   const resolved = path.isAbsolute(target) ? target : from === undefined ? null : path.resolve(from, target)
   if (resolved === null) return null
   try {

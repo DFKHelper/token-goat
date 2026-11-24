@@ -34,6 +34,7 @@ Fallback clauses may name your harness's own native read, search, and edit tools
 Exemptions (gate passes, read directly): the file is under ~200 lines and you need all of it; it was never indexed (new, untracked, or generated this turn); it is a genuinely opaque binary (not an image); the target has no symbol handle (e.g. a literal mid-function).
 
 Failure shapes to catch yourself in, and the command that replaces each:
+- running tests before static validation finds syntax and type defects too late → before tests, check every edited file with its language's validators: TypeScript `tsc --noEmit`/`eslint`; Python `ruff check`/`pyright`; Rust `cargo clippy -- -D warnings`; Java `mvn test-compile`/`javac -Xlint`; PHP `php -l`/`phpstan`/`phpcs`; COBOL `cobc -fsyntax-only -Wall`; C# `dotnet build -warnaserror`; Go `go vet`/`golangci-lint`; shell `bash -n`/`shellcheck`; also parse workflow YAML and schema JSON.
 - a shell text search with context flags to find a function body → `read "file" "symbol"`
 - paging one function with view/view_range → `read "file::symbol"`
 - reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`

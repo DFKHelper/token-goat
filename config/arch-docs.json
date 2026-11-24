@@ -59,6 +59,7 @@
     ["src/semantic_distances.ts","Embeddings and Semantic Search"],
     ["src/semantic_merge.ts","Embeddings and Semantic Search"],
     ["src/semantic_relevance.ts","Embeddings and Semantic Search"],
+    ["src/semantic_window.ts","Embeddings and Semantic Search"],
     ["src/paths.ts","Paths, Filesystem, and Project Detection"],
     ["src/project.ts","Paths, Filesystem, and Project Detection"],
     ["src/repomap.ts","Paths, Filesystem, and Project Detection"],

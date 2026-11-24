@@ -6,6 +6,7 @@ import * as path from 'node:path'
 
 import { runGate } from '../src/cli_diagnostics.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { processAlive } from './helpers/process_alive.js'
 
 // Provenance: FORMAT-DERIVED from src/failures.ts (VITEST_BANNER, VITEST_FAIL_HEADER), vitest failure layout.
 const RULE_BAR = '\\u23af'.repeat(7)
@@ -33,15 +34,6 @@ function writeScript(name: string, body: string): string {
   const file = path.join(dir, name)
   fs.writeFileSync(file, body, 'utf8')
   return posixPath(file)
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code !== 'ESRCH'
-  }
 }
 
 beforeEach(() => {
@@ -98,7 +90,7 @@ describe('token-goat gate verdicts', () => {
       expect(code, 'a timed-out command must exit 2, not the runner\'s 124').toBe(2)
       const recorded = JSON.parse(fs.readFileSync(pidFile, 'utf8')) as { parent: number; grandchild: number }
       pids.push(recorded.parent, recorded.grandchild)
-      const survivors = pids.filter((pid) => isAlive(pid))
+      const survivors = pids.filter((pid) => processAlive(pid))
       expect(survivors, 'every process the timed-out command started must be ended with its tree').toEqual([])
     } finally {
       const ours = (line: string): boolean => line.includes('hang.js') || line.includes('setInterval')

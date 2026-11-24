@@ -63,7 +63,7 @@ const USER_SWITCH_TITLE =
 export function registerSandboxLifecycle(): void {
   beforeAll(() => {
     buildNative()
-  })
+  }, 900_000)
 
   afterEach(() => {
     let failure: unknown
@@ -102,7 +102,7 @@ export function registerSandboxLifecycle(): void {
     }
     if (unreadable !== undefined) throw unreadable
     expect(fs.existsSync(path.join(ROOT, 'package.json'))).toBe(true)
-  })
+  }, 60_000)
 }
 
 /** Registers the harness rows named in `parts` for `harness`, in the describe the e2e file always had. */
@@ -424,7 +424,7 @@ export function registerStaleRows(parts: readonly StaleRow[]): void {
         const { sb, packaged, good, row, expectOk, wiredBin, bin } = wiredSandbox()
         replace(packaged, FAILING_BINARY)
         // An install never replaces a stamped copy with an unstamped client, so the machine starts without a copy. On POSIX the wired binary is the packaged one replaced above, so there is no copy to remove.
-        if (WIN) fs.rmSync(bin, { force: true })
+        if (path.resolve(bin) !== path.resolve(packaged)) fs.rmSync(bin, { force: true })
         const printed = install(sb, ['--codex'])
         expect(wiredBin(), `install printed: ${printed}`).toBeUndefined()
         const failing = row()

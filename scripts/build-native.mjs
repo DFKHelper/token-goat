@@ -37,8 +37,23 @@ if (msvc) remap.push('-Clink-arg=/PDBALTPATH:%_PDB%', '-Clink-arg=/Brepro')
 const inherited = process.env.CARGO_ENCODED_RUSTFLAGS ?? (process.env.RUSTFLAGS ?? '').split(' ').filter(Boolean).join('\x1f')
 const rustflags = [inherited, ...remap].filter(Boolean).join('\x1f')
 
+// On Windows, PATH may advertise cargo via a `cargo.cmd` wrapper while Node's shell-free `spawnSync('cargo')` only resolves PATHEXT executables (.exe/.com), unless PATH was explicitly stripped (e.g. an empty test PATH). Resolve `CARGO_HOME/bin/cargo.exe` only when PATH was not emptied.
+function resolveCargoExe() {
+  if (process.platform !== 'win32') return 'cargo'
+  const pathVal = Object.entries(process.env).find(([k]) => k.toUpperCase() === 'PATH')?.[1] ?? ''
+  const dirs = pathVal.split(path.delimiter).filter(Boolean)
+  for (const dir of dirs) {
+    if (existsSync(path.join(dir, 'cargo.exe'))) return path.join(dir, 'cargo.exe')
+    if (existsSync(path.join(dir, 'cargo.cmd')) || existsSync(path.join(dir, 'cargo.bat'))) {
+      const candidate = path.join(cargoHome, 'bin', 'cargo.exe')
+      if (existsSync(candidate)) return candidate
+    }
+  }
+  return 'cargo'
+}
+
 // The artifact path comes from cargo's own JSON messages rather than an assumed target/release/, so a CARGO_TARGET_DIR set in the environment still finds the binary just built.
-const result = spawnSync('cargo', ['build', '--release', '--locked', '--message-format=json-render-diagnostics', ...(target === undefined ? [] : ['--target', target.triple])], {
+const result = spawnSync(resolveCargoExe(), ['build', '--release', '--locked', '--message-format=json-render-diagnostics', ...(target === undefined ? [] : ['--target', target.triple])], {
   cwd: CRATE_DIR,
   // The package version is stamped into the binary (`--selftest` reports it as `build`).
   env: {

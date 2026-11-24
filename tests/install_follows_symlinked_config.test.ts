@@ -104,13 +104,13 @@ describe('config writes follow a symlinked destination', () => {
     else if (spawnSync('sudo', ['-n', 'chown', '-h', '65534:65534', link]).status !== 0) skip('needs root or passwordless sudo to give the link another owner')
     expect(fs.lstatSync(link).uid).toBe(65534)
     // Ruling 76: a foreign-owned link is refused, never followed and never replaced, so the link and its target both stay as they were.
-
+    const before = fs.readdirSync(shared).sort()
     // util.ts resolveSymlinkChain leaves a link owned by neither our uid nor 0, so atomicWriteText refuses.
     expect(() => atomicWriteText(link, 'planted\n')).toThrow(/refusing to write .*symbolic link owned by another user/)
     expect(fs.readFileSync(victim, 'utf8')).toBe(THEME)
-    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(fs.lstatSync(link).isSymbolicLink(), 'a foreign-owned symlink was replaced').toBe(true)
     expect(fs.readlinkSync(link)).toBe(victim)
-    expect(fs.readdirSync(shared).filter((f) => f.endsWith('.tmp'))).toEqual([])
+    expect(fs.readdirSync(shared).sort(), 'the refusal left a temp file').toEqual(before)
   })
 
   it('project scope writes through a link that stays inside the project and refuses one that leaves it', ({ skip }) => {

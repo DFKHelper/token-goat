@@ -27,7 +27,13 @@ function keyOf(filePath: string): string {
 
 /** The comparison form of a key. Matching still folds, because install and uninstall are separate runs that can spell the same path with different case. Only matching: what gets unlinked is the entry as recorded. Through {@link foldPath}, which asks the platform, and NOT an unconditional `.toLowerCase()`. On a case-SENSITIVE filesystem `/home/u/Repo/.zed/settings.json` and `/home/u/repo/.zed/settings.json` are two different files that fold to one key, and this ledger answers a delete question: `uninstallZed` does `if (empty && takeCreatedConfig(settingsPath)) { rm }`, so the other directory's entry answered "token-goat created this" and the caller removed a settings file the user wrote. `recordCreatedConfig` carried the mirror of it -- the second directory's entry was never recorded at all, orphaning its backups at uninstall. The codebase already had the platform-correct primitive; this module was the one bypassing it. */
 function foldKey(key: string): string {
-  return foldPath(key)
+  const markerIndex = key.lastIndexOf('#')
+  const suffix = key.slice(markerIndex)
+  const hasMarker =
+    markerIndex > 0 &&
+    (suffix === HOOK_CONFIG_SUFFIX || suffix.startsWith('#root-key=') || suffix.startsWith('#turned-off='))
+  const pathPart = hasMarker ? key.slice(0, markerIndex) : key
+  return foldPath(`${normalizePath(pathPart)}${hasMarker ? suffix : ''}`)
 }
 
 function readLedger(): string[] {
@@ -326,7 +332,7 @@ function earlierBytes(targets: readonly string[]): Map<string, Buffer> {
 
 /** True when `p` holds exactly the bytes this attempt last published there: only then is it ours to undo. */
 function holdsBytesWritten(p: string, wrote: ReadonlyMap<string, Buffer>): boolean {
-  const mine = wrote.get(foldPath(path.resolve(p)))
+  const mine = wrote.get(foldKey(path.resolve(p)))
   try {
     return mine !== undefined && fs.readFileSync(p).equals(mine)
   } catch {
@@ -347,7 +353,7 @@ function restoreEarlierBytes(
 ): string[] {
   const unconfirmed: string[] = []
   for (const [p, bytes] of earlier) {
-    const earlierOnly = new Map([[foldPath(path.resolve(p)), bytes]])
+    const earlierOnly = new Map([[foldKey(path.resolve(p)), bytes]])
     try {
       if (holdsBytesWritten(p, earlierOnly)) continue
       if (holdsBytesWritten(p, wrote)) putBack(p, bytes)

@@ -69,6 +69,15 @@ function pinRustHomes(): void {
     const home = path.join(os.homedir(), dir)
     if (process.env[name] === undefined && fs.existsSync(home)) process.env[name] = home
   }
+  const cargoExe = process.platform === 'win32' ? 'cargo.exe' : 'cargo'
+  const cargoBin = path.join(process.env['CARGO_HOME'] ?? path.join(os.homedir(), '.cargo'), 'bin')
+  if (fs.existsSync(path.join(cargoBin, cargoExe))) {
+    const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+    const current = process.env[pathKey] ?? ''
+    if (!current.split(path.delimiter).some((d) => d.toLowerCase() === cargoBin.toLowerCase())) {
+      process.env[pathKey] = current === '' ? cargoBin : `${cargoBin}${path.delimiter}${current}`
+    }
+  }
 }
 
 // Built here, once, under the real home, rather than by each test file that runs it. Per file, the builds replaced dist/native while other files were running that binary (EPERM on the rename, failing a whole file), and each ran under isolate-home's temp HOME, where rustup finds no toolchain and cargo no crate cache: every build downloaded both again. The outcome crosses to the workers through the environment, as TG_TEST_RUN_ROOT does; a failed build is recorded rather than thrown, so a machine without Rust fails the native test files (tests/helpers/native_bin.ts) and nothing else. A nested run inherits the outer run's outcome and builds nothing.

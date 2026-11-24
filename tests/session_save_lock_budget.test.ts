@@ -19,7 +19,7 @@ vi.mock('../src/process_util.js', async (importOriginal) => {
 })
 
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileRead } from '../src/session.js'
+import { recordFileRead, wasFileReadThisSession } from '../src/session.js'
 import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
 
 let home: string
@@ -73,6 +73,33 @@ describe('saveSessionState under a session-file lock another live process holds'
 
     expect(fs.existsSync(sessionFile(id))).toBe(true)
     expect(clock.sleptMs).toBe(0)
+  })
+
+  it('retains a skipped save across a subsequent in-process loadSessionState and flushes it once the lock frees', () => {
+    const id = 'budget-retain-unsaved'
+    const first = path.join(home, 'retained-a.ts')
+    const second = path.join(home, 'retained-b.ts')
+    loadSessionState(id)
+    recordFileRead(first)
+    fs.mkdirSync(path.dirname(sessionFile(id)), { recursive: true })
+    const lock = `${sessionFile(id)}.lock`
+    fs.writeFileSync(lock, `${process.pid}:1`)
+
+    // Contended save skips disk write, keeping `first` in _pendingUnsavedBySession.
+    saveSessionState(id)
+    expect(fs.existsSync(sessionFile(id))).toBe(false)
+
+    // Next iteration reloads from disk before recording `second`; `first` must survive in memory and flush once the lock clears.
+    fs.rmSync(lock)
+    loadSessionState(id)
+    expect(wasFileReadThisSession(first)).toBe(true)
+    recordFileRead(second)
+    saveSessionState(id)
+
+    clearModuleCaches()
+    loadSessionState(id)
+    expect(wasFileReadThisSession(first)).toBe(true)
+    expect(wasFileReadThisSession(second)).toBe(true)
   })
 })
 

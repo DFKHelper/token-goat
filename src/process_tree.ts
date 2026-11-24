@@ -101,7 +101,7 @@ export function killProcessTree(pid: number | undefined): KillResult {
   if (!settled) note = `the tree was still growing after ${MAX_FREEZE_PASSES} passes, so it was killed as found`
   // Deepest first, root last; every member is stopped, so the order only matters for tidiness. A member is killed only if the last listing, taken just before, still shows it under the root: one that left the table or was reparented is not proven ours.
   const proven = new Set(lastTable === null ? [] : descendantsOf(pid, lastTable))
-  for (const p of frozen.reverse()) {
+  for (const p of [...frozen].reverse()) {
     if (p !== pid && !proven.has(p)) continue
     const failure = signalPid(p, 'SIGKILL')
     if (p === pid) rootFailure = failure

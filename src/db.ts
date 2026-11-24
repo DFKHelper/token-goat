@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import Database from './sqlite_driver.js'
 import type { SqliteDatabase } from './sqlite_driver.js'
 
-import { dataDir, globalDbPath, SYMBOL_BODY_CHAR_CAP } from './constants.js'
+import { dataDir, globalDbPath, MAX_FULL_SCAN_BYTES, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { isDotenvPath } from './dotenv_redact.js'
 import { safeJoin } from './paths.js'
 import { projectScopeClause } from './sql_path.js'
@@ -66,6 +66,8 @@ CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_file_folded ON symbols(TG_LOWER(file_path));
+CREATE INDEX IF NOT EXISTS idx_symbols_file_span ON symbols(file_path, line_start, line_end);
+CREATE INDEX IF NOT EXISTS idx_symbols_file_span_folded ON symbols(TG_LOWER(file_path), line_start, line_end);
 CREATE INDEX IF NOT EXISTS idx_symbols_file_name_folded ON symbols(TG_LOWER(file_path), name);
 CREATE INDEX IF NOT EXISTS idx_symbols_call_graph_scope ON symbols(TG_LOWER(file_path), name, line_start DESC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_symbols_call_graph_enclosing ON symbols(TG_LOWER(file_path), line_start DESC, id ASC);
@@ -109,6 +111,8 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
 CREATE INDEX IF NOT EXISTS idx_chunks_file_folded ON chunks(TG_LOWER(file_path));
+CREATE INDEX IF NOT EXISTS idx_chunks_file_span ON chunks(file_path, start_line, end_line);
+CREATE INDEX IF NOT EXISTS idx_chunks_file_span_folded ON chunks(TG_LOWER(file_path), start_line, end_line);
 CREATE INDEX IF NOT EXISTS idx_chunks_file_kind_folded ON chunks(TG_LOWER(file_path), kind);
 
 -- Tracks every project root a hook has ever seen an edit for, so the worker's periodic sweep
@@ -211,6 +215,7 @@ CREATE TABLE IF NOT EXISTS hint_emissions (
 CREATE INDEX IF NOT EXISTS idx_hint_emissions_category ON hint_emissions(category);
 CREATE INDEX IF NOT EXISTS idx_hint_emissions_session_pending ON hint_emissions(session_id, resolved);
 CREATE INDEX IF NOT EXISTS idx_hint_emissions_cat_harness ON hint_emissions(category, harness);
+CREATE INDEX IF NOT EXISTS idx_hint_emissions_session_emitted ON hint_emissions(session_id, emitted_at);
 
 -- Manual efficacy votes for a hint category (token-goat hint-stats --mark-effective/--mark-ineffective),
 -- kept separate from hint_emissions' automatic acted_on signal so the two are never silently
@@ -569,6 +574,31 @@ function initConnection(conn: SqliteDatabase, walStopOn?: (e: unknown) => boolea
   if (storedVersion < SCHEMA_VERSION) {
     runMigrations(conn, storedVersion, SCHEMA_VERSION)
     conn.pragma(`user_version = ${SCHEMA_VERSION}`)
+  }
+
+}
+
+// Keep the optional path accepted for existing callers; SQLite page metadata is now the size source.
+export function optimizeDbPlanner(db: SqliteDatabase, _dbPath?: string): void {
+  try {
+    const pageCount = db.pragma('page_count', { simple: true })
+    const pageSize = db.pragma('page_size', { simple: true })
+    if (
+      typeof pageCount !== 'number' ||
+      !Number.isSafeInteger(pageCount) ||
+      pageCount < 0 ||
+      typeof pageSize !== 'number' ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize <= 0
+    ) {
+      return
+    }
+    const databaseBytes = pageCount * pageSize
+    if (!Number.isFinite(databaseBytes) || databaseBytes >= MAX_FULL_SCAN_BYTES) return
+    db.pragma('analysis_limit = 400')
+    db.pragma('optimize')
+  } catch {
+    // Planner statistics are optional; index reads remain valid without them.
   }
 }
 

@@ -144,6 +144,15 @@ describe('a failed cd chain blames the check only when the cd is shown to have s
     expect(failedCallRecords('cd pkg && npm test'), 'the target could not be shown to exist').toBe(false)
   })
 
+  it('a path with an 8.3-style tilde segment is still resolved as a literal directory', () => {
+    const target = path.join(work, 'RUNNER~1', 'proj')
+    fs.mkdirSync(target, { recursive: true })
+    expect(
+      failedCallRecords(`cd ${target.split(path.sep).join('/')} && pytest`, work),
+      'a tilde inside a path segment was mistaken for shell expansion',
+    ).toBe(true)
+  })
+
   it('an absolute cd needs no working directory', () => {
     expect(failedCallRecords(`cd ${work}/pkg && npm test`), 'an existing absolute target').toBe(true)
   })

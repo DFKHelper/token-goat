@@ -125,7 +125,11 @@ function run(
   })
   const p = psProgram === undefined ? prog(shell)! : { program: psProgram, args: powerShellCommandArgs }
   const psDir = path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0')
-  const shellDirs = [path.dirname(p.program), psDir]
+  const shellDirs = [
+    path.dirname(p.program),
+    ...(!WIN && shell === 'sh' ? ['/usr/bin'] : []),
+    psDir,
+  ]
   const pathDirs = extra.pathFirst === undefined ? shellDirs : [extra.pathFirst, ...shellDirs]
   const r = spawnSync(p.program, p.args(shell === 'powershell' ? psPrefix + command : command), {
     env: { ...process.env, ...extra.env, PATH: pathDirs.join(path.delimiter) },
@@ -253,10 +257,7 @@ describe('a broken Node shim falls through to the safe answer', () => {
       hex: Buffer.from(NON_ASCII, 'utf8').toString('hex'),
     })
   })
-  // Provenance: CAPTURE (Windows PowerShell 5.1 on this host): after FreeConsole the assignment throws
-  // "The handle is invalid", the state of a host that starts a hook with no console. A direct
-  // DETACHED_PROCESS child of Node runs nothing at all here (exit 0, no output), so FreeConsole is the
-  // nearest reproducible condition. pwsh does not throw there; the row proves the answer holds on both.
+  // Provenance: CAPTURE (Windows PowerShell 5.1 on this host): after FreeConsole the assignment throws "The handle is invalid", the state of a host that starts a hook with no console. A direct DETACHED_PROCESS child of Node runs nothing at all here (exit 0, no output), so FreeConsole is the nearest reproducible condition. pwsh does not throw there; the row proves the answer holds on both.
   const NO_CONSOLE =
     "Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern bool FreeConsole();' " +
     '-Name K -Namespace T; [void][T.K]::FreeConsole(); '
@@ -264,8 +265,7 @@ describe('a broken Node shim falls through to the safe answer', () => {
   const winPs = path.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   const found = WIN ? resolvePowerShell() : ''
   const pwshPs = found.toLowerCase().endsWith('pwsh.exe') ? found : undefined
-  // pwsh 7 with no console cannot start any native program ("handle is invalid" while getting the console
-  // mode), so no route can run there and the safe answer is the correct one; 5.1 still runs the Node route.
+  // pwsh 7 with no console cannot start any native program ("handle is invalid" while getting the console mode), so no route can run there and the safe answer is the correct one; 5.1 still runs the Node route.
   const consoleless = [
     ['powershell.exe 5.1', winPs, '{"route":"node"}'],
     ['pwsh', pwshPs, SAFE],
@@ -370,17 +370,26 @@ describe('the sh guard with no hold files runs no route', () => {
   sh('a mktemp that always fails gives the safe answer, exit 0, and the route never ran', () => {
     const dir = path.join(root, `nm${String(n++)}`)
     fs.mkdirSync(dir)
-    fs.writeFileSync(path.join(dir, 'mktemp'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    const invoked = path.join(dir, 'mktemp.called')
+    fs.writeFileSync(path.join(dir, 'mktemp'), '#!/bin/sh\n: > "$0.called"\nexit 1\n', { mode: 0o755 })
     const ran = path.join(dir, 'ran')
     const route =
       `require('fs').writeFileSync(${JSON.stringify(ran)}, 'ran'); ` +
       `process.stdout.write('not json'); process.exit(2)\n`
     const o = run('sh', route, undefined, '', undefined, '{}', { pathFirst: dir })
-    expect({ status: o.status, stdout: o.stdout, stderr: o.stderr, ran: fs.existsSync(ran) }).toEqual({
+    const mktempCalled = fs.existsSync(invoked)
+    expect({
+      status: o.status,
+      stdout: o.stdout,
+      stderr: o.stderr,
+      ran: fs.existsSync(ran),
+      mktempCalled,
+    }, 'the fake mktemp was not invoked').toEqual({
       status: 0,
       stdout: SAFE,
       stderr: '',
       ran: false,
+      mktempCalled: true,
     })
   })
   sh('a TMPDIR naming a missing directory still serves the route answer', () => {
@@ -406,8 +415,7 @@ describe('the sh guard with no hold files runs no route', () => {
 
 // Provenance: HAND-DERIVED. The marker bytes are what src/bridges/claudecode.ts prints (`{"async":true}` + LF).
 const MARKER_LINE = '{"async":true}\n'
-// A route waits this long for its release only on a failing path: a guard that forwards the marker at once
-// releases it within the event that carried the marker, so a passing run never waits any of it out.
+// A route waits this long for its release only on a failing path: a guard that forwards the marker at once releases it within the event that carried the marker, so a passing run never waits any of it out.
 const RELEASE_BOUND_MS = 15_000
 // An event the guard never forwards for holds the marker, so nothing releases the route: it ends by its bound.
 const HELD_BOUND_MS = 1_500
@@ -428,8 +436,7 @@ interface MarkerRun {
   tmpLeft: string[]
 }
 
-// The route's own helpers: `out` writes bytes at once, `hold` waits (bounded) for the release the row gives on
-// seeing the marker on the guard's stdout and records whether it came, `run` counts this route's starts.
+// The route's own helpers: `out` writes bytes at once, `hold` waits (bounded) for the release the row gives on seeing the marker on the guard's stdout and records whether it came, `run` counts this route's starts.
 const SHIM_HELPERS = (dir: string, boundMs: number): string =>
   `const fs = require('fs'); const buf = new Int32Array(new SharedArrayBuffer(4))\n` +
   `const wait = (ms) => Atomics.wait(buf, 0, 0, ms)\n` +

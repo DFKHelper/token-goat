@@ -736,5 +736,4 @@ mod tests {
         assert!(matches!(judge(Some(1), b"", b"loader noise", true), Err(Failure::Exit(1))));
         assert!(matches!(judge(Some(13), b"{}", b"loader noise", true), Err(Failure::Exit(13))));
     }
-
 }
