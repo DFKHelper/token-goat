@@ -2,23 +2,50 @@ import { describe, expect, it } from 'vitest'
 
 import { buildGuardedCommand } from '../src/hook_guard.js'
 
-// PROVENANCE: HAND-DERIVED. The spelling is the one the self-test installs through on Windows (`\\?\C:\...`, see tests/vscode_duplicate.test.ts::twoSeparatorSpelling) and the failure is Node 22's `EISDIR: lstat 'C:'` on a device-prefixed script path, reproduced with node 22.23.5 and node 26.13.1 in a scratch probe. The assertions are on the generated command text, which is the defect's surface, so they hold on every platform.
-describe('a guarded hook command never names a device-prefixed drive path', () => {
-  const device = '\\\\?\\C:\\tgwt\\hooks\\token-goat-shim.cjs'
-  const native = ['C:\\Program Files\\nodejs\\node.exe', device, 'sessionStart']
+// PROVENANCE: CAPTURE: CI run 45441436648 (DFKHelper/token-goat), test-windows (1), EISDIR lstat 'C:' under a device-prefixed cwd. HAND-DERIVED: every spelling below is written from the path rules in src/process_util.ts::plainWindowsPath, not copied from output.
+describe('a guarded hook command never names a device-prefixed path', () => {
+  const SHELLS = ['sh', 'powershell'] as const
 
-  for (const shell of ['sh', 'powershell'] as const) {
-    it(`${shell}: the shim path is written as the plain drive form`, () => {
-      const cmd = buildGuardedCommand({ shell, native, safe: "printf '%s' '{}'", marker: 'tg-guard-v4' })
-      expect(cmd).not.toContain('\\\\?\\')
-      expect(cmd).not.toContain('//?/')
-      expect(cmd).toContain('C:\\tgwt\\hooks\\token-goat-shim.cjs')
+  const guardedWith = (shell: (typeof SHELLS)[number], shim: string): string =>
+    buildGuardedCommand({ shell, native: ['C:\\Program Files\\nodejs\\node.exe', shim, 'sessionStart'], safe: "printf '%s' '{}'", marker: 'tg-guard-v4' })
+
+  // [device spelling a caller may hold, plain drive form every shell must write]
+  const DRIVE_ROWS: ReadonlyArray<readonly [string, string]> = [
+    ['\\\\?\\C:\\tgwt\\hooks\\token-goat-shim.cjs', 'C:\\tgwt\\hooks\\token-goat-shim.cjs'],
+    ['//?/C:/tgwt/hooks/token-goat-shim.cjs', 'C:/tgwt/hooks/token-goat-shim.cjs'],
+    ['\\\\?\\c:\\tgwt\\hooks\\token-goat-shim.cjs', 'c:\\tgwt\\hooks\\token-goat-shim.cjs'],
+  ]
+
+  for (const shell of SHELLS) {
+    for (const [device, plain] of DRIVE_ROWS) {
+      it(`${shell}: ${device} is written as the plain drive form`, () => {
+        const cmd = guardedWith(shell, device)
+        expect(cmd, 'the plain drive word is written').toContain(`'${plain}'`)
+        expect(cmd, 'the backslash device prefix is gone').not.toContain('\\\\?\\')
+        expect(cmd, 'the forward-slash device prefix is gone').not.toContain('//?/')
+      })
+    }
+
+    it(`${shell}: a plain drive path is written exactly as before`, () => {
+      expect(guardedWith(shell, 'C:\\tgwt\\hooks\\token-goat-shim.cjs')).toContain("'C:\\tgwt\\hooks\\token-goat-shim.cjs'")
+    })
+
+    it(`${shell}: a device prefix that is not leading is left as written`, () => {
+      const raw = 'C:\\a\\\\?\\D:\\b'
+      expect(guardedWith(shell, raw), 'the mid-string spelling is written unchanged').toContain(`'${raw}'`)
+    })
+
+    it(`${shell}: a plain UNC share is written exactly as before`, () => {
+      const expected = shell === 'sh' ? "'//host/share/x.cjs'" : "'\\\\host\\share\\x.cjs'"
+      expect(guardedWith(shell, '\\\\host\\share\\x.cjs')).toContain(expected)
     })
   }
 
-  it('a device prefix on a UNC share is left as written', () => {
-    const unc = ['node', '\\\\?\\UNC\\host\\share\\shim.cjs', 'sessionStart']
-    const cmd = buildGuardedCommand({ shell: 'powershell', native: unc, safe: '', marker: 'tg-guard-v4' })
-    expect(cmd).toContain('\\\\?\\UNC\\host\\share\\shim.cjs')
+  it('sh: a device prefix on a UNC share is written as the plain //host/share form Node 22 loads', () => {
+    expect(guardedWith('sh', '\\\\?\\UNC\\host\\share\\shim.cjs')).toContain("'//host/share/shim.cjs'")
+  })
+
+  it('powershell: a device prefix on a UNC share is written as the plain \\\\host\\share form', () => {
+    expect(guardedWith('powershell', '\\\\?\\UNC\\host\\share\\shim.cjs')).toContain("'\\\\host\\share\\shim.cjs'")
   })
 })

@@ -88,8 +88,18 @@ export function windowsCmdQuoteArg(arg: string): string {
   return out
 }
 
-/** Wraps a path in double quotes for embedding in a generated hook command line. */
+/** A device prefix on a Windows path: `\\?\C:\x` or `//?/C:/x` for a drive, `\\?\UNC\host\share` for a share. Node 22.23.5 cannot load either as a script path (`EISDIR: lstat 'C:'` or `'UNC'`). */
+const DEVICE_DRIVE_PREFIX = /^(?:\\\\\?\\|\/\/\?\/)(?=[A-Za-z]:[\\/])/
+const DEVICE_UNC_PREFIX = /^(?:\\\\\?\\|\/\/\?\/)UNC[\\/]/i
+
+/** The plain spelling of a device-prefixed path (`C:\x`, `\\host\share\x`), shared by every hook-command quoter; a prefix that is not at the start is left as written. */
+export function plainWindowsPath(value: string): string {
+  return value.replace(DEVICE_DRIVE_PREFIX, '').replace(DEVICE_UNC_PREFIX, '\\\\')
+}
+
+/** Wraps a path in double quotes for embedding in a generated hook command line, after plainWindowsPath. */
 export function quoteShellPath(value: string): string {
+  value = plainWindowsPath(value)
   if (process.platform === 'win32') return `"${value}"`
   return `"${value.replace(/[\\$`"]/g, '\\$&')}"`
 }
@@ -133,6 +143,7 @@ export function quoteCmdWord(value: string, env: NodeJS.ProcessEnv = process.env
 
 /** Wraps a path in single quotes for embedding in a generated PowerShell command. */
 export function quotePowershellPath(value: string): string {
+  value = plainWindowsPath(value)
   return `'${value.replace(/'/g, "''")}'`
 }
 

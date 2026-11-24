@@ -96,6 +96,20 @@ describe('installQwen', () => {
     expect(isQwenInstalled()).toBe(true)
   })
 
+  it('writes the plain drive form of a device-prefixed entry path, which Node 22 cannot load as written', () => {
+    const saved = process.argv[1]
+    process.argv[1] = '//?/C:/tgwt/hooks/token-goat-shim.cjs'
+    try {
+      installQwen()
+      const event = QWEN_EVENTS[0]!
+      const command = commandsFor(readSettings(), event)[0] as string
+      expect(command, 'the plain drive path is written').toContain('"C:/tgwt/hooks/token-goat-shim.cjs"')
+      expect(command, 'the forward-slash device prefix is gone').not.toContain('//?/')
+    } finally {
+      process.argv[1] = saved
+    }
+  })
+
   it('is idempotent (second call reports alreadyInstalled and does not duplicate entries)', () => {
     installQwen()
     const second = installQwen()

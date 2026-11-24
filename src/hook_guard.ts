@@ -1,3 +1,5 @@
+import { plainWindowsPath } from './process_util.js'
+
 /** Guarded hook command and its one parser: native client if present, else Node shim, else safe answer. */
 /** Shells a guard is written for; `cmd` is PowerShell encoded, read alike by cmd.exe, PowerShell and sh. */
 export type GuardShell = 'sh' | 'powershell' | 'cmd'
@@ -67,8 +69,6 @@ export function guardNoticeJson(nativeBin: string): string {
 const BS = String.fromCharCode(92)
 const PS_QUOTES = /['‘’‚‛]/g
 const UNC_BACKSLASHES = /^\\\\[^\\/]/
-// A device prefix on a drive path (`\\?\C:\x`, `//?/C:/x`). Node 22 cannot load that spelling as the script path (`EISDIR: lstat 'C:'`) where Node 26 can, so every route names the plain drive form. `\\?\UNC\` is not matched: it is left as written.
-const DEVICE_DRIVE_PREFIX = /^(?:\\\\\?\\|\/\/\?\/)(?=[A-Za-z]:[\\/])/
 
 function quoteWord(shell: GuardShell, raw: string): string {
   if (/[\0\r\n]/.test(raw)) {
@@ -76,7 +76,7 @@ function quoteWord(shell: GuardShell, raw: string): string {
       `a hook command cannot hold a NUL or line break (${JSON.stringify(raw)})`,
     )
   }
-  const text = raw.replace(DEVICE_DRIVE_PREFIX, '')
+  const text = plainWindowsPath(raw)
   // Git Bash halves the leading backslash pair of a UNC path; forward slashes reach it whole.
   const word = shell === 'sh' && UNC_BACKSLASHES.test(text) ? text.split(BS).join('/') : text
   // PowerShell reads four typographic quotes as single quotes too, so each is doubled like the ASCII one.
