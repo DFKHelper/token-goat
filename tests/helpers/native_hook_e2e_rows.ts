@@ -47,18 +47,17 @@ import {
   type Sandbox,
 } from './native_hook_e2e_support.js'
 
-/** The rows of one harness: `serve` runs the install and every served, fallback and Node-form count; `switch` (`switch-user` and `switch-project` for Claude Code) switches the forms and back; `doctor` reads doctor. */
-/** One kill bound for the user-switch and project-switch rows, which the split divides; the serve row keeps its own. */
+/** The rows of one harness: `serve` runs the install and every served, fallback and Node-form count; `switch` switches the forms and back (and the project scope for Claude Code and Copilot); `doctor` reads doctor. */
+/** One kill bound for the switch row; the serve row keeps its own. */
 const SWITCH_CAP_MS = 240_000
 
-export type HarnessPart = 'serve' | 'switch' | 'switch-user' | 'switch-project' | 'doctor'
+export type HarnessPart = 'serve' | 'switch' | 'doctor'
 
 /** The rows of the stale-build describe: `copy` (stale copy), `broken` (failing binary), `node` (failing shipped binary), `absent` (no native binary). */
 export type StaleRow = 'copy' | 'broken' | 'node' | 'absent'
 
 const USER_SWITCH_TITLE =
   'switches every event to the Node form, which each way the harness runs it answers as the Node command does, and back on reinstall'
-const PROJECT_SWITCH_TITLE = 'the project scope switches the same way, and uninstall removes its native entries'
 
 /** The beforeAll that builds the native client and the afterAll that ends every sandbox's server and removes its files; each shard file calls this once at top level. */
 export function registerSandboxLifecycle(): void {
@@ -109,8 +108,6 @@ export function registerSandboxLifecycle(): void {
 /** Registers the harness rows named in `parts` for `harness`, in the describe the e2e file always had. */
 export function registerHarnessRows(harness: PayloadHarness, parts: readonly HarnessPart[]): void {
   const has = (part: HarnessPart): boolean => parts.includes(part)
-  // Claude Code's switch row is split at its user and project scope boundary, so each half registers its own row.
-  const splitSwitch = harness === 'claudecode'
 
   describe.runIf(NATIVE)(`${harness}: native hook commands as installed`, () => {
     let sb: Sandbox
@@ -195,17 +192,11 @@ export function registerHarnessRows(harness: PayloadHarness, parts: readonly Har
       }, 240_000)
     }
 
-    if (splitSwitch ? has('switch-user') : has('switch')) {
-      it(splitSwitch ? USER_SWITCH_TITLE : `${USER_SWITCH_TITLE}, and uninstall removes the native entries`, async () => {
+    if (has('switch')) {
+      it(`${USER_SWITCH_TITLE}, and uninstall removes the native entries`, async () => {
         if (!has('serve')) install(sb, INSTALL_FLAG[harness], installBudget)
         await switchUser()
-        if (harness === 'copilot_cli') switchProject()
-      }, SWITCH_CAP_MS)
-    }
-
-    if (has('switch-project')) {
-      it(PROJECT_SWITCH_TITLE, () => {
-        switchProject()
+        if (harness === 'claudecode' || harness === 'copilot_cli') switchProject()
       }, SWITCH_CAP_MS)
     }
 
