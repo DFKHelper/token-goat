@@ -1,3 +1,4 @@
+/** Query-time lexical overlap scoring and dense-line sub-window refinement for semantic hits */
 function tokens(text: string): string[] {
   const spaced = text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
   return spaced.match(/[A-Za-z0-9]+/g)?.map((token) => token.toLowerCase()) ?? []
