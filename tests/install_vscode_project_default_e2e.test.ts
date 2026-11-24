@@ -137,7 +137,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-describe('install --vscode scope, against the built bundle', () => {
+describe('install --vscode scope, run in-process', () => {
   it('writes the project install and touches nothing in the home directory by default', async () => {
     const r = await tg(['install', '--dev', '--vscode'])
     expect(r.status, r.stderr).toBe(0)
