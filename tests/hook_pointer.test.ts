@@ -87,6 +87,17 @@ describe('writeHookPointer', () => {
     expect(fs.readdirSync(home).filter((n) => n.includes('.tmp'))).toEqual([])
   })
 
+  // Windows only: a device prefix names a drive, so the prefixed spellings exist only where paths carry one.
+  it.runIf(process.platform === 'win32')('records the plain drive spelling of a device-prefixed entry and native binary', () => {
+    const { home, entry, bin } = bundle()
+    expect(writeHookPointer(`\\\\?\\${path.resolve(entry)}`, `\\\\?\\${path.resolve(bin)}`, home)).toBe(true)
+    const read = readHookPointer(home)
+    expect(read.ok && read.pointer.entry, 'the entry is the plain drive path').toBe(path.resolve(entry))
+    const stored = JSON.parse(fs.readFileSync(hookPointerPath(home), 'utf8'))
+    expect(stored.bundleDir, 'the bundle directory is the plain drive path').toBe(path.dirname(path.resolve(entry)))
+    expect(stored.nativeBin, 'the native binary is the plain drive path').toBe(path.resolve(bin))
+  })
+
   it('writes nothing for an entry that is missing or not the bundle entry, and keeps the old pointer', () => {
     const { home, entry, bin } = bundle()
     expect(writeHookPointer(entry, bin, home)).toBe(true)

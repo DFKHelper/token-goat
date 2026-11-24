@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 import { dataDir, VERSION } from './constants.js'
 import { atomicWriteText } from './util.js'
-import { installNodePath } from './process_util.js'
+import { installNodePath, plainWindowsPath } from './process_util.js'
 
 export const HOOK_POINTER_FILE = 'hook-entry.json'
 export const HOOK_BROKEN_FILE = 'hook-broken.json'
@@ -175,10 +175,11 @@ function existingShims(): Record<string, string> {
 /** Writes the pointer for the bundle at `entry`, atomically, only once the entry exists, and keeps the old file when the write fails. Returns whether the pointer on disk now names `entry`; never throws, since a pointer is a repair aid and must not fail an install. */
 export function writeHookPointer(entry: string, nativeBin: string, home: string = dataDir(), now: () => Date = () => new Date()): boolean {
   try {
-    const resolved = path.resolve(entry)
+    const resolved = plainWindowsPath(path.resolve(entry))
     if (!nameMatches(resolved, [ENTRY_NAME]) || !existingFile(resolved)) return false
     // The reader rejects the whole pointer for a bad nativeBin, so keep the old one rather than write that.
-    if (nativeBinProblem(path.resolve(nativeBin)) !== undefined) return false
+    const nativeResolved = plainWindowsPath(path.resolve(nativeBin))
+    if (nativeBinProblem(nativeResolved) !== undefined) return false
     const shims = existingShims()
     const pointer: HookPointer = {
       schema: 1,
@@ -188,7 +189,7 @@ export function writeHookPointer(entry: string, nativeBin: string, home: string 
       node: existingFile(process.execPath) ? installNodePath() : null,
       shim: Object.values(shims)[0] ?? null,
       shims,
-      nativeBin: path.resolve(nativeBin),
+      nativeBin: nativeResolved,
       writtenAt: now().toISOString(),
     }
     fs.mkdirSync(home, { recursive: true })

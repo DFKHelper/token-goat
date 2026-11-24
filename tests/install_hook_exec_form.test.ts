@@ -156,7 +156,8 @@ describe('exec-form hook registration', () => {
 })
 
 describe('a registered device-prefixed command is rewritten to the plain form', () => {
-  it('a stored \\\\?\\ spelling of the same shim is not the same word, so install replaces it', () => {
+  // Windows only: a device prefix names a drive, and only Windows' realpath resolves the prefixed spelling to the file.
+  it.runIf(process.platform === 'win32')('a stored \\\\?\\ spelling of the same shim is not the same word, so install replaces it', () => {
     process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '0'
     const shim = claudeHookScriptPath()
     fs.mkdirSync(path.dirname(shim), { recursive: true })

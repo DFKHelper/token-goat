@@ -170,3 +170,47 @@ describe('Cursor install refuses to clobber a foreign token-goat entry', () => {
     expect(fs.readFileSync(mcpPath, 'utf8')).toBe('{ not valid json')
   })
 })
+
+describe('Cursor recognises an entry an earlier release wrote with a device-prefixed node path', () => {
+  let origExecPath: string
+
+  beforeEach(() => {
+    origExecPath = process.execPath
+    process.execPath = 'C:\\Program Files\\nodejs\\node.exe'
+  })
+
+  afterEach(() => {
+    process.execPath = origExecPath
+  })
+
+  it('rewrites the prefixed entry in plain form instead of refusing it as foreign', () => {
+    const mcpPath = cursorMcpPath()
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    const prefixed = { command: '\\\\?\\C:\\Program Files\\nodejs\\node.exe', args: cursorManagedServer().args }
+    fs.writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'token-goat': prefixed } }, null, 2) + '\n')
+
+    expect(() => installCursor(), 'the prefixed entry is token-goat\'s own, so install does not throw').not.toThrow()
+    const stored = JSON.parse(fs.readFileSync(mcpPath, 'utf8')).mcpServers['token-goat']
+    expect(stored.command, 'the stored command is rewritten to the plain form').toBe('C:\\Program Files\\nodejs\\node.exe')
+  })
+
+  it('uninstall removes the prefixed entry rather than leaving it as foreign', () => {
+    const mcpPath = cursorMcpPath()
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    const prefixed = { command: '\\\\?\\C:\\Program Files\\nodejs\\node.exe', args: cursorManagedServer().args }
+    fs.writeFileSync(mcpPath, JSON.stringify({ mcpServers: { 'token-goat': prefixed } }, null, 2) + '\n')
+
+    expect(uninstallCursor(), 'the prefixed entry is recognised and removed').toBe(true)
+    expect(isCursorInstalled()).toBe(false)
+  })
+
+  it('still refuses a different plain node path as foreign, leaving the file unchanged', () => {
+    const mcpPath = cursorMcpPath()
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    const before = JSON.stringify({ mcpServers: { 'token-goat': { command: 'C:\\other\\node.exe', args: cursorManagedServer().args } } }, null, 2) + '\n'
+    fs.writeFileSync(mcpPath, before)
+
+    expect(() => installCursor()).toThrow(/already has a "token-goat" MCP server entry/)
+    expect(fs.readFileSync(mcpPath, 'utf8')).toBe(before)
+  })
+})

@@ -8,7 +8,7 @@ import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry,
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { backupFile, ensureDirSync, removeFileInScope, writeConfigText } from '../util.js'
 import { echoedValue } from '../hint_suggestion_guard.js'
-import { installNodePath } from '../process_util.js'
+import { installNodePath, plainWindowsPath } from '../process_util.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -44,8 +44,11 @@ export function isCursorManagedServer(value: unknown): boolean {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
   const entry = value as Record<string, unknown>
   const args = entry['args']
+  // An entry an earlier release wrote with the device-prefixed execPath names the same binary as installNodePath().
+  const command = entry['command']
   return (
-    entry['command'] === installNodePath() &&
+    typeof command === 'string' &&
+    plainWindowsPath(command) === installNodePath() &&
     Array.isArray(args) &&
     args.length === 2 &&
     typeof args[0] === 'string' &&
