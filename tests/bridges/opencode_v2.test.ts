@@ -171,7 +171,7 @@ describe('opencode v2 hooks relay to the same hook events as v1', () => {
     expect(calls).toEqual([])
   })
 
-  // FORMAT-DERIVED: a throw in execute.before becomes the tool error (packages/plugin/src/promise/adapter.ts at v2.4.1), so the Error message is what the model sees.
+  // FORMAT-DERIVED: a throw in execute.before becomes the tool's error (Tool.Error message) in packages/plugin/src/promise/adapter.ts at v2.4.1, and the tool does not run.
   it('a deny surfaces its reason verbatim as the thrown Error message', async () => {
     const { mod, dir } = await loadPlugin({ pre_tool_use: { decision: 'block', reason: 'already read this file' } })
     const hooks = await setupV2(mod, dir)
