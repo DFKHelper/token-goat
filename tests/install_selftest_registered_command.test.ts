@@ -288,4 +288,14 @@ describe.runIf(NATIVE)('the other hosts: self-test, migration and rollback', () 
       expect(fs.readFileSync(host.config(), 'utf8')).toBe(migrated)
     })
   }
+
+  it.runIf(WIN)('copilot: installs and self-tests through a Win32 \\\\?\\X:\\ extended-length drive path', () => {
+    const plainDir = path.join(root, 'ext-drive-ws', '.github', 'hooks')
+    fs.mkdirSync(plainDir, { recursive: true })
+    const extendedDir = `\\\\?\\${plainDir}`
+    installCopilotHooksFile(extendedDir, 'vscode')
+    const written = fs.readFileSync(path.join(extendedDir, HOOKS_CONFIG_FILE), 'utf8')
+    const commands = guardedCommandsInText(written)
+    expect(commands.length).toBeGreaterThan(0)
+  })
 })

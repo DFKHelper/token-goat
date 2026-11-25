@@ -316,7 +316,7 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
       readonly event: string
       readonly label: string
       readonly input: string
-      readonly markerBefore: boolean
+      readonly exeMarker: string
       readonly exe: Job
       readonly nodeMarker: string
       readonly node: Job | undefined
@@ -334,6 +334,13 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
       // A tool name keeps a tool event's payload well formed, so a clean route has nothing to warn about.
       const probe = { hook_event_name: event, session_id: 'tg-selftest', tool_name: 'tg-selftest' }
       const input = JSON.stringify(probe)
+      const exeMarker = path.join(scratch, `exe-marker-${String(plans.length)}`)
+      const exeCommand = buildGuardedCommand({
+        shell: parsed.shell,
+        native: parsed.native,
+        safe: parsed.safe,
+        marker: exeMarker,
+      })
       const nodeMarker = path.join(scratch, `marker-${String(plans.length)}`)
       const unresolvable = path.join(scratch, 'no-such-dir', path.basename(parsed.native[0]!))
       const viaNode = parsed.native.includes('--') && nodeArgv.length > 0
@@ -350,8 +357,8 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
         event,
         label: `${harness ?? 'hook'} ${event}`,
         input,
-        markerBefore: fs.existsSync(parsed.marker),
-        exe: { shell: parsed.shell, command, input },
+        exeMarker,
+        exe: { shell: parsed.shell, command: exeCommand, input },
         nodeMarker,
         node: viaNode === undefined ? undefined : { shell: parsed.shell, command: viaNode, input },
       })
@@ -381,7 +388,7 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
               : `${label} (${route}): not a valid answer: ${run.stdout.trim().slice(0, 200)}`
       const exeProblem = problem(exe, 'native client')
       if (exeProblem !== undefined) failures.push(exeProblem)
-      else if (!plan.markerBefore && guardWroteNotice(parsed.marker)) {
+      else if (guardWroteNotice(plan.exeMarker)) {
         failures.push(`${label}: nothing could run, so the command fell through to the safe answer`)
       }
 
