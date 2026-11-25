@@ -289,7 +289,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -337,7 +337,7 @@ jobs:
           timeout_minutes: 15
           max_attempts: 3
           retry_wait_seconds: 30
-          command: npm test -- --shard=${{ matrix.shard }}/3
+          command: npm test -- --shard=${{ matrix.shard }}/6
       # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 fails the job, so a run that needed its retry (a step timeout included) is red even when a later attempt passed.
       # The retry itself stays until the onTaskUpdate RPC flake it absorbs has a known root cause.
       - name: Report test attempts

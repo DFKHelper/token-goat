@@ -65,18 +65,29 @@ impl Opts {
     }
 }
 
-/// What a route leaves of the deadline for its kill and reap and the answer: the reap bound and a margin.
+/// What remains for a child to be reaped before we skip notice work altogether.
 const REAP_RESERVE: Duration = Duration::from_millis(capture::REAP_BOUND.as_millis() as u64 + 50);
 
-/// What a route may take: the time to the deadline less [`REAP_RESERVE`]; `None` when none is left.
-fn budget(opts: &Opts) -> Option<Duration> {
-    let end = opts.deadline.unwrap_or_else(|| Instant::now() + harness_limit(""));
-    let left = end.saturating_duration_since(Instant::now()).saturating_sub(REAP_RESERVE);
+/// What a route leaves for its kill and reap, the post-answer record, and a margin.
+const ROUTE_RESERVE: Duration = Duration::from_millis(capture::REAP_BOUND.as_millis() as u64 + out::RECORD_GRACE.as_millis() as u64 + 50);
+
+/// What a route may take: the time to the deadline less [`ROUTE_RESERVE`]; `None` when none is left.
+fn route_budget(remaining: Duration) -> Option<Duration> {
+    let left = remaining.saturating_sub(ROUTE_RESERVE);
     (!left.is_zero()).then_some(left)
 }
 
+fn budget(opts: &Opts) -> Option<Duration> {
+    let end = opts.deadline.unwrap_or_else(|| Instant::now() + harness_limit(""));
+    route_budget(end.saturating_duration_since(Instant::now()))
+}
+
+fn may_continue_to_notice_work(timed_out: bool, remaining: Option<Duration>) -> bool {
+    !timed_out && remaining.map_or(true, |left| left > REAP_RESERVE)
+}
+
 /// What the first route may take: all that is left, or two thirds of it when a second route can follow.
-// At 3000 ms: 2850 left, route one 1900 plus a reap of 100, route two ends by 2850 plus its reap: right, kept.
+// At 3000 ms: the routes share 2550; 100 is left to reap, 300 to record, and 50 as margin.
 fn first_budget(opts: &Opts, second_follows: bool) -> Option<Duration> {
     budget(opts).map(|left| if opts.reserve_second && second_follows { left * 2 / 3 } else { left })
 }
@@ -131,8 +142,9 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
         Input::Read { bytes, more: false } => Some(bytes),
         Input::Read { bytes, more: true } => read_rest(bytes, opts.deadline),
     };
-    // Out of time: the safe answer goes out before the pointer file is read or any notice written.
-    if timed_out || (opts.deadline.is_some() && budget(opts).is_none()) {
+    // Too little time to reap: answer safely before the pointer file is read or any notice written.
+    let remaining = opts.deadline.map(|end| end.saturating_duration_since(Instant::now()));
+    if !may_continue_to_notice_work(timed_out, remaining) {
         out::answer_safely();
         out::finish(0)
     }
@@ -192,9 +204,8 @@ fn note_writer(data_dir: Option<String>, notes: Vec<(&'static str, String, Strin
     move || {
         let in_time = deadline.is_none_or(|end| Instant::now() < end);
         if let (Some(dir), true) = (&data_dir, in_time) {
-            for (route, path, error) in &notes {
-                notice::record(dir, route, path, error);
-            }
+            let refs: Vec<(&str, &str, &str)> = notes.iter().map(|(route, path, error)| (*route, path.as_str(), error.as_str())).collect();
+            notice::record_many(dir, &refs);
         }
     }
 }
@@ -338,11 +349,16 @@ mod tests {
     #[test]
     fn a_route_stops_a_reserve_before_the_deadline_and_none_starts_inside_the_reserve() {
         let spare = Duration::from_millis(5_000);
-        let far = Opts { deadline: Some(Instant::now() + spare), ..Opts::bare() };
-        assert!(budget(&far).unwrap() + REAP_RESERVE <= spare, "the route must leave the reserve unspent");
-        assert!(REAP_RESERVE > capture::REAP_BOUND, "the reserve must cover the reap bound");
-        let inside = Opts { deadline: Some(Instant::now() + REAP_RESERVE), ..Opts::bare() };
-        assert!(budget(&inside).is_none(), "a deadline no further than the reserve leaves no route to start");
+        assert_eq!(route_budget(spare), Some(spare - ROUTE_RESERVE), "the route must leave the reserve unspent");
+        assert!(ROUTE_RESERVE.as_millis() >= capture::REAP_BOUND.as_millis() + out::RECORD_GRACE.as_millis() + 50, "the reserve must cover reaping, the bounded record, and a margin",);
+        assert!(route_budget(ROUTE_RESERVE).is_none(), "a deadline no further than the reserve leaves no route to start");
+    }
+
+    #[test]
+    fn three_hundred_ms_left_skips_routes_without_short_circuiting_notice_work() {
+        let remaining = Duration::from_millis(300);
+        assert!(route_budget(remaining).is_none(), "the route reserve must prevent a child from starting");
+        assert!(may_continue_to_notice_work(false, Some(remaining)), "300 ms remains above the 150 ms reap reserve, so notice work must not be short-circuited");
     }
 
     #[test]

@@ -257,7 +257,7 @@ pub fn record_bounded(record: impl FnOnce() + Send + 'static, deadline: Option<I
 /// How long the process waits for a record once the answer is out; a stalled disk loses the record, not the exit.
 // limit: a record slower than this is dropped when the process exits; revisit-when: notes go missing on healthy disks
 // lost: the hook-broken notice, or a hook-broken.json.<pid>.tmp left behind; accepted, an exit is never delayed
-const RECORD_GRACE: Duration = Duration::from_millis(250);
+pub(crate) const RECORD_GRACE: Duration = Duration::from_millis(300);
 
 /// Where a record's wait ends: the deadline [`bounded_deadline`] gives, or `now` plus [`RECORD_GRACE`] if that is sooner.
 fn record_end(deadline: Option<Instant>, now: Instant) -> Instant {

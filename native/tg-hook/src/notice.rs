@@ -61,8 +61,13 @@ fn merged(previous: Option<Value>, event: Value, now: &str) -> Value {
 
 /// Records that `route` could not be used because of `error` at `path` (empty when no one path is to blame).
 pub fn record(data_dir: &str, route: &str, path: &str, error: &str) {
-    if !probing() {
-        let _ = try_record(data_dir, route, path, error);
+    record_many(data_dir, &[(route, path, error)]);
+}
+
+/// Records one or more failures in a single locked read-modify-write so a fallback chain does not pay a separate temp-file write and atomic rename per failed route on Windows Defender / NTFS.
+pub fn record_many(data_dir: &str, entries: &[(&str, &str, &str)]) {
+    if !probing() && !entries.is_empty() {
+        let _ = try_record_many(data_dir, entries);
     }
 }
 
@@ -173,10 +178,15 @@ where
     }
 }
 
-fn try_record(data_dir: &str, route: &str, path: &str, error: &str) -> std::io::Result<()> {
+fn try_record_many(data_dir: &str, entries: &[(&str, &str, &str)]) -> std::io::Result<()> {
     let now = iso_utc(SystemTime::now());
-    let event = json!({ "time": now, "route": clip(route), "path": clip(path), "error": clip(error) });
-    update(data_dir, &mut || std::thread::sleep(LOCK_PAUSE), |previous| Some(merged(previous, event, &now)))
+    let events: Vec<Value> = entries.iter().map(|(route, path, error)| json!({ "time": now, "route": clip(route), "path": clip(path), "error": clip(error) })).collect();
+    update(data_dir, &mut || std::thread::sleep(LOCK_PAUSE), |mut previous| {
+        for event in events {
+            previous = Some(merged(previous, event, &now));
+        }
+        previous
+    })
 }
 
 /// [`record`] in this process's own data directory.
