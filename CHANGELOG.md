@@ -97,6 +97,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`token-goat diff` on one file reads quoted file names in the diff headers, and drops with a note any section whose header it cannot read.**
 - **`stats` keeps generic Bash command counts out of its event totals and by-day figures, and shows them separately.**
 - **`stats` counts a wrapped command under the tool it runs (such as `sudo` or `timeout`), drops `.exe` from tool names, and files a name that looks like a credential under `other`.**
+- **`stats` buckets local days through the JavaScript date, not SQLite's localtime, so day totals match the clock on the machine.**
+- **The hook server daemon retires itself at 1 GiB resident memory, so a long-running daemon no longer grows without bound.**
+- **Device-prefixed Windows paths are handled in install and hook commands.** Node paths carrying a device prefix are recognised in ownership checks and written in plain form, and hook script paths and guarded hook commands name plain drive paths.
 
 ### Security
 
