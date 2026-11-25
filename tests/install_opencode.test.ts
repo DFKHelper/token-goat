@@ -19,6 +19,7 @@ import * as os from 'node:os'
 import {
   installOpencode,
   isOpencodeInstalled,
+  isOpencodeRewriteDue,
   opencodeEntrySidecarPath,
   opencodePluginPath,
   uninstallOpencode,
@@ -177,6 +178,17 @@ describe('installOpencode', () => {
     const siblings = fs.readdirSync(path.dirname(p))
     expect(siblings.some((f) => f.includes('.bak'))).toBe(false)
   })
+
+  it('an installed v1-only plugin file (no default export) is flagged stale by isOpencodeRewriteDue and replaced by the doctor repair call', () => {
+    // HAND-DERIVED: the pre-v2 template exported only the named TokenGoatPlugin; cli_doctor_hooks.ts step 10 calls installOpencode() exactly when isOpencodeRewriteDue() is true.
+    const p = opencodePluginPath()
+    installOpencode()
+    fs.writeFileSync(p, 'export const TokenGoatPlugin = async () => ({})\n')
+    expect(isOpencodeRewriteDue()).toBe(true)
+    expect(installOpencode().alreadyInstalled).toBe(false)
+    expect(fs.readFileSync(p, 'utf8')).toBe(OPENCODE_PLUGIN_SCRIPT)
+    expect(isOpencodeRewriteDue()).toBe(false)
+  })
 })
 
 describe('isOpencodeInstalled / uninstallOpencode', () => {
@@ -225,6 +237,7 @@ describe("installOpencode entry-path sidecar (PATH-hardening for the plugin's in
   })
 })
 
+// FORMAT-DERIVED: HOOK_EVENTS in src/types.ts, the event names the token-goat hook command accepts.
 describe('OPENCODE_PLUGIN_SCRIPT speaks the real hook protocol', () => {
   it('every callHook(...) event-name literal is a real HOOK_EVENTS member', () => {
     const calls = [...OPENCODE_PLUGIN_SCRIPT.matchAll(/callHook\("([^"]+)"/g)].map((m) => m[1])
