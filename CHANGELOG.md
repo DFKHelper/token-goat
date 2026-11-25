@@ -4,7 +4,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
-## [2.9.36] - 2026-11-23
+## [2.9.36] - 2026-11-24
 
 ### Added
 
