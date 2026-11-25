@@ -83,7 +83,7 @@ fn budget(opts: &Opts) -> Option<Duration> {
 }
 
 fn may_continue_to_notice_work(timed_out: bool, remaining: Option<Duration>) -> bool {
-    !timed_out && remaining.map_or(true, |left| left > REAP_RESERVE)
+    !timed_out && remaining.is_none_or(|left| left > REAP_RESERVE)
 }
 
 /// What the first route may take: all that is left, or two thirds of it when a second route can follow.

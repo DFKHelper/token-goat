@@ -147,7 +147,7 @@ describe('cross-OS and polyglot static checks', () => {
   })
 
   it('parses every repository Node script', () => {
-    const scripts = pinnedFiles(path.join(ROOT, 'scripts'), '.mjs', 41, 41)
+    const scripts = pinnedFiles(path.join(ROOT, 'scripts'), '.mjs', 42, 42)
     expect(nodeScriptParseErrors('broken.mjs', 'const = ;')).not.toEqual([])
     const errors = scripts.flatMap((file) => nodeScriptParseErrors(path.relative(ROOT, file), fs.readFileSync(file, 'utf8')))
     expect(errors, 'repository Node scripts must be syntactically valid').toEqual([])

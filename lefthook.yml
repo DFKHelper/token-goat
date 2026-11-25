@@ -34,6 +34,10 @@ pre-commit:
       priority: 3
       # Wrapped for the same reason as the guards below, plus one of its own: the wrapper hard-fails when gitleaks is absent rather than passing, so the gate cannot quietly stop existing. See the script's header.
       run: bash .lefthook-scripts/run-secrets.sh
+    rust-lint:
+      priority: 2
+      run: node scripts/check-native-rust.mjs
+      glob: "native/tg-hook/**/*.{rs,toml}"
     fast-guards:
       priority: 3
       # Wrapped rather than run directly so a passing run prints nothing: the guards' own stdout is ~150 lines that no reporter suppresses, and on a commit made by an agent every one of those lines is paid for. The wrapper replays the full output on failure. See the script's header.
