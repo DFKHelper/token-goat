@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import * as path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 
 type SyntaxIssue = {
   line: number
@@ -103,6 +107,89 @@ describe('negative-constraint and shell safety guards', () => {
 
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') expect(result.message).toMatch(/line 1, column \d+, token/)
+  })
+})
+
+describe('mock declarations already committed to the repository', () => {
+  const tempRoots: string[] = []
+  const GIT_TEST_TIMEOUT_MS = 10_000
+
+  afterEach(() => {
+    for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+  })
+
+  function gitTestEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    delete env['GIT_DIR']
+    delete env['GIT_WORK_TREE']
+    delete env['GIT_INDEX_FILE']
+    return env
+  }
+
+  const gitIdentity = [
+    '-c', 'user.name=test',
+    '-c', 'user.email=test@example.invalid',
+    '-c', 'commit.gpgsign=false',
+  ]
+
+  function git(cwd: string, args: string[]): void {
+    const result = spawnSync('git', ['-C', cwd, ...gitIdentity, ...args], {
+      env: gitTestEnv(),
+      stdio: 'ignore',
+      timeout: GIT_TEST_TIMEOUT_MS,
+    })
+    if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed in ${cwd}`)
+  }
+
+  function repoWithCommittedFile(content: string): { root: string; file: string } {
+    const root = mkdtempSync(path.join(tmpdir(), 'tg-mock-leak-'))
+    tempRoots.push(root)
+    git(root, ['init', '-q', '-b', 'main'])
+    mkdirSync(path.join(root, 'src'))
+    const file = path.join(root, 'src', 'row.ts')
+    writeFileSync(file, content)
+    git(root, ['add', '-A'])
+    git(root, ['commit', '-q', '-m', 'base'])
+    return { root, file }
+  }
+
+  it('allows a declaration line that is already committed to the same file', () => {
+    const { file } = repoWithCommittedFile('const fakeRow = { a: 1 };\n')
+
+    expect(findWriteSafetyViolation(file, 'const fakeRow = { a: 1 };\n')).toBeNull()
+  })
+
+  it('still refuses a new mock declaration written beside a committed one', () => {
+    const { file } = repoWithCommittedFile('const fakeRow = { a: 1 };\n')
+
+    expect(findWriteSafetyViolation(file, 'const fakeRow = { a: 1 };\nconst fakeOther = {};\n'))
+      .toMatchObject({ rule: 'mock-data-leak' })
+  })
+
+  it('refuses a declaration in a file outside any git repository', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'tg-mock-leak-'))
+    tempRoots.push(root)
+
+    expect(findWriteSafetyViolation(path.join(root, 'src', 'row.ts'), 'const fakeRow = { a: 1 };\n'))
+      .toMatchObject({ rule: 'mock-data-leak', line: 1 })
+  })
+
+  it('refuses a declaration that is not yet committed to the file', () => {
+    const { root } = repoWithCommittedFile('const other = 1;\n')
+    const untracked = path.join(root, 'src', 'extra.ts')
+    writeFileSync(untracked, 'const fakeRow = { a: 1 };\n')
+
+    expect(findWriteSafetyViolation(untracked, 'const fakeRow = { a: 1 };\n'))
+      .toMatchObject({ rule: 'mock-data-leak', line: 1 })
+  })
+
+  it('allows a declaration committed to the default branch but removed on this branch', () => {
+    const { root, file } = repoWithCommittedFile('const fakeRow = { a: 1 };\n')
+    git(root, ['checkout', '-q', '-b', 'feature'])
+    writeFileSync(file, 'const other = 1;\n')
+    git(root, ['commit', '-q', '-am', 'remove row'])
+
+    expect(findWriteSafetyViolation(file, 'const fakeRow = { a: 1 };\n')).toBeNull()
   })
 })
 

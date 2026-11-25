@@ -8,6 +8,7 @@ import { loadTs } from './ts_compiler.js'
 import { splitLines } from './line_diff.js'
 import { displaySafePath } from './paths.js'
 import { echoedValue, fencedCommand, fileSubject, quotedArg } from './hint_suggestion_guard.js'
+import { runGit } from './util.js'
 
 const ELLIPSIS = String.raw`(?:\.{3}|…)`
 const COMMENT_LEAD = String.raw`(?:/{2,}|#+|/\*+|\*+|<!--|--|;+|%+|"""|''')`
@@ -396,6 +397,39 @@ function isTestOrFixturePath(filePath: string): boolean {
   return /(?:^|\/)(?:__tests__|tests?|fixtures?)(?:\/|$)|\.(?:test|spec)\.[^/]+$/i.test(normalized)
 }
 
+// Refs that name the default branch, in order; the first one that resolves wins.
+const DEFAULT_BRANCH_REFS = ['origin/HEAD', 'origin/main', 'main'] as const
+const COMMITTED_LOOKUP_TIMEOUT_MS = 2_000
+const COMMITTED_LOOKUP_MAX_BYTES = 16 * 1024 * 1024
+
+// Runs git in cwd and returns stdout, or null on any failure (not a repo, missing ref, timeout).
+function gitStdout(cwd: string, args: string[]): string | null {
+  const result = runGit(args, { cwd, timeoutMs: COMMITTED_LOOKUP_TIMEOUT_MS })
+  if (result.exitCode !== 0 || result.stdout.length > COMMITTED_LOOKUP_MAX_BYTES) return null
+  return result.stdout
+}
+
+function defaultBranchRef(cwd: string): string | null {
+  const resolves = (ref: string): boolean =>
+    gitStdout(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]) !== null
+  return DEFAULT_BRANCH_REFS.find(resolves) ?? null
+}
+
+// Committed on HEAD or the default branch means not new; any git failure counts as not committed.
+function isCommittedDeclaration(filePath: string, trimmedLine: string): boolean {
+  const absolute = path.resolve(filePath)
+  const dir = path.dirname(absolute)
+  const prefix = gitStdout(dir, ['rev-parse', '--show-prefix'])
+  if (prefix === null) return false
+  const repoPath = `${prefix.trim()}${path.basename(absolute)}`
+  const defaultRef = defaultBranchRef(dir)
+  const refs = defaultRef === null ? ['HEAD'] : ['HEAD', defaultRef]
+  return refs.some(ref => {
+    const blob = gitStdout(dir, ['show', `${ref}:${repoPath}`])
+    return blob !== null && blob.split(/\r\n|\r|\n/).some(committed => committed.trim() === trimmedLine)
+  })
+}
+
 function firstModelIdentifier(message: string): RegExpExecArray | null {
   return MODEL_IDENTIFIER.exec(message)
 }
@@ -433,6 +467,7 @@ export function findWriteSafetyViolation(filePath: string, content: string): Saf
     }
     const declaration = MOCK_DATA_DECLARATION.exec(line)
     if (declaration !== null) {
+      if (isCommittedDeclaration(filePath, line.trim())) continue
       const token = declaration[1] ?? 'mock-data'
       return {
         rule: 'mock-data-leak',
