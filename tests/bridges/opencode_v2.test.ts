@@ -68,7 +68,7 @@ async function loadPlugin(answers: Record<string, unknown> = {}): Promise<{ mod:
   return { mod, dir, calls }
 }
 
-/** What opencode v2's loader does with a module: the Module schema in packages/core/src/plugin/module.ts at v2.4.1. Returns the error text it would raise, or undefined when the module loads. */
+/** A hand-written restatement of opencode v2's loader check, not opencode's own code (FORMAT-DERIVED, no opencode dependency): the Module schema in packages/core/src/plugin/module.ts at v2.4.1. Returns the error text it would raise, or undefined when the module loads. */
 function v2LoaderRefusal(mod: PluginModule): string | undefined {
   const value = mod.default
   const loads =
@@ -76,7 +76,7 @@ function v2LoaderRefusal(mod: PluginModule): string | undefined {
   return loads ? undefined : 'Plugin must export a default definition with an id and an effect or setup function.'
 }
 
-/** What opencode v1's loader does with a module that has a default export: readV1Plugin(mod, spec, "server", "detect") in packages/opencode/src/plugin/shared.ts, then resolvePluginId for a path plugin (it must export an id). */
+/** A hand-written restatement of opencode v1's loader check, not opencode's own code (FORMAT-DERIVED, no opencode dependency): readV1Plugin(mod, spec, "server", "detect") in packages/opencode/src/plugin/shared.ts, then resolvePluginId for a path plugin (it must export an id). */
 function v1LoaderRefusal(mod: PluginModule): string | undefined {
   const value = mod.default
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'v1 reads its hooks from the named exports instead'
@@ -105,12 +105,12 @@ const beforeEvent = (tool: string, input: unknown): V2Event => ({ tool, codemode
 const afterEventDone = (tool: string, input: unknown, result: Record<string, unknown>): V2Event => ({ ...beforeEvent(tool, input), status: 'completed', result })
 
 describe('opencode plugin default export: loads on v2 and on v1', () => {
-  it('passes the v2 loader: a default export with a string id and a setup function', async () => {
+  it('matches the v2.4.1 module.ts schema as restated here (FORMAT-DERIVED): a default export with a string id and a setup function', async () => {
     const { mod } = await loadPlugin()
     expect(v2LoaderRefusal(mod), 'opencode v2 refuses the generated file').toBeUndefined()
   })
 
-  it('passes the v1 loader: the same default export carries id and server, and the named export stays', async () => {
+  it('matches the v1 readV1Plugin check as restated here (FORMAT-DERIVED, shared.ts v1.18.35): the same default export carries id and server, and the named export stays', async () => {
     const { mod } = await loadPlugin()
     expect(v1LoaderRefusal(mod), 'opencode v1 refuses the generated file').toBeUndefined()
     expect(mod.default?.server, 'the default export reuses the v1 plugin function').toBe(mod.TokenGoatPlugin)
@@ -169,6 +169,31 @@ describe('opencode v2 hooks relay to the same hook events as v1', () => {
     const hooks = await setupV2(mod, dir)
     for (const tool of ['glob', 'edit', 'write', 'patch', 'todo', 'question', 'opencode.tool.read']) await hooks['tool.execute.before']!(beforeEvent(tool, { path: 'x' }))
     expect(calls).toEqual([])
+  })
+
+  // FORMAT-DERIVED: a throw in execute.before becomes the tool error (packages/plugin/src/promise/adapter.ts at v2.4.1), so the Error message is what the model sees.
+  it('a deny surfaces its reason verbatim as the thrown Error message', async () => {
+    const { mod, dir } = await loadPlugin({ pre_tool_use: { decision: 'block', reason: 'already read this file' } })
+    const hooks = await setupV2(mod, dir)
+    let thrown: unknown
+    try {
+      await hooks['tool.execute.before']!(beforeEvent('read', { path: '/tmp/a.txt' }))
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown, 'the hook threw an Error').toBeInstanceOf(Error)
+    expect((thrown as Error).message).toBe('already read this file')
+  })
+
+  // FORMAT-DERIVED: v2 execute.before event.input is the tool's argument object, mutable (packages/plugin/src/promise/tool.ts at v2.4.1); the write tool's arguments are path and content (core/src/tool/plugin/write.ts).
+  it('execute.before keeps a string content argument through an input rewrite', async () => {
+    const answer = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { command: 'ls -la' } } }
+    const { mod, dir, calls } = await loadPlugin({ pre_tool_use: answer })
+    const hooks = await setupV2(mod, dir)
+    const event = beforeEvent('shell', { command: 'ls', content: 'plain string body' })
+    await hooks['tool.execute.before']!(event)
+    expect(calls.map((c) => c.event), 'the call was relayed').toEqual(['pre_tool_use'])
+    expect(event['input']).toEqual({ command: 'ls -la', content: 'plain string body' })
   })
 
   it('execute.before throws the block reason, which fails the call', async () => {
