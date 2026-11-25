@@ -12,22 +12,27 @@ function product(s: string): string {
   return normalizePath(FOLDS_CASE ? s.toLowerCase() : s)
 }
 
-/** `realpath.native` of `p`'s nearest existing ancestor, case-folded on win32/darwin, then normalizePath. */
-export function canonicalPath(p: string): string {
+/** `realpath.native` of `p`'s nearest existing ancestor, joined back with the rest of `p`: the spelling the OS itself uses, before any folding. */
+function osSpelling(p: string): string {
   const absolute = path.resolve(p)
   const tail: string[] = []
   let head = absolute
   for (;;) {
     try {
       const real = fs.realpathSync.native(head)
-      return product(tail.length === 0 ? real : path.join(real, ...tail.reverse()))
+      return tail.length === 0 ? real : path.join(real, ...tail.reverse())
     } catch {
       const parent = path.dirname(head)
-      if (parent === head) return product(absolute)
+      if (parent === head) return absolute
       tail.push(path.basename(head))
       head = parent
     }
   }
+}
+
+/** `osSpelling(p)`, case-folded on win32/darwin, then normalizePath: a key for comparing two paths, not a spelling any message prints (normalizePath turns separators into `/`). */
+export function canonicalPath(p: string): string {
+  return product(osSpelling(p))
 }
 
 /** Whether `a` and `b` name the same path under `canonicalPath`. */
@@ -35,10 +40,10 @@ export function samePath(a: string, b: string): boolean {
   return canonicalPath(a) === canonicalPath(b)
 }
 
-/** The spellings `text` may use for `p`: as given, and as the OS spells it, both folded the way the volume folds. */
+/** The spellings `text` may use for `p`: as given, and as the OS spells it (with its own separators, so a message printed by Windows code can match), all folded the way the volume folds. */
 export function pathSpellings(p: string): string[] {
   const fold = (s: string): string => (FOLDS_CASE ? s.toLowerCase() : s)
-  return [...new Set([fold(p), fold(path.resolve(p)), canonicalPath(p)])]
+  return [...new Set([fold(p), fold(path.resolve(p)), fold(osSpelling(p))])]
 }
 
 /** Whether `text` names `p` under any spelling `pathSpellings` lists, with the whole text folded the same way. */
