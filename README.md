@@ -384,7 +384,7 @@ Three commands. Hooks register and start working immediately: no terminal popups
 
 > **WSL performance tip:** Keep active repositories on WSL's native ext4 filesystem (`~/projects/...`) rather than Windows mounts (`/mnt/c/...`) to avoid 9P cross-OS filesystem translation overhead during initial indexing.
 
-Per-harness setup for Codex, Gemini, Qwen, Kimi, opencode, OpenClaw, pi, Copilot, Grok, Antigravity, Aider, and Cline/Windsurf/Cursor, the companion CLI tools worth installing alongside it, upgrading, and the full list of what lands on your machine: **[Install guide](docs/install.md)**.
+Per-harness setup for Codex, Gemini, Qwen, Kimi, opencode (v1 and v2), OpenClaw, pi, Copilot, Grok, Antigravity, Aider, and Cline/Windsurf/Cursor, the companion CLI tools worth installing alongside it, upgrading, and the full list of what lands on your machine: **[Install guide](docs/install.md)**.
 
 ## CLI
 

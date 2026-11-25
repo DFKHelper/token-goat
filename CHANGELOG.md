@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **The opencode plugin loads on opencode v2 as well as v1.** opencode v2 refused the generated file with "Plugin must export a default definition with an id and an effect or setup function", so the token-goat hooks never ran there. The file now has a default export that carries `server()` for v1 and `setup()` for v2, and the v2 hooks relay the same events as v1. An older v1-only file is replaced on `install --opencode` or `doctor --fix`. Reported in #65.
+
 ## [2.9.36] - 2026-11-24
 
 ### Added
