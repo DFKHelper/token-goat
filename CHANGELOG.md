@@ -38,6 +38,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **Paging hints name real symbols and point to the diff of an edited file.**
 - **Symbol lookup and output compression have less overhead.**
 - **Session manifests are cached.** Repeated manifest builds reuse the stored result.
+- **`stats` totals are summed inside SQLite instead of row by row.**
+- **`token-goat pack` leaves out files that a Read deny rule covers.**
 - **`note list --json` returns a string for a plain note and an object for a note with a cue, evidence or verdict.** The object carries `value` and whichever of the three fields the note has, so a consumer written before notes carried evidence keeps reading the plain ones as before.
 - **The repeat-failure hint stays silent during `hints.quiet_hours` and points Bash users at `failures` and `logfold`.** A repeat that falls in the quiet window is not announced again once the window closes.
 - **`bench` fails on an orphan `.txt` fixture, refuses a TSV written under an older column layout, and takes `--seed`.** A `.txt` output with no matching `.json` is an error rather than a shorter corpus. A TSV whose header differs from this run's columns is refused, so point `--tsv` at a new file. `--seed <n>` shuffles the case order reproducibly and is recorded in the TSV row.
@@ -99,6 +101,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`stats` counts a wrapped command under the tool it runs (such as `sudo` or `timeout`), drops `.exe` from tool names, and files a name that looks like a credential under `other`.**
 - **`stats` buckets local days through the JavaScript date, not SQLite's localtime, so day totals match the clock on the machine.**
 - **The hook server daemon retires itself at 1 GiB resident memory, so a long-running daemon no longer grows without bound.**
+- **Atomic writes keep the destination file's owner, retry the temp file cleanup once, and write every byte before they finish.**
+- **The Bash filter compresses commands that carry quoted shell literals.**
 - **Device-prefixed Windows paths are handled in install and hook commands.** Node paths carrying a device prefix are recognised in ownership checks and written in plain form, and hook script paths and guarded hook commands name plain drive paths.
 
 ### Security
