@@ -14,6 +14,7 @@ import {
 } from '../scripts/post-merge.mjs'
 import { codexHookScriptPath } from '../src/bridges/codex_install.js'
 import { copilotCliScriptPath } from '../src/bridges/copilot_cli_install.js'
+import { POST_MERGE_DOCTOR_DEV_ARGV } from './helpers/post_merge_argv.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 import { tempDir } from './helpers/temp-config.js'
@@ -64,7 +65,7 @@ function runProcessTerminateScript(target: { pid: number; createdMs: number }) {
 const STUB_BUILD = [
   "import fs from 'node:fs'",
   "fs.mkdirSync('dist', { recursive: true })",
-  "fs.writeFileSync('dist/token-goat.mjs', \"import fs from 'node:fs'; const args = process.argv.slice(2); const delay = Number(process.env.TG_POST_MERGE_TEST_DELAY_MS); if (args[0] === 'doctor' && args[1] === '--repair' && delay > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay); fs.appendFileSync(process.env.TG_POST_MERGE_LOG, args.join(' ') + '\\\\n')\")",
+  "fs.writeFileSync('dist/token-goat.mjs', \"import fs from 'node:fs'; const args = process.argv.slice(2); const delay = Number(process.env.TG_POST_MERGE_TEST_DELAY_MS); if (args[0] === 'doctor' && args[1] === '--repair' && delay > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay); fs.appendFileSync(process.env.TG_POST_MERGE_LOG, args.join(' ') + '\\\\n'); if (args[0] === 'install' && !args.includes('--dev') && process.env.TG_POST_MERGE_TEST_REFUSE === '1') { process.stderr.write('refusing to register'); process.exitCode = 1 }\")",
   '',
 ].join('\n')
 
@@ -537,6 +538,28 @@ function isolatedHosts(): {
   }
 }
 
+/** HAND-DERIVED: a user-scope hook entry naming `bundle`; the shape is not captured from install output. */
+function seedClaudeEntry(hosts: ReturnType<typeof isolatedHosts>, bundle: string): void {
+  const file = path.join(hosts.home, '.claude', 'settings.json')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const command = `"${process.execPath}" "${bundle}"`
+  fs.writeFileSync(file, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command }] }] } }))
+}
+
+/** HAND-DERIVED: a Codex or Copilot hook entry naming the checkout bundle, in each file the host step reads; not captured. */
+function seedHostEntries(hosts: ReturnType<typeof isolatedHosts>, main: string): void {
+  const text = `"${process.execPath}" "${path.join(main, 'dist', 'token-goat.mjs')}"\n`
+  const files = [
+    path.join(hosts.codexHome, 'config.toml'),
+    path.join(hosts.copilotHome, 'hooks', 'token-goat.json'),
+    path.join(main, '.github', 'hooks', 'token-goat.json'),
+  ]
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, text)
+  }
+}
+
 /** The environment every spawn in this file runs under, `extra` last. `npm test` injects lowercase npm_config_* variables (prefix, cache, userconfig) that npm reads alongside the uppercase key set here, so every npm_config_* spelling is dropped first and the one that decides the global root is NPM_CONFIG_PREFIX. The npm cache is pinned too: npm writes its debug log under it, which would otherwise create a directory under the isolated HOME. */
 function isolatedEnv(hosts: ReturnType<typeof isolatedHosts>, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env }
@@ -554,6 +577,7 @@ function isolatedEnv(hosts: ReturnType<typeof isolatedHosts>, extra: NodeJS.Proc
     TOKEN_GOAT_HOME: hosts.tokenGoatHome,
     CODEX_HOME: hosts.codexHome,
     COPILOT_HOME: hosts.copilotHome,
+    CLAUDE_CONFIG_DIR: path.join(hosts.home, '.claude'),
     NPM_CONFIG_PREFIX: hosts.npmPrefix,
     NPM_CONFIG_CACHE: hosts.npmCache,
     ...extra,
@@ -634,6 +658,7 @@ function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   })
 }
 
+// Polls until the pid is gone; the enclosing test timeout bounds it unless a caller passes timeoutMs for a fixed live-window.
 async function waitForProcessGone(pid: number, timeoutMs: number): Promise<NodeJS.ErrnoException | undefined> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -726,10 +751,12 @@ describe('post-merge sync in a linked worktree', () => {
     expect(fs.existsSync(linkedLog)).toBe(false)
 
     const mainLog = path.join(tempDir(), 'main.log')
-    const fromMain = runPostMerge(main, mainLog)
+    const mainHosts = isolatedHosts()
+    seedClaudeEntry(mainHosts, path.join(main, 'dist', 'token-goat.mjs'))
+    const fromMain = runPostMerge(main, mainLog, mainHosts)
     expect(fromMain.status, fromMain.stderr).toBe(0)
     expect(fromMain.stdout).not.toContain('Linked worktree')
-    expect(loggedArgs(mainLog)).toEqual(['hook-server stop', 'worker stop', 'worker start', 'install', 'doctor --repair', 'project prune', 'index'])
+    expect(loggedArgs(mainLog)).toEqual(['hook-server stop', 'worker stop', 'worker start', 'install --dev', 'doctor --repair --dev', 'project prune', 'index'])
   })
 
   it('TG_POST_MERGE_SYNC=1 does not lift the linked-worktree stop, and the message says so', () => {
@@ -749,14 +776,16 @@ describe('post-merge sync in a linked worktree', () => {
 })
 
 describe('post-merge refresh of the Codex and Copilot hosts', () => {
-  const BASE = ['hook-server stop', 'worker stop', 'worker start', 'install']
-  const TAIL = ['doctor --repair', 'project prune', 'index']
+  const BASE = ['hook-server stop', 'worker stop', 'worker start', 'install --dev']
+  const TAIL = ['doctor --repair --dev', 'project prune', 'index']
 
   /** Runs the script in a main checkout after `seed` placed shims where the product's own path functions say they belong, with CODEX_HOME and COPILOT_HOME set to the isolated directories. */
   function run(seed: (root: string) => void): string[] {
     const main = gitRepoWithCommit()
     stageCheckout(main)
     const hosts = isolatedHosts()
+    seedClaudeEntry(hosts, path.join(main, 'dist', 'token-goat.mjs'))
+    seedHostEntries(hosts, main)
     const saved = { codex: process.env['CODEX_HOME'], copilot: process.env['COPILOT_HOME'] }
     process.env['CODEX_HOME'] = hosts.codexHome
     process.env['COPILOT_HOME'] = hosts.copilotHome
@@ -781,22 +810,23 @@ describe('post-merge refresh of the Codex and Copilot hosts', () => {
     const log = path.join(tempDir(), 'none.log')
     const res = runPostMerge(main, log, hosts)
     expect(res.status, res.stderr).toBe(0)
-    expect(loggedArgs(log)).toEqual([...BASE, ...TAIL])
+    // No entry names this checkout, so the install and doctor steps pass no --dev.
+    expect(loggedArgs(log)).toEqual(['hook-server stop', 'worker stop', 'worker start', 'install', 'doctor --repair', 'project prune', 'index'])
     expect(res.stdout).not.toContain('Codex')
     expect(res.stdout).not.toContain('Copilot')
     for (const dir of [hosts.home, hosts.codexHome, hosts.copilotHome]) expect(fs.existsSync(dir), dir).toBe(false)
   })
 
   it('refreshes Codex only, at CODEX_HOME rather than ~/.codex, when its shim is there', () => {
-    expect(run(() => writeShim(codexHookScriptPath()))).toEqual([...BASE, 'install --codex', ...TAIL])
+    expect(run(() => writeShim(codexHookScriptPath()))).toEqual([...BASE, 'install --codex --dev', ...TAIL])
   })
 
   it('refreshes Copilot user scope only, at COPILOT_HOME, when its shim is there', () => {
-    expect(run(() => writeShim(copilotCliScriptPath()))).toEqual([...BASE, 'install --copilot', ...TAIL])
+    expect(run(() => writeShim(copilotCliScriptPath()))).toEqual([...BASE, 'install --copilot --dev', ...TAIL])
   })
 
   it('refreshes Copilot project scope only when the checkout carries the shim', () => {
-    expect(run((root) => writeShim(copilotCliScriptPath({ local: true, projectRoot: root })))).toEqual([...BASE, 'install --copilot --local', ...TAIL])
+    expect(run((root) => writeShim(copilotCliScriptPath({ local: true, projectRoot: root })))).toEqual([...BASE, 'install --copilot --local --dev', ...TAIL])
   })
 
   it('refreshes every host that has a shim, in the order the install steps are listed', () => {
@@ -805,18 +835,65 @@ describe('post-merge refresh of the Codex and Copilot hosts', () => {
       writeShim(copilotCliScriptPath())
       writeShim(copilotCliScriptPath({ local: true, projectRoot: root }))
     })
-    expect(args).toEqual([...BASE, 'install --copilot', 'install --copilot --local', 'install --codex', ...TAIL])
+    expect(args).toEqual([...BASE, 'install --copilot --dev', 'install --copilot --local --dev', 'install --codex --dev', ...TAIL])
+  })
+})
+
+describe('post-merge --dev follows the hook entry that names this checkout (stub bundle)', () => {
+  const NO_DEV = ['hook-server stop', 'worker stop', 'worker start', 'install', 'doctor --repair', 'project prune', 'index']
+  const HERE_DEV = ['hook-server stop', 'worker stop', 'worker start', 'install --dev', POST_MERGE_DOCTOR_DEV_ARGV.join(' '), 'project prune', 'index']
+
+  it('passes no --dev when no entry names this checkout', () => {
+    const main = gitRepoWithCommit()
+    stageCheckout(main)
+    const log = path.join(tempDir(), 'absent.log')
+    const res = runPostMerge(main, log, isolatedHosts())
+    expect(res.status, res.stderr).toBe(0)
+    expect(loggedArgs(log)).toEqual(NO_DEV)
+  })
+
+  it('passes no --dev when the user entry names another checkout', () => {
+    const main = gitRepoWithCommit()
+    stageCheckout(main)
+    const hosts = isolatedHosts()
+    seedClaudeEntry(hosts, path.join(tempDir(), 'other', 'dist', 'token-goat.mjs'))
+    const log = path.join(tempDir(), 'elsewhere.log')
+    const res = runPostMerge(main, log, hosts)
+    expect(res.status, res.stderr).toBe(0)
+    expect(loggedArgs(log)).toEqual(NO_DEV)
+  })
+
+  it('no entry and a refused plain install: the sync is incomplete and no step gets --dev', () => {
+    const main = gitRepoWithCommit()
+    stageCheckout(main)
+    const log = path.join(tempDir(), 'refused.log')
+    const res = runPostMerge(main, log, isolatedHosts(), { TG_POST_MERGE_TEST_REFUSE: '1' })
+    expect(res.status, res.stderr).toBe(1)
+    expect(res.stderr).toContain('Synchronization incomplete; failed steps:')
+    expect(loggedArgs(log)).toEqual(NO_DEV)
+  })
+
+  it('a project hook gap under an entry naming this checkout: the doctor repair carries --dev', () => {
+    const main = gitRepoWithCommit()
+    stageCheckout(main)
+    const hosts = isolatedHosts()
+    seedClaudeEntry(hosts, path.join(main, 'dist', 'token-goat.mjs'))
+    const log = path.join(tempDir(), 'here.log')
+    const res = runPostMerge(main, log, hosts)
+    expect(res.status, res.stderr).toBe(0)
+    expect(loggedArgs(log)).toEqual(HERE_DEV)
   })
 })
 
 describe('post-merge sync in a checkout that is not the active install', () => {
   // CAPTURE: the global root is what `npm root -g` prints under a throwaway NPM_CONFIG_PREFIX. FORMAT-DERIVED: a registry install is a real directory named token-goat in that root and `npm install -g .` leaves a link to the checkout there, so the two are built here the way npm's documented global folder layout describes them (https://docs.npmjs.com/cli/v10/configuring-npm/folders). The stub npm in the fallback test is HAND-DERIVED from the one thing the script keys on, a non-zero exit from `npm root -g`; it says nothing about npm's wire format.
-  const FULL_SYNC = ['hook-server stop', 'worker stop', 'worker start', 'install', 'doctor --repair', 'project prune', 'index']
+  const FULL_SYNC = ['hook-server stop', 'worker stop', 'worker start', 'install --dev', 'doctor --repair --dev', 'project prune', 'index']
 
   function stageMain(): { main: string; hosts: ReturnType<typeof isolatedHosts>; log: string; globalDir: string } {
     const main = gitRepoWithCommit()
     stageCheckout(main)
     const hosts = isolatedHosts()
+    seedClaudeEntry(hosts, path.join(main, 'dist', 'token-goat.mjs'))
     return { main, hosts, log: path.join(tempDir(), 'run.log'), globalDir: path.join(globalRoot(hosts), 'token-goat') }
   }
 
@@ -870,7 +947,8 @@ describe('post-merge sync in a checkout that is not the active install', () => {
     expect(res.stdout).toContain('npm install -g .')
     expect(res.stdout).toContain('TG_POST_MERGE_SYNC=1')
     expect(res.stdout).not.toContain('Synchronization complete')
-    for (const dir of [hosts.home, hosts.codexHome, hosts.copilotHome, hosts.tokenGoatHome]) expect(fs.existsSync(dir), dir).toBe(false)
+    expect(fs.readdirSync(hosts.home)).toEqual(['.claude'])
+    for (const dir of [hosts.codexHome, hosts.copilotHome, hosts.tokenGoatHome]) expect(fs.existsSync(dir), dir).toBe(false)
   })
 
   it('syncs as before, and says so, when the global token-goat links to this checkout, even through a second link', () => {
@@ -943,7 +1021,7 @@ describe('post-merge sync in a checkout that is not the active install', () => {
         '[token-goat] post-merge: Running doctor repairs across configured harnesses timed out after 8000ms',
       )
       expect(res.stderr).toContain('Synchronization incomplete; failed steps:')
-      expect(loggedArgs(log)).not.toContain('doctor --repair')
+      expect(loggedArgs(log)).not.toContain('doctor --repair --dev')
       expect(fs.existsSync(grandchildPidFile), `${res.stdout}\n${res.stderr}`).toBe(true)
       grandchildPid = Number(fs.readFileSync(grandchildPidFile, 'utf8'))
       expect(Number.isInteger(grandchildPid)).toBe(true)

@@ -7,6 +7,8 @@
 // - 6 forked workers oversubscribe GitHub's 4-vCPU windows-latest runner by 50%, and Windows process spawn is far more expensive than Linux while this suite spawns the built bundle in many tests. That combination pushed ordinary tests past the 30s bound -- a sqlite cap test took 51s and 55s, and two suites died in hooks -- across all three workflow attempts, while ubuntu and macOS absorbed 6 workers fine. 4 is the value this suite was green on before. - The local Windows suite also creates large V8 heaps and many built-bundle subprocesses. Six workers once consumed 1.34 GB on a developer workstation and timed out browser, snapshot, daemon, and type-reference tests in the same run.
 //
 // So the base is unchanged and is the floor as well as the default: a machine only goes above it when it is unambiguously larger than the one that failed at six, which means both plenty of cores and plenty of memory, since the documented failure was heap and heap does not scale with core count. Below that bar nothing changes at all -- every CI runner keeps its current value.
+import { isCiRun } from './ci-run.js'
+
 export const WORKER_CEILING = 12
 export const WORKER_CEILING_WIN32 = 4
 export const ROOMY_CPUS = 16
@@ -62,5 +64,5 @@ export function sampleIdleCpus(read: () => { times: CpuTimes }[], windowMs: numb
 
 // The idle narrowing protects a shared workstation from taking every core other sessions use. A CI runner is dedicated to its job, and its sample is taken while that job's own install and build still run, so it reads busy and would cut a shard to one worker. The sample is still taken and logged; CI simply does not apply it.
 export function idleForRun(env: Readonly<Record<string, string | undefined>>, sampled: number | undefined): number | undefined {
-  return env['CI'] ? undefined : sampled
+  return isCiRun(env) ? undefined : sampled
 }

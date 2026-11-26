@@ -645,7 +645,7 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
   runStats(statsOpts)
 }
 
-async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean; probe?: string; fast?: boolean }): Promise<void> {
+async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean; dev?: boolean; probe?: string; fast?: boolean }): Promise<void> {
   if (opts.probe !== undefined) {
     // Loaded on demand: a probe spawns a whole harness, and nothing else in doctor needs this module.
     const { IDE_HOSTS_WITHOUT_PROBE, NO_HEADLESS_PROBE_EXIT_CODE, PROBE_COMMANDS, formatProbeReport, isProbeHarness, noHeadlessProbeMessage, probeVerdict, runProbe } = await import('./doctor_probe.js')
@@ -666,7 +666,7 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
     if (verdict === 'inconclusive') process.exitCode = 2
     return
   }
-  const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string; repair?: boolean; fast?: boolean } = {}
+  const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string; repair?: boolean; dev?: boolean; fast?: boolean } = {}
   if (opts.fast === true) {
     doctorOpts.fast = true
   }
@@ -677,6 +677,10 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
     // The JSON output is a bare array of checks with no place for what a repair did, so asking for both used to run the checks and silently skip the repair.
     throw new CliError('doctor --json cannot repair: run `token-goat doctor --fix`, then `token-goat doctor --json` to read the result')
   }
+  if (opts.dev === true && opts.repair !== true && opts.fix !== true) {
+    // --dev only reaches the hook repair; without --repair it would be accepted and do nothing.
+    throw new CliError('doctor --dev applies to a repair: run `token-goat doctor --repair --dev`')
+  }
   if (opts.repair === true || opts.fix === true) {
     // A repair downloads what is missing, now, so it runs again through the machine's proxy as `semantic --warm` does.
     const code = rerunWithEnvProxy(spawnSync)
@@ -685,6 +689,7 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
       return
     }
     doctorOpts.repair = true
+    if (opts.dev === true) doctorOpts.dev = true
   }
   // Scope the Symbols check to the invoking project so an unrelated project sharing the same global.db can't mask this project's own parser being broken (see checkSymbolCount's doc comment). No project root found (bare directory, no git/package.json) falls back to the prior unscoped whole-database behavior.
   const project = findProject(process.cwd())

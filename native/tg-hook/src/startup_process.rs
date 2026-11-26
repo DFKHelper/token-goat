@@ -140,6 +140,8 @@ pub struct Child {
 }
 impl Child {
     pub fn spawn(job: &Job, command: &[OsString]) -> io::Result<Self> {
+        // stop_handle_inheritance clears the inherit flag of every handle in the process; one running between pipe() and CreateProcessW makes the handle list invalid (ERROR_INVALID_PARAMETER).
+        let _spawning = crate::capture::SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let (input, child_input) = pipe(false)?;
         let (output, child_output) = pipe(true)?;
         let (errors, child_errors) = pipe(true)?;
@@ -258,6 +260,35 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "kernel cleanup did not complete");
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn spawn_survives_another_thread_clearing_handle_inheritance() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let clearer = scope.spawn(|| {
+                while !stop.load(Ordering::Acquire) {
+                    {
+                        // As capture::exec_traced does: under the spawn lock.
+                        let _clearing = crate::capture::SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                        crate::sys::stop_handle_inheritance();
+                    }
+                    // The mutex is unfair: yielding gives the spawners a turn (a fixed 3 rounds instead failed only 3 of 5 without the lock).
+                    std::thread::yield_now();
+                }
+            });
+            let command: Vec<OsString> = ["C:\\Windows\\System32\\cmd.exe", "/d", "/c", "exit 0"].into_iter().map(OsString::from).collect();
+            let job = Job::new().unwrap();
+            // Measured with the spawn lock removed: 3 spawns fail on the expect below 5 of 5 runs, with the yield and without it, and so do 5 (fewer not tried).
+            let results: Vec<_> = (0..3).map(|_| Child::spawn(&job, &command).map(drop)).collect();
+            stop.store(true, Ordering::Release);
+            clearer.join().unwrap();
+            job.terminate().unwrap();
+            for result in results {
+                result.expect("spawn failed while another thread cleared inherit flags");
+            }
+        });
     }
 
     #[test]

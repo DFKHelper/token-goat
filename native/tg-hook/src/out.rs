@@ -244,19 +244,41 @@ pub fn answer_safely() {
 
 /// Runs `record` on its own thread and waits for it until `deadline` or [`RECORD_GRACE`], whichever is first, so a stalled disk cannot hold the process once the answer is out; true when the record finished. With no deadline set yet the smallest hook limit stands in for it.
 pub fn record_bounded(record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) -> bool {
+    record_waiting(record, deadline, RecordWait::Grace)
+}
+
+/// How long the exit waits for a record: [`RECORD_GRACE`] at most, or, for a record that is the only trace of a broken install (the fail-open notice), until the call's own deadline.
+#[derive(Clone, Copy)]
+pub enum RecordWait {
+    Grace,
+    Deadline,
+}
+
+impl RecordWait {
+    /// Where the wait ends, given the call's deadline and now.
+    fn end(self, deadline: Option<Instant>, now: Instant) -> Instant {
+        match self {
+            Self::Grace => record_end(deadline, now),
+            Self::Deadline => bounded_deadline(deadline, now),
+        }
+    }
+}
+
+/// Runs `record` on its own thread and waits for it as `wait` says.
+pub fn record_waiting(record: impl FnOnce() + Send + 'static, deadline: Option<Instant>, wait: RecordWait) -> bool {
     let (tx, rx) = std::sync::mpsc::channel();
     // owner: this call; dies when the process exits, which a record still blocked at the deadline does not outlast
     std::thread::spawn(move || {
         record();
         let _ = tx.send(());
     });
-    let end = record_end(deadline, Instant::now());
+    let end = wait.end(deadline, Instant::now());
     rx.recv_timeout(end.saturating_duration_since(Instant::now())).is_ok()
 }
 
 /// How long the process waits for a record once the answer is out; a stalled disk loses the record, not the exit.
-// limit: a record slower than this is dropped when the process exits; revisit-when: notes go missing on healthy disks
-// lost: the hook-broken notice, or a hook-broken.json.<pid>.tmp left behind; accepted, an exit is never delayed
+// limit: a record slower than this is dropped when the process exits, except the fail-open notice, which [`RecordWait::Deadline`] waits for to the call's deadline; revisit-when: notes go missing on healthy disks
+// lost: a routine note, or a hook-broken.json.<pid>.tmp left behind; accepted, a normal exit is never delayed
 pub(crate) const RECORD_GRACE: Duration = Duration::from_millis(300);
 
 /// Where a record's wait ends: the deadline [`bounded_deadline`] gives, or `now` plus [`RECORD_GRACE`] if that is sooner.
@@ -285,14 +307,14 @@ fn note_once(entered: &AtomicBool, answer: impl FnOnce(), record: impl FnOnce() 
         answer();
         return false;
     }
-    answer_then_record(answer, record, deadline);
+    answer_then_record(answer, record, deadline, RecordWait::Deadline);
     true
 }
 
 /// Gives the answer first and only then starts `record`, so nothing a disk does can delay the host's answer.
-pub fn answer_then_record(answer: impl FnOnce(), record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) -> bool {
+pub fn answer_then_record(answer: impl FnOnce(), record: impl FnOnce() + Send + 'static, deadline: Option<Instant>, wait: RecordWait) -> bool {
     answer();
-    record_bounded(record, deadline)
+    record_waiting(record, deadline, wait)
 }
 
 /// Turns a panic anywhere, on any thread, into the safe answer and exit 0. Release builds abort on panic, which the host would see as a crash; this hook runs first and ends the process itself.
@@ -354,6 +376,7 @@ mod tests {
                 let _ = blocked.recv();
             },
             deadline,
+            RecordWait::Grace,
         );
         // The record thread may not have run before the deadline on a loaded host: wait on its own event, not the clock.
         began.recv_timeout(Duration::from_secs(60)).expect("the record never started");
@@ -433,6 +456,47 @@ mod tests {
     }
 
     #[test]
+    fn the_wait_for_a_durable_record_ends_at_the_deadline_not_at_the_grace() {
+        let now = Instant::now();
+        let far = now + Duration::from_secs(3600);
+        assert_eq!(RecordWait::Deadline.end(Some(far), now), far, "a notice must be waited for to the call's deadline, not now + RECORD_GRACE");
+        let near = now + Duration::from_millis(7);
+        assert_eq!(RecordWait::Deadline.end(Some(near), now), near, "a deadline sooner than the grace still bounds the wait");
+        assert_eq!(RecordWait::Deadline.end(None, now), bounded_deadline(None, now), "no deadline set falls back to the smallest hook limit, as for any record");
+    }
+
+    #[test]
+    fn a_fail_open_notice_slower_than_the_grace_is_finished_before_the_exit() {
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let (finished, answers) = (done.clone(), std::sync::Arc::new(AtomicUsize::new(0)));
+        let counted = answers.clone();
+        let deadline = Some(Instant::now() + Duration::from_secs(60));
+        let noted = note_once(
+            &AtomicBool::new(false),
+            move || _ = counted.fetch_add(1, Ordering::SeqCst),
+            move || {
+                // A slow disk: the write ends after the grace a normal record is given.
+                std::thread::sleep(RECORD_GRACE + Duration::from_millis(150));
+                finished.store(true, Ordering::SeqCst);
+            },
+            deadline,
+        );
+        assert!(noted, "the first entry records");
+        assert!(done.load(Ordering::SeqCst), "the fail-open notice was still being written when the exit would have gone on, so it is lost");
+        assert_eq!(answers.load(Ordering::SeqCst), 1, "the answer is given once, before the record");
+    }
+
+    #[test]
+    fn a_durable_record_that_never_returns_cannot_hold_the_caller_past_the_deadline() {
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let started = Instant::now();
+        let completed = record_waiting(move || _ = blocked.recv(), Some(started + Duration::from_millis(100)), RecordWait::Deadline);
+        assert!(!completed, "a blocked notice write must end the wait by the deadline and report it unfinished");
+        assert!(started.elapsed() >= Duration::from_millis(100), "returned before the deadline with the record still running");
+        assert!(release.send(()).is_ok(), "the record had already ended; it was not blocked");
+    }
+
+    #[test]
     fn a_blocked_record_is_given_up_on_after_the_answer_which_was_written_once() {
         let (release, blocked) = std::sync::mpsc::channel::<()>();
         let answers = std::sync::atomic::AtomicUsize::new(0);
@@ -442,6 +506,7 @@ mod tests {
                 let _ = blocked.recv();
             },
             None,
+            RecordWait::Grace,
         );
         assert!(!completed, "the record was blocked, so the wait must end by its bound and report it unfinished");
         assert_eq!(answers.load(Ordering::SeqCst), 1, "the answer is written once, before the record");

@@ -66,20 +66,43 @@ function shellSpawn(shell: GuardShell, command: string): ShellSpawn | null {
 
 const PROBE_ENV = (): NodeJS.ProcessEnv => ({ ...process.env, [HOOK_PROBE_ENV]: '1' })
 
+/** Opens one of directShellRun's own scratch files (the shell's stdin, stdout and stderr), never a project file, so read-deny does not apply. */
+function openScratch(file: string, flag: 'r' | 'w'): number {
+  return fs.openSync(file, flag)
+}
+
 /** One direct run in the host shell; a timeout ends only the shell: the fallback if the helper fails. */
-function directShellRun(spec: ShellSpawn, input: string): ShellRun {
-  const r = spawnSync(spec.program, spec.args, {
-    input,
-    encoding: 'utf8',
-    env: PROBE_ENV(),
-    timeout: SELFTEST_TIMEOUT_MS,
-    windowsHide: true,
-    windowsVerbatimArguments: spec.verbatim,
-    cwd: os.tmpdir(),
-    maxBuffer: 8 * 1024 * 1024,
-  })
-  if (r.error !== undefined) return { status: null, stdout: '', stderr: String(r.error.message) }
-  return { status: r.status, stdout: r.stdout, stderr: r.stderr }
+export function directShellRun(spec: ShellSpawn, input: string, timeoutMs: number = SELFTEST_TIMEOUT_MS): ShellRun {
+  // Files, not pipes: spawnSync returns only when every holder of a pipe has closed it, and a resident server a hook shim started inherits the job's pipes on Windows and keeps them for its whole life. A file has no end to wait for, so the call returns when the shell exits.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-selftest-'))
+  const fds: number[] = []
+  try {
+    fs.writeFileSync(path.join(dir, 'in'), input)
+    for (const [name, flag] of [['in', 'r'], ['out', 'w'], ['err', 'w']] as const) fds.push(openScratch(path.join(dir, name), flag))
+    const r = spawnSync(spec.program, spec.args, {
+      stdio: fds as unknown as [number, number, number],
+      env: PROBE_ENV(),
+      timeout: timeoutMs,
+      windowsHide: true,
+      windowsVerbatimArguments: spec.verbatim,
+      cwd: os.tmpdir(),
+    })
+    if (r.error !== undefined) return { status: null, stdout: '', stderr: String(r.error.message) }
+    return { status: r.status, stdout: snapshot(path.join(dir, 'out'))?.toString('utf8') ?? '', stderr: snapshot(path.join(dir, 'err'))?.toString('utf8') ?? '' }
+  } finally {
+    for (const fd of fds) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // a descriptor already closed must not keep the scratch from being removed
+      }
+    }
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // a process still holding the scratch is not a failed hook
+    }
+  }
 }
 
 /** One run in the host shell for the form, as a host spawns a command; null if the shell is absent. */
@@ -94,6 +117,8 @@ export const PARALLEL_HELPER = `
 const { spawn, spawnSync } = require('node:child_process')
 const path = require('node:path')
 const running = new Map()
+// How long a job's output may still arrive after the job exited; a process that outlives the job holding its pipes must not hold the job.
+const DRAIN_MS = 1000
 const closedChildren = new WeakSet()
 // Ends the job's whole tree: a child's own kill reaches only the shell, leaving what it forked running.
 const killTree = (child) => {
@@ -149,10 +174,12 @@ process.stdin.on('end', () => {
     let stdout = ''
     let stderr = ''
     let settled = false
+    let drain
     const finish = (r) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      clearTimeout(drain)
       running.delete(child)
       out[i] = r
       active--
@@ -174,6 +201,20 @@ process.stdin.on('end', () => {
     child.stderr.on('data', (d) => { stderr += d })
     child.stdin.on('error', () => {})
     child.on('error', (e) => finish({ status: null, stdout: '', stderr: String(e.message) }))
+    // A job's own exit settles it after a short drain, not its pipes closing: a hook shim in the job starts the resident server, which on Windows inherits the job's pipe handles and holds them open for its whole life, so 'close' alone waited out the job's full timeout.
+    child.on('exit', (code) => {
+      if (settled) return
+      // It waits one setImmediate after the drain timer so the poll phase delivers pipe data already pending, then destroys the streams.
+      drain = setTimeout(() => {
+        setImmediate(() => {
+          if (settled) return
+          child.stdin.destroy()
+          child.stdout.destroy()
+          child.stderr.destroy()
+          finish({ status: code, stdout, stderr })
+        })
+      }, DRAIN_MS)
+    })
     child.on('close', (code) => {
       closedChildren.add(child)
       finish({ status: code, stdout, stderr })
@@ -296,11 +337,7 @@ function validAnswer(harness: string | undefined, event: string, stdout: string,
 
 /** Whether the notice at `marker` is the client's own (its relay failed under load), not a fall-through. */
 function guardWroteNotice(marker: string): boolean {
-  try {
-    return fs.readFileSync(marker, 'utf8').includes('"route":"guard"')
-  } catch {
-    return false
-  }
+  return snapshot(marker)?.toString('utf8').includes('"route":"guard"') === true
 }
 
 /** Run guarded commands on the exe and Node routes (client unresolvable); report failures; skip unguarded. */

@@ -158,7 +158,7 @@ export function setupMatrixFixture(): void {
   )
 
   const git = (args: string[]): void => {
-    execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', args, { cwd: repo, stdio: 'ignore', timeout: 60000 })
   }
   git(['init'])
   git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
@@ -1004,7 +1004,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       '-e',
       "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); db.prepare('INSERT INTO users (id, name) VALUES (?, ?)').run(1, 'Alice'); db.close();",
       dbPath,
-    ])
+    ], { timeout: 60000 })
     const r = run(['sqlite-schema', dbPath])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('users  (table, 1 row)')
@@ -1018,7 +1018,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       '-e',
       "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); db.prepare('INSERT INTO users (id, name) VALUES (?, ?)').run(1, 'Alice'); db.close();",
       dbPath,
-    ])
+    ], { timeout: 60000 })
     const r = run(['sqlite-tables', dbPath])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('users')
@@ -1031,7 +1031,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       '-e',
       "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'); const ins = db.prepare('INSERT INTO users (id, name) VALUES (?, ?)'); ins.run(1, 'Alice'); ins.run(2, 'Bob'); db.close();",
       dbPath,
-    ])
+    ], { timeout: 60000 })
     const r = run(['sqlite-query', dbPath, 'SELECT id, name FROM users ORDER BY id'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Alice')
@@ -1301,7 +1301,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       const ws2 = wb.addWorksheet('Q1  Draft');
       ws2.addRow(['x']);
       wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
-    `])
+    `], { timeout: 60000 })
     const r = run(['xlsx-sheets', xlsxPath])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('People')
@@ -1334,7 +1334,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       ws.addRow(['name','age']);
       ws.addRow(['Alice','30']);
       wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
-    `])
+    `], { timeout: 60000 })
     const r = run(['xlsx-head', xlsxPath, '--sheet', 'People'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Alice')
@@ -1349,7 +1349,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       ws.addRow(['name','age']);
       ws.addRow(['Alice','30']);
       wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
-    `])
+    `], { timeout: 60000 })
     const r = run(['xlsx-columns', xlsxPath])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('name')
@@ -1364,7 +1364,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       ws.addRow(['name','age']);
       ws.addRow(['Alice','30']);
       wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
-    `])
+    `], { timeout: 60000 })
     const r = run(['xlsx-range', xlsxPath, '--sheet', 'People', '--range', 'A1:B2'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Alice')
@@ -1380,7 +1380,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       ws.addRow(['Alice','active']);
       ws.addRow(['Bob','inactive']);
       wb.xlsx.writeFile(${JSON.stringify(xlsxPath)}).catch((e) => { console.error(e); process.exit(1); });
-    `])
+    `], { timeout: 60000 })
     const r = run(['xlsx-query', xlsxPath, '--sheet', 'People', '--where', 'status=active'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('Alice')

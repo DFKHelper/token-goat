@@ -1063,6 +1063,7 @@ export async function runDoctorAndExit(opts?: string | {
   processes?: ProcessInfo[]
   repair?: boolean
   fix?: boolean
+  dev?: boolean
 }): Promise<number> {
   const options = typeof opts === 'string' ? { rootDir: opts } : (opts ?? {})
   const repairRan = options.repair === true || options.fix === true
@@ -1076,6 +1077,7 @@ export async function runDoctorAndExit(opts?: string | {
       configPath: options.configPath,
       rootDir: options.rootDir,
       fast: Boolean(options.fast),
+      dev: options.dev === true,
     })
     const { repairs, errors, notices } = repairResult
     checkedIntegrity = repairResult.checkedIntegrity

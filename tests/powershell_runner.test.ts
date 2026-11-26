@@ -4,9 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { run, spawnTarget } from '../src/bash_runner.js'
 import { stripAnsiEscapes } from '../src/render/ansi.js'
 
-// Names a native (NTSTATUS-style) exit code in an assertion message so that a crash of the
-// PowerShell child, such as an access violation, is diagnosable from the failure alone.
-// Node reports a 32-bit status as a negative number on Windows; normalise before formatting.
+// Names a native (NTSTATUS-style) exit code in an assertion message so that a crash of the PowerShell child, such as an access violation, is diagnosable from the failure alone. Node reports a 32-bit status as a negative number on Windows; normalise before formatting.
 const NATIVE_EXIT_NAMES: Record<number, string> = {
   0xc0000005: 'STATUS_ACCESS_VIOLATION',
   0xc0000374: 'STATUS_HEAP_CORRUPTION',
@@ -18,6 +16,11 @@ function nativeExitNote(code: number | null): string {
   if (unsigned < 0xc0000000 || unsigned > 0xffffffff) return `exit code ${code}`
   const name = NATIVE_EXIT_NAMES[unsigned]
   return `native exit code 0x${unsigned.toString(16).toUpperCase().padStart(8, '0')}${name ? ` (${name})` : ''}`
+}
+
+// The assertion message for a run whose child output was captured: the exit code named by nativeExitNote, plus everything the child printed with colour codes removed, so a wrong exit code carries the child's text instead of a bare number. The compressor folds the child's stderr into the stdout text it delivers, so `out` holds both streams and `err` only the runner's own notices.
+function childReport(code: number | null, seen: { out: string; err: string }): string {
+  return `${nativeExitNote(code)}; child stdout+stderr=${JSON.stringify(stripAnsiEscapes(seen.out))}; runner notices=${JSON.stringify(stripAnsiEscapes(seen.err))}`
 }
 
 // Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` (PowerShell 7.6.4) and `powershell.exe -NoProfile -NonInteractive -Command <cmd>` (Windows PowerShell 5.1), each invoked through pwsh's call operator on Windows 11, 2026-10-02, the two agreeing on every row: a break or continue label that converts to an empty string ($null, '', "", @()) acts as no label at all and stops only the innermost loop, while 0, $false and ' ' are labels no loop declares and leave the whole script.
@@ -71,14 +74,24 @@ describe('PowerShell runner integration and resolution', () => {
     expect(captured).toContain('Test-TokenGoat: .\\path\\to\\file.ps1')
   })
 
+  // `quietSuccess` sends the run through the capturing path, where the child's output is read and not inherited, so a wrong exit code arrives with the child's own stdout and stderr in the failure message.
   it('propagates non-zero exit codes from PowerShell execution', async () => {
+    const seen = { out: '', err: '' }
     const exitCode = await run('exit 37', {
       shellType: 'pwsh',
-      writeStdout: () => {},
-      writeStderr: () => {},
+      quietSuccess: true,
+      writeStdout: (s) => { seen.out += s },
+      writeStderr: (s) => { seen.err += s },
     })
 
-    expect(exitCode, nativeExitNote(exitCode)).toBe(37)
+    expect(exitCode, childReport(exitCode, seen)).toBe(37)
+  })
+
+  // The same command through the path that hands the child the parent's own stdout and stderr (no filter, no cap), the path the shipping CLI takes for a bare command; the child's stderr then goes to this process's stderr and is not recoverable here.
+  it('propagates non-zero exit codes through the inherited-output path', async () => {
+    const exitCode = await run('exit 37', { shellType: 'pwsh' })
+
+    expect(exitCode, `${nativeExitNote(exitCode)}; the child's stderr was inherited, so it is in this run's stderr`).toBe(37)
   })
 
   it('clears TG_CMD before executing user script to prevent leakage to child processes', async () => {

@@ -31,6 +31,7 @@ import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { buildNative } from './helpers/native_bin.js'
+import { waitGone } from './helpers/process_alive.js'
 
 type Env = Record<string, string>
 type Frame = Record<string, unknown>
@@ -104,19 +105,7 @@ const FALLBACK_SCRIPT = [
   '',
 ].join('\n')
 
-// Resolves true once `isAlive(pid, token)` is false, polling the process; the cap only backstops a broken run.
-async function waitGone(pid: number, token: string): Promise<boolean> {
-  const cap = Date.now() + 30_000
-  while (isAlive(pid, token)) {
-    if (Date.now() > cap) return false
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  return true
-}
-
-// Whether `pid` still names the process whose command line carried `token`: ESRCH is dead.
-// A readable line without the token is a stranger on a reused number, so the original is gone.
-// EPERM, an unreadable line (a zombie has one) and a failed query stay alive.
+// Whether `pid` still names the process whose command line carried `token`: ESRCH is dead. A readable line without the token is a stranger on a reused number, so the original is gone. EPERM, an unreadable line (a zombie has one) and a failed query stay alive.
 function isAlive(pid: number, token: string): boolean {
   try {
     process.kill(pid, 0)
@@ -800,8 +789,7 @@ describe('prints the no-op, and never runs the call again, once the request was 
   })
 
   it('no response within the response timeout', async () => {
-    // The server holds the connection open and silent; the client ending alone with the no-op is the verdict.
-    // Waiting the full timeout first: Rust row an_installed_command_line_waits_the_shipping_response_timeout.
+    // The server holds the connection open and silent; the client ending alone with the no-op is the verdict. Waiting the full timeout first: Rust row an_installed_command_line_waits_the_shipping_response_timeout.
     const extra = ['--response-timeout-ms', '500']
     await expectNoop(afterRequest(() => undefined, true), { extra, killAfterMs: 15_000 })
   })
@@ -1112,7 +1100,7 @@ describe('one deadline serves every route', () => {
     // No pid written means the route never started: that is unknown, not dead, so it fails here.
     expect(text, 'the hanging route never wrote its pid').not.toBe('')
     // The 100 ms reap bound is proved in capture.rs; here the wait is on the process ending, not the clock.
-    const gone = await waitGone(Number(text), pidFile)
+    const gone = await waitGone(Number(text), (p) => isAlive(p, pidFile))
     expect(gone, `pid ${text} of the hanging route outlived the client`).toBe(true)
   })
 
@@ -1173,7 +1161,7 @@ describe('one deadline serves every route', () => {
     expect(readPid(files[0] as string), 'the stubborn route never started').toBeGreaterThan(0)
     expect(readPid(files[1] as string), 'the grandchild holding the pipe never started').toBeGreaterThan(0)
     const stubborn = readPid(files[0] as string)
-    const gone = await waitGone(stubborn, files[0] as string)
+    const gone = await waitGone(stubborn, (p) => isAlive(p, files[0] as string))
     expect(gone, `stubborn route ${String(stubborn)} outlived the client`).toBe(true)
   })
 
@@ -1188,7 +1176,7 @@ describe('one deadline serves every route', () => {
     const pid = readPid(files[0] as string)
     expect(pid, 'the shell route never wrote its pid').toBeGreaterThan(0)
     expect(readPid(files[1] as string), 'the descendant never started').toBeGreaterThan(0)
-    expect(await waitGone(pid, files[0] as string), `shell route ${String(pid)} outlived the client`).toBe(true)
+    expect(await waitGone(pid, (p) => isAlive(p, files[0] as string)), `shell route ${String(pid)} outlived the client`).toBe(true)
   })
 })
 
@@ -1301,7 +1289,7 @@ describe('process behaviour', () => {
     } finally {
       killIfCommandLine(pid, (cmd) => cmd.includes(token), { tree: true })
     }
-    expect(await waitGone(pid, token), 'the sleeper outlived its tree kill').toBe(true)
+    expect(await waitGone(pid, (p) => isAlive(p, token)), 'the sleeper outlived its tree kill').toBe(true)
   })
 
   it('the environment and working directory it sends are what Node would read', () => {
@@ -1363,8 +1351,7 @@ describe('process behaviour', () => {
     expect(fallbackRuns()).toBe(runs)
   })
 
-  // HAND-DERIVED: main() in native/tg-hook/src/main.rs (f590b0646): a host that drops the hook's args array
-  // runs the bare command, and the client answers the valid no-op `{}` with exit 0, not a block.
+  // HAND-DERIVED: main() in native/tg-hook/src/main.rs (f590b0646): a host that drops the hook's args array runs the bare command, and the client answers the valid no-op `{}` with exit 0, not a block.
   it('no arguments at all fail open with the no-op response, running nothing', () => {
     const runs = fallbackRuns()
     const res = spawnSync(bin, [], { cwd: sb.proj, env: sb.env, input: '{}', encoding: 'utf8' })

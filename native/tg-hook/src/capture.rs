@@ -167,7 +167,7 @@ fn reap_by(child: &mut std::process::Child, how: impl FnOnce(&mut std::process::
 }
 
 /// Held from clearing inheritance flags until the child exists, so two runs never interleave those steps.
-static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// What a run saw, kept so a test failure can name its evidence: the wait that ended the stdout read, the status, the bytes.
 #[derive(Debug, Default)]

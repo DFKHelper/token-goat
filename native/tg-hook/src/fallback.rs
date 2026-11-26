@@ -135,6 +135,52 @@ fn read_rest(first: Vec<u8>, deadline: Option<Instant>) -> Option<Vec<u8>> {
 
 /// Runs the routes and returns the code to leave with. Never returns a code that would block the call on this process's own account: 0, or 2 only when a command ran and deliberately said so.
 pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
+    match run_with(argv, input, reason, opts, &Live) {
+        Ended::Served(code) => code,
+        Ended::SafeAnswered => out::finish(0),
+    }
+}
+
+/// How [`run_with`] ended: a route served the call, or none did and the notes are written, the safe answer given.
+enum Ended {
+    Served(i32),
+    SafeAnswered,
+}
+
+/// Whether the safe answer goes out before a record is started.
+#[derive(Clone, Copy)]
+enum Answer {
+    Already,
+    Safe,
+}
+
+/// What [`run_with`] reaches outside itself: where the data lives, the routes it runs and how the exit waits for a record. [`Live`] is the real one; a test scripts them.
+trait Host {
+    fn data_dir(&self) -> Option<String>;
+    fn exec(&self, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, opts: &Opts) -> Result<Outcome, capture::Failure>;
+    fn record(&self, write: Box<dyn FnOnce() + Send>, deadline: Option<Instant>, wait: out::RecordWait, answer: Answer) -> bool;
+}
+
+struct Live;
+
+impl Host for Live {
+    fn data_dir(&self) -> Option<String> {
+        paths::data_dir()
+    }
+
+    fn exec(&self, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, opts: &Opts) -> Result<Outcome, capture::Failure> {
+        capture::exec(argv, stdin, reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or(""))
+    }
+
+    fn record(&self, write: Box<dyn FnOnce() + Send>, deadline: Option<Instant>, wait: out::RecordWait, answer: Answer) -> bool {
+        match answer {
+            Answer::Already => out::record_waiting(write, deadline, wait),
+            Answer::Safe => out::answer_then_record(out::answer_safely, write, deadline, wait),
+        }
+    }
+}
+
+fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &dyn Host) -> Ended {
     // A timed-out read leaves no stdin for any route; the deadline has passed, so none starts.
     let timed_out = matches!(input, Input::TimedOut);
     let bytes = match input {
@@ -150,26 +196,26 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
     }
     let first_in = || bytes.as_deref().map_or(Stdin::Inherit, Stdin::Bytes);
     let later_in = || bytes.as_deref().map_or(Stdin::Null, Stdin::Bytes);
-    let data_dir = paths::data_dir();
+    let data_dir = host.data_dir();
     // Notices are written after the call is answered, so a slow disk never delays the host.
     let notes = std::cell::RefCell::new(Vec::<(&str, String, String)>::new());
     let record = |route: &'static str, path: &str, error: &str| notes.borrow_mut().push((route, path.to_string(), error.to_string()));
-    let notes_writer = |extra: Option<(&'static str, String, String)>| {
+    let pending_notes = |extra: Option<Note>| {
         let mut pending = notes.take();
         pending.extend(extra);
-        note_writer(data_dir.clone(), pending, opts.deadline)
+        pending
     };
     let mut failed_argv: Option<Vec<OsString>> = None;
     let second = data_dir.as_ref().map(|dir| rebuilt(opts, dir));
     let second_follows = matches!(&second, Some(Ok(s)) if s.as_slice() != argv);
     let began = notice::iso_utc(std::time::SystemTime::now());
     if let Some(timeout) = first_budget(opts, second_follows) {
-        match capture::exec(argv, first_in(), reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or("")) {
+        match host.exec(argv, first_in(), reason, timeout, opts) {
             Ok(done) => {
                 if let Some(dir) = data_dir.clone() {
                     out::record_bounded(move || notice::clear(&dir, &began), opts.deadline);
                 }
-                return finish(done);
+                return Ended::Served(finish(done));
             }
             Err(failure) => {
                 record("node-argv", &missing_piece(argv), &failure.to_string());
@@ -181,10 +227,10 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
         match second {
             Ok(second) if failed_argv.as_deref() != Some(second.as_slice()) => {
                 if let Some(timeout) = budget(opts) {
-                    match capture::exec(&second, later_in(), "pointer-route", timeout, &opts.harness, opts.event.as_deref().unwrap_or("")) {
+                    match host.exec(&second, later_in(), "pointer-route", timeout, opts) {
                         Ok(done) => {
-                            out::record_bounded(notes_writer(None), opts.deadline);
-                            return finish(done);
+                            record_notes(pending_notes(None), data_dir.clone(), opts.deadline, host, Answer::Already);
+                            return Ended::Served(finish(done));
                         }
                         Err(failure) => record("node-pointer", &missing_piece(&second), &failure.to_string()),
                     }
@@ -195,12 +241,26 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
         }
     }
     let safe_note = ("safe-answer", String::new(), "every route failed; the host was given its safe answer".to_string());
-    out::answer_then_record(out::answer_safely, notes_writer(Some(safe_note)), opts.deadline);
-    out::finish(0)
+    record_notes(pending_notes(Some(safe_note)), data_dir.clone(), opts.deadline, host, Answer::Safe);
+    Ended::SafeAnswered
 }
 
-/// What writes `notes` into `data_dir`, for [`out::record_bounded`]: nothing once `deadline` has passed, so a late note never outlives the call.
-fn note_writer(data_dir: Option<String>, notes: Vec<(&'static str, String, String)>, deadline: Option<Instant>) -> impl FnOnce() + Send + 'static {
+/// One failure a route left behind: the route, the path to blame and the error.
+type Note = (&'static str, String, String);
+
+/// What the exit waits for `pending`: a note recorded after a route failed is a broken-install signal and is waited for like the fail-open notice; with none pending only the grace.
+fn note_wait(pending: &[Note]) -> out::RecordWait {
+    if pending.is_empty() { out::RecordWait::Grace } else { out::RecordWait::Deadline }
+}
+
+/// Writes `pending` into `data_dir` through `host`, which waits as [`note_wait`] says and gives the safe answer first when `answer` says so.
+fn record_notes(pending: Vec<Note>, data_dir: Option<String>, deadline: Option<Instant>, host: &dyn Host, answer: Answer) -> bool {
+    let wait = note_wait(&pending);
+    host.record(Box::new(note_writer(data_dir, pending, deadline)), deadline, wait, answer)
+}
+
+/// What writes `notes` into `data_dir`, for [`out::record_waiting`]: nothing once `deadline` has passed, so a late note never outlives the call.
+fn note_writer(data_dir: Option<String>, notes: Vec<Note>, deadline: Option<Instant>) -> impl FnOnce() + Send + 'static {
     move || {
         let in_time = deadline.is_none_or(|end| Instant::now() < end);
         if let (Some(dir), true) = (&data_dir, in_time) {
@@ -380,10 +440,66 @@ mod tests {
     }
 
     #[test]
+    fn notes_left_by_a_failed_route_are_waited_for_to_the_deadline_and_none_only_for_the_grace() {
+        let failed: Vec<Note> = vec![("node-argv", "old.mjs".to_string(), "exited 1".to_string())];
+        assert!(matches!(note_wait(&failed), out::RecordWait::Deadline), "a note after a failed route is a broken-install signal and must outlast the grace");
+        assert!(matches!(note_wait(&[]), out::RecordWait::Grace), "with no failed route the normal grace stands");
+    }
+
+    /// A host whose routes end as scripted and whose records are logged as (answer, wait) instead of written.
+    struct Scripted {
+        dir: String,
+        routes: std::cell::RefCell<std::collections::VecDeque<Result<Outcome, capture::Failure>>>,
+        records: std::cell::RefCell<Vec<(&'static str, &'static str)>>,
+    }
+
+    impl Host for Scripted {
+        fn data_dir(&self) -> Option<String> {
+            Some(self.dir.clone())
+        }
+
+        fn exec(&self, _: &[OsString], _: Stdin, _: &str, _: Duration, _: &Opts) -> Result<Outcome, capture::Failure> {
+            self.routes.borrow_mut().pop_front().expect("a route ran that the script did not give an end")
+        }
+
+        fn record(&self, _: Box<dyn FnOnce() + Send>, _: Option<Instant>, wait: out::RecordWait, answer: Answer) -> bool {
+            let answer = if matches!(answer, Answer::Safe) { "safe answer first" } else { "answer already out" };
+            let wait = if matches!(wait, out::RecordWait::Deadline) { "deadline" } else { "grace" };
+            self.records.borrow_mut().push((answer, wait));
+            true
+        }
+    }
+
+    /// What `run_with` recorded, and how it ended, when its routes end as `routes` say; the pointer names a node and a shim, so a second route follows the first.
+    fn drive(name: &str, routes: Vec<Result<Outcome, capture::Failure>>) -> (Vec<(&'static str, &'static str)>, Ended) {
+        let (root, dir) = pointer_dir(name, true);
+        let host = Scripted { dir, routes: std::cell::RefCell::new(routes.into()), records: Default::default() };
+        let opts = Opts::for_call("codex", "PreToolUse", Instant::now(), None);
+        let input = Input::Read { bytes: b"{}".to_vec(), more: false };
+        let ended = run_with(&[OsString::from("tg-missing-bin")], input, "test", &opts, &host);
+        let _ = std::fs::remove_dir_all(&root);
+        (host.records.take(), ended)
+    }
+
+    #[test]
+    fn a_route_that_served_after_a_failed_one_has_its_note_waited_for_to_the_deadline() {
+        let (records, ended) = drive("served-after-failed", vec![Err(capture::Failure::Exit(1)), Ok(Outcome { code: 0 })]);
+        assert!(matches!(ended, Ended::Served(0)));
+        assert_eq!(records, [("answer already out", "deadline")], "the note of a failed first route must go through the host's record, waited for to the deadline");
+    }
+
+    #[test]
+    fn when_every_route_failed_the_safe_answer_goes_first_and_its_note_is_waited_for_to_the_deadline() {
+        let (records, ended) = drive("all-failed", vec![Err(capture::Failure::Exit(1)), Err(capture::Failure::Exit(1))]);
+        assert!(matches!(ended, Ended::SafeAnswered));
+        assert_eq!(records, [("safe answer first", "deadline")], "the safe-answer note must go through the host's record, after the answer, waited for to the deadline");
+    }
+
+    #[test]
     fn the_safe_answer_is_written_before_any_notice() {
         let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let (answered, noted) = (order.clone(), order.clone());
-        out::answer_then_record(move || answered.lock().unwrap().push("answer"), move || noted.lock().unwrap().push("notice"), None);
+        out::answer_then_record(move || answered.lock().unwrap().push("answer"), move || noted.lock().unwrap().push("notice"), None, out::RecordWait::Grace);
         assert_eq!(*order.lock().unwrap(), ["answer", "notice"]);
     }
 }

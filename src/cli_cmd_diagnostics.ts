@@ -69,6 +69,7 @@ export function registerDiagnosticCommands(
     .option('--json', 'emit check results as JSON instead of text')
     .option('--repair', 'automatically repair fixable issues (permissive settings, missing semantics models)')
     .option('--fix', 'alias for --repair')
+    .option('--dev', 'with --repair, register a git checkout build as the hook entry, as install --dev does')
     .option('--probe <harness>', 'run one real prompt through a harness (claudecode, codex, copilot_cli) and check that token-goat\'s context hooks reach the model; exits 3 for an editor host (vscode, visualstudio, jetbrains) that has no headless mode')
     .action(guard(handlers.cmdDoctor))
 

@@ -11,6 +11,7 @@ import type * as NodeFsModule from 'node:fs'
 
 import { closeAllDbs, getDb } from '../src/db.js'
 import { modelFilesPresent } from '../src/embed_model.js'
+import { ciSet } from './setup/ci-run.js'
 import { modelDownloadHeld } from '../src/embed_preflight.js'
 import { DEFAULT_DIM, isAvailable, setPipelineFnForTesting } from '../src/embeddings.js'
 import { disabledEmbedSha } from '../src/parser.js'
@@ -136,7 +137,7 @@ it('sqlite-vec is not installed-but-broken, which would skip the suite below whi
 })
 
 // CI warms the model, so a skip of the block below there is lost coverage reported as green: it has to fail instead.
-it.runIf(Boolean(process.env['CI']))('CI runs the embed backlog rows instead of skipping them', () => {
+it.runIf(ciSet(process.env))('CI runs the embed backlog rows instead of skipping them', () => {
   expect(
     { vec0: classifyVec0(), runtime: isAvailable(), modelFilesPresent: modelFilesPresent() },
     'one of these is not working/true, so every row of the embed backlog block skips',

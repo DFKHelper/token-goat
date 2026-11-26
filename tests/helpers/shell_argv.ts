@@ -7,12 +7,13 @@ import * as path from 'node:path'
 import { MessageChannel, Worker, receiveMessageOnPort } from 'node:worker_threads'
 
 import { resolveWindowsBash } from '../../src/shell.js'
+import { ciSet } from '../setup/ci-run.js'
 import { powershellForParsing } from './powershell_parse.js'
 
 /** bash rather than /bin/sh, since the stand-in function is named `token-goat`: bash accepts that name, while Ubuntu's dash ("Bad function name") and macOS's POSIX-mode bash ("not a valid identifier") refuse it and fail every command. Null when no bash is available here; on CI that throws instead, as a missing PowerShell does, because a silent skip would hide the oracle being gone. */
 function posixShell(): string | null {
   const sh = process.platform === 'win32' ? resolveWindowsBash() : fs.existsSync('/bin/bash') ? '/bin/bash' : null
-  if (sh === null && process.env['CI']) throw new Error('bash is required on CI to run token-goat suggestions through a POSIX shell, but none was found')
+  if (sh === null && ciSet(process.env)) throw new Error('bash is required on CI to run token-goat suggestions through a POSIX shell, but none was found')
   return sh
 }
 

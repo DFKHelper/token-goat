@@ -659,10 +659,60 @@ function hasShim(hooksDir) {
   return ['token-goat-shim.cjs', 'token-goat-shim.js'].some((name) => fs.existsSync(path.join(hooksDir, name)))
 }
 
-/** `$CODEX_HOME` when non-empty, else `~/.codex`: `codexHomeDir` in src/bridges/codex_install.ts, which Codex resolves the same way. */
-function codexHooksDir() {
+/** `$CODEX_HOME` when non-empty, else `~/.codex`: `codexHomeDir` in src/purge.ts, which Codex resolves the same way. */
+function codexHomeRoot() {
   const override = process.env.CODEX_HOME
-  return path.join(override ? path.resolve(override) : path.join(os.homedir(), '.codex'), 'hooks')
+  return override ? path.resolve(override) : path.join(os.homedir(), '.codex')
+}
+
+function codexHooksDir() {
+  return path.join(codexHomeRoot(), 'hooks')
+}
+
+/** `$CLAUDE_CONFIG_DIR` when non-empty, else `~/.claude`: `claudeConfigDir` in src/claude_config_dir.ts. */
+function claudeConfigRoot() {
+  const override = process.env.CLAUDE_CONFIG_DIR
+  return override ? override : path.join(os.homedir(), '.claude')
+}
+
+/** The host files holding token-goat's hook entries, keyed by the install step that writes each one. */
+function hostConfigFiles() {
+  return {
+    claudeUser: path.join(claudeConfigRoot(), 'settings.json'),
+    claudeProject: path.join(projectRoot, '.claude', 'settings.json'),
+    copilotUser: path.join(copilotUserHooksDir(), 'token-goat.json'),
+    copilotProject: path.join(projectRoot, '.github', 'hooks', 'token-goat.json'),
+    codex: path.join(codexHomeRoot(), 'config.toml'),
+  }
+}
+
+/** Slash-folded, and case-folded on Windows, so a JSON-escaped or backslash path compares with the bundle path. */
+function normalizedPath(text) {
+  const folded = text.replace(/[\\/]+/g, '/')
+  return isWin ? folded.toLowerCase() : folded
+}
+
+/** 'here' when the file holds a token-goat entry naming this checkout's bundle, 'elsewhere' when it names another path, else 'absent'. */
+function hookEntryState(file) {
+  let text
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch {
+    return 'absent'
+  }
+  if (!text.includes('token-goat')) return 'absent'
+  return normalizedPath(text).includes(normalizedPath(bundlePath)) ? 'here' : 'elsewhere'
+}
+
+/** `--dev` for an install step writing to `file`, only when that file's entry already names this checkout: the gap a sync repairs. */
+function devFlagFor(file) {
+  return hookEntryState(file) === 'here' ? ['--dev'] : []
+}
+
+/** `--dev` for doctor --repair, which repairs every host: only when some entry names this checkout and none names another path. */
+function doctorDevFlag() {
+  const states = Object.values(hostConfigFiles()).map(hookEntryState)
+  return states.includes('here') && !states.includes('elsewhere') ? ['--dev'] : []
 }
 
 /** `$COPILOT_HOME` when not blank, else `~/.copilot`: `copilotCliUserRoot` in src/copilot_home.ts. */
@@ -805,18 +855,18 @@ async function main() {
   if (workerStopped) await runStep('Starting worker daemon', nodeCmd, [bundlePath, 'worker', 'start'])
 
   // 5. Refresh shims and instructions across harnesses
-  await runStep('Refreshing Claude Code hooks & shims', nodeCmd, [bundlePath, 'install'])
+  await runStep('Refreshing Claude Code hooks & shims', nodeCmd, [bundlePath, 'install', ...devFlagFor(hostConfigFiles().claudeUser)])
   // The other hosts are refreshed only where token-goat's shim already is: `install --codex` or `--copilot` on a machine without that host would create its config directory and wire hooks into a tool the user does not have.
   if (hasShim(copilotUserHooksDir())) {
-    await runStep('Refreshing Copilot CLI user hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot'])
+    await runStep('Refreshing Copilot CLI user hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot', ...devFlagFor(hostConfigFiles().copilotUser)])
   }
   if (hasShim(path.join(projectRoot, '.github', 'hooks'))) {
-    await runStep('Refreshing Copilot CLI project hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot', '--local'])
+    await runStep('Refreshing Copilot CLI project hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot', '--local', ...devFlagFor(hostConfigFiles().copilotProject)])
   }
   if (hasShim(codexHooksDir())) {
-    await runStep('Refreshing Codex CLI hooks & shims', nodeCmd, [bundlePath, 'install', '--codex'])
+    await runStep('Refreshing Codex CLI hooks & shims', nodeCmd, [bundlePath, 'install', '--codex', ...devFlagFor(hostConfigFiles().codex)])
   }
-  await runStep('Running doctor repairs across configured harnesses', nodeCmd, [bundlePath, 'doctor', '--repair'])
+  await runStep('Running doctor repairs across configured harnesses', nodeCmd, [bundlePath, 'doctor', '--repair', ...doctorDevFlag()])
 
   // 6. Prune and index
   await runStep('Pruning stale index entries', nodeCmd, [bundlePath, 'project', 'prune'])

@@ -60,7 +60,8 @@ function statuses() {
 
 let server
 async function main() {
-  const installed = cli(['install'])
+  // install refuses a git checkout as the hook entry unless --dev (src/install_entry.ts).
+  const installed = cli(['install', '--dev'])
   if (installed.status !== 0) throw new Error(`install failed:\n${installed.stderr}`)
   const shim = path.join(base, '.claude', 'hooks', 'token-goat-shim.cjs')
   if (!fs.existsSync(shim)) throw new Error(`no shim at ${shim}`)

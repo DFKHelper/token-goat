@@ -63,6 +63,8 @@ export async function runDoctorRepair(opts?: {
   configPath?: string | undefined
   rootDir?: string | undefined
   fast?: boolean | undefined
+  /** Register a git checkout build as the hook entry, as install --dev does. */
+  dev?: boolean | undefined
   maxFullScanBytes?: number | undefined
 }): Promise<DoctorRepairResult> {
   const repairs: string[] = []
@@ -258,7 +260,7 @@ export async function runDoctorRepair(opts?: {
 
   // 6b. Repair stale or outdated harness hooks and shims
   const { repairHarnessHooks } = await import('./cli_doctor_hooks.js')
-  const hookRepair = repairHarnessHooks(opts?.rootDir)
+  const hookRepair = repairHarnessHooks(opts?.rootDir, { dev: opts?.dev === true })
   repairs.push(...hookRepair.repairs)
   errors.push(...hookRepair.errors)
 

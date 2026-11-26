@@ -6,13 +6,34 @@ import { PassThrough } from 'node:stream'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { queryProcessCommandLine } from '../src/resident_process.js'
 import { spawnOwned, type OwnedChild } from '../src/process_tree.js'
 import { createBatchClient, type BatchClient } from './helpers/batch-cli.js'
-import { processAlive } from './helpers/process_alive.js'
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { processAlive, waitGone } from './helpers/process_alive.js'
 
 const STAND_IN = path.join(import.meta.dirname, 'helpers', 'batch_stand_in.mjs')
+// Matches this run's stand-in by its absolute script path, or its grandchild by the watch snippet and this test process's pid, as read at check time.
+const isStandIn = (commandLine: string): boolean =>
+  commandLine.includes(STAND_IN) ||
+  (commandLine.includes('const owner = Number(process.argv[1])') && commandLine.trimEnd().endsWith(` ${process.pid}`))
 
 const clients: BatchClient[] = []
+/** Pids of every stand-in tree a row read, so cleanup can end them by pid even when the server is already gone. */
+const treePids: number[] = []
+
+/** The stand-in's server and grandchild pids, recorded for cleanup. */
+async function treeOf(client: BatchClient): Promise<{ server: number; grandchild: number }> {
+  const pids = JSON.parse((await client.run(['tree'])).stdout) as { server: number; grandchild: number }
+  treePids.push(pids.server, pids.grandchild)
+  return pids
+}
+
+/** Drops a pid a row has proven gone, so cleanup never signals a pid the kernel may have reused. */
+function proveGone(pid: number): void {
+  const at = treePids.indexOf(pid)
+  if (at >= 0) treePids.splice(at, 1)
+}
 
 /** A client whose server is the stand-in, ended after the row whatever the row did. */
 function standIn(): BatchClient {
@@ -21,8 +42,22 @@ function standIn(): BatchClient {
   return client
 }
 
-afterEach(async () => {
-  await Promise.all(clients.splice(0).map((c) => c.stop()))
+// Ends every pid no row proved gone, by its tree, and never awaits close: a survivor holds the pipes, so close would never arrive and an awaited stop would hang this hook after the row's own named failure.
+afterEach(() => {
+  for (const c of clients.splice(0)) void c.stop()
+  const failures: string[] = []
+  for (const pid of treePids.splice(0)) {
+    // A pid is signalled only while its command line still names the stand-in; the read-to-signal gap remains.
+    try {
+      if (killIfCommandLine(pid, isStandIn, { tree: true })) continue
+      // A false return is a stranger, a gone pid or a failed kill; only a pid still naming the stand-in afterwards is a failed kill.
+      const after = queryProcessCommandLine(pid)
+      if (after.status === 'found' ? isStandIn(after.commandLine) : after.status === 'failed' && processAlive(pid)) failures.push(`pid ${pid}: a stand-in process still runs after its tree kill failed`)
+    } catch (err) {
+      failures.push(err instanceof Error ? err.message : String(err))
+    }
+  }
+  if (failures.length > 0) throw new Error(`batch cleanup could not end ${failures.length} recorded pid(s): ${failures.join('; ')}`)
 })
 
 /** The message a request was rejected with; a request that settles instead fails the row. */
@@ -195,7 +230,7 @@ describe('batch client cleanup', () => {
     })
     clients.push(client)
     try {
-      const pids = JSON.parse((await client.run(['tree'])).stdout) as { server: number; grandchild: number }
+      const pids = await treeOf(client)
       const proc = real?.child
       if (proc === undefined) throw new Error('the client did not launch the stand-in')
       const closed = new Promise<void>((resolve) => proc.once('close', () => resolve()))
@@ -207,9 +242,11 @@ describe('batch client cleanup', () => {
       expect(message).toContain('failed (send failed)')
       // The error does not stop the process, so only the client ending the tree makes the close below arrive.
       expect(kills).toBeGreaterThan(0)
+      expect(await waitGone(pids.grandchild), `batch-serve grandchild ${pids.grandchild} outlived its tree kill`).toBe(true)
+      proveGone(pids.grandchild)
       await closed
       expect(processAlive(pids.server)).toBe(false)
-      expect(processAlive(pids.grandchild)).toBe(false)
+      proveGone(pids.server)
     } finally {
       real?.kill()
     }
@@ -217,14 +254,27 @@ describe('batch client cleanup', () => {
 
   it('ends the server and every process holding its pipes while a request is still pending', async () => {
     const client = standIn()
-    const pids = JSON.parse((await client.run(['tree'])).stdout) as { server: number; grandchild: number }
+    const pids = await treeOf(client)
     expect(processAlive(pids.server)).toBe(true)
     expect(processAlive(pids.grandchild)).toBe(true)
     // What an `afterAll(stopBatchCli)` runs after a test body threw with this request unanswered.
     void client.run(['hang', 'never-answered'])
-    await client.stop()
+    const stopped = client.stop()
+    expect(await waitGone(pids.grandchild), `batch-serve grandchild ${pids.grandchild} outlived its tree kill`).toBe(true)
+    proveGone(pids.grandchild)
+    await stopped
     expect(processAlive(pids.server)).toBe(false)
-    expect(processAlive(pids.grandchild)).toBe(false)
+    proveGone(pids.server)
+    expect(treePids, 'every recorded pid was proven gone, so afterEach has nothing left to signal').toEqual([])
+  })
+
+  it('resolves true once the probe reads gone', async () => {
+    let last: boolean | undefined
+    let calls = 0
+    // HAND-DERIVED: the probe reads alive twice, then gone, as the row's contract states; the row asserts only the outcome.
+    const gone = await waitGone(4242, () => { calls++; last = calls <= 2; return last })
+    expect(gone).toBe(true)
+    expect(last).toBe(false)
   })
 
   it('stops cleanly when no server was ever started, and again after it was stopped', async () => {

@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process'
 
 import { canRunPowerShell, resolvePowerShell } from '../../src/shell.js'
+import { ciSet } from '../setup/ci-run.js'
 
 /** What PowerShell's parser made of one command: its top-level statement count, how many parse errors it reported, and the name of every command it would run, at any depth (empty for a script block or expression in command position). */
 export interface PowerShellParse {
@@ -28,7 +29,7 @@ const PARSE_SCRIPT = [
 /** The PowerShell to parse with, or null when none can run here. On CI a missing PowerShell throws instead, because GitHub's ubuntu, macOS and Windows runners all ship pwsh, so a silent skip there would hide the oracle being gone. */
 export function powershellForParsing(): string | null {
   if (canRunPowerShell()) return resolvePowerShell()
-  if (process.env['CI']) throw new Error('PowerShell is required on CI to parse token-goat suggestions, but none was found')
+  if (ciSet(process.env)) throw new Error('PowerShell is required on CI to parse token-goat suggestions, but none was found')
   return null
 }
 

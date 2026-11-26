@@ -15,8 +15,7 @@ try {
   }
 } catch (err) {
   // CI runs have no pre-push leg to skip, so the opt-out hint is for local pushes only.
-  const ci = process.env.CI ?? ''
-  const ciSet = ci !== '' && ci !== '0' && ci !== 'false'
+  const ciSet = process.env.CI === 'true' // same strict rule as isCiRun in tests/setup/ci-run.ts
   const hint = ciSet ? '' : ' (pre-push: TG_PREPUSH_WSL=0 skips the Linux leg)'
   console.error(`vec0 check failed: sqlite-vec did not load or could not create a vec0 table${hint}`)
   console.error(err)
