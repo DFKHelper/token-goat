@@ -159,6 +159,12 @@ describe('mock declarations already committed to the repository', () => {
     expect(findWriteSafetyViolation(file, 'const fakeRow = { a: 1 };\n')).toBeNull()
   })
 
+  it('allows a committed declaration when an unrelated line of the file changes', () => {
+    const { file } = repoWithCommittedFile('const fakeStack = 1;\nconst x = 1;\n')
+
+    expect(findWriteSafetyViolation(file, 'const fakeStack = 1;\nconst x = 2;\n')).toBeNull()
+  })
+
   it('still refuses a new mock declaration written beside a committed one', () => {
     const { file } = repoWithCommittedFile('const fakeRow = { a: 1 };\n')
 
