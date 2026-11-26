@@ -763,6 +763,52 @@ describe('Write/Edit syntax preflight', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') expect(result.message).toMatch(/line 1, column \d+.*token/)
   })
+
+  it('allows an Edit to a committed Flow file whose unrelated line changes', async () => {
+    const filePath = path.join(FILES_DIR, 'flow-unrelated.js')
+    fs.writeFileSync(filePath, '// @flow\nexport opaque type ClientReferenceMetadata = string;\nconst x = 1;\n')
+    const event = makeHookEvent({
+      eventName: 'pre_tool_use',
+      toolName: 'Edit',
+      toolInput: { file_path: filePath, old_string: 'const x = 1;', new_string: 'const x = 2;' },
+      sessionId: 'test',
+    })
+
+    expect((await preWriteRewriteHandler(event)).hookType).toBe('pass')
+  })
+
+  it('refuses an Edit that breaks a JavaScript file which parsed cleanly before', async () => {
+    const filePath = path.join(FILES_DIR, 'edit-clean-break.js')
+    fs.writeFileSync(filePath, 'const a = 1;\n')
+    const event = makeHookEvent({
+      eventName: 'pre_tool_use',
+      toolName: 'Edit',
+      toolInput: { file_path: filePath, old_string: '1', new_string: ';' },
+      sessionId: 'test',
+    })
+
+    const result = await preWriteRewriteHandler(event)
+
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') expect(result.message).toMatch(/line 1, column \d+.*token/)
+  })
+
+  it('refuses a new JavaScript file with a syntax error, judged on its new content alone', async () => {
+    const filePath = path.join(FILES_DIR, 'new-broken.js')
+    const result = await preWriteRewriteHandler(writeEvent(filePath, 'const a = ;\n'))
+
+    expect(result.hookType).toBe('deny')
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
+
+  it('allows a Write that rewrites a file which already fails to parse before and after', async () => {
+    const filePath = path.join(FILES_DIR, 'flow-rewrite.js')
+    fs.writeFileSync(filePath, '// @flow\nexport opaque type T = string;\n')
+
+    const result = await preWriteRewriteHandler(writeEvent(filePath, '// @flow\nexport opaque type T = number;\n'))
+
+    expect(result.hookType).toBe('pass')
+  })
 })
 
 describe('Write safety preflight', () => {

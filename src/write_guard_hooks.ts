@@ -15,7 +15,7 @@ import { readShapeOf } from './read_shape.js'
 import { dropFileLineRangesIfChanged, getFileLineRanges, wasFileFullyReadThisSession, markHintShown, wasHintShown } from './session.js'
 import { siblingCandidates, siblingCopyExcluded, siblingCopyMessage } from './sibling_copy.js'
 import { isWithinQuietHours } from './util.js'
-import { MAX_LINES_FOR_DIFF, readKnownText } from './write_target.js'
+import { MAX_LINES_FOR_DIFF, inspectFile, readKnownText } from './write_target.js'
 import { BLIND_DROP_MIN_LINES, blindDropMessage, countRunLines, findNewElisionLine, findSyntaxError, findWriteSafetyViolation, patchAddedLines, placeholderMessage, placeholdersMessage, unseenRemovedRuns } from './write_guards.js'
 import type { SafetyViolation, SyntaxIssue } from './write_guards.js'
 import type { HookOutput } from './types.js'
@@ -102,7 +102,13 @@ export function preWriteContentGuard(filePath: string, content: string): HookOut
   const violation = findWriteSafetyViolation(filePath, content)
   if (violation !== null) return safetyViolationOutput(filePath, violation)
   const issue = findSyntaxError(filePath, content)
-  return issue === null ? passOutput() : syntaxIssueOutput(filePath, issue)
+  return issue === null || alreadyBrokenOnDisk(filePath) ? passOutput() : syntaxIssueOutput(filePath, issue)
+}
+
+/** True only when the file on disk is text that already fails to parse: the edit did not add the error. */
+function alreadyBrokenOnDisk(filePath: string): boolean {
+  const before = inspectFile(filePath)
+  return before.state === 'text' && findSyntaxError(filePath, before.text) !== null
 }
 
 type ContentReplacement = {
