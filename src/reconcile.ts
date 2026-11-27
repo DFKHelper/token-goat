@@ -7,7 +7,8 @@ import { enqueueDirtyPathsSafe } from './hooks_index.js'
 import { fingerprintFile, mtimeEqualsRow, mtimeProvesUnchanged, statIndexedFile, TIMESTAMP_TICK_SEC } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
-import { indexedPathSpellingIsStale } from './parser.js'
+import { indexedPathSpellingIsStale, isParseSkipEligible } from './parser.js'
+import { loadConfig } from './config.js'
 import { parserStampCurrent } from './stamp_authority.js'
 import { getDisplayRoot } from './project.js'
 import { listTrackedFiles, type TrackedFilesResult } from './repomap.js'
@@ -252,10 +253,19 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
   // Absolutized before scoping: the index stores absolute paths, and `projectScopeClause` builds a prefix-range bound straight from the root it is handed. A relative `cwd` -- what `token-goat reconcile` from inside the project passes -- would produce a relative prefix that matches no stored row, so every tracked file would look unindexed and the sweep would enqueue the entire project as "added" on every run.
   const projectRoot = resolveIndexPath('.', cwd)
   const indexed = getProjectFileEntries(projectRoot, dbPath)
-  const chunkScope = projectScopeClause('file_path')
-  const chunked = new Set(
-    (getDb(dbPath).prepare(`SELECT DISTINCT file_path FROM chunks WHERE ${chunkScope.clause}`).pluck().all(...chunkScope.params(projectRoot)) as string[]).map((p) => foldPath(normalizePath(p))),
-  )
+  // The indexing keys the scan below needs, read once: skip-eligibility mirrors the drain's own gate in makeIndexer.
+  const ixCfg = loadConfig().indexing
+  // Read only when a row needs it (an empty embed_sha), since it scans every chunk of the project on every sweep otherwise.
+  let chunkedSet: Set<string> | null = null
+  const chunked = (): Set<string> => {
+    if (chunkedSet === null) {
+      const chunkScope = projectScopeClause('file_path')
+      chunkedSet = new Set(
+        (getDb(dbPath).prepare(`SELECT DISTINCT file_path FROM chunks WHERE ${chunkScope.clause}`).pluck().all(...chunkScope.params(projectRoot)) as string[]).map((p) => foldPath(normalizePath(p))),
+      )
+    }
+    return chunkedSet
+  }
   // The budget starts here, after `git ls-files` and the index reads, because it bounds the examining and nothing earlier: the setup runs whatever the budget says, so charging it only shrinks the scan. When setup alone outran the budget, the sweep examined nothing and saved no resume point, so the next session repeated the same empty sweep and the project was never checked at all.
   const startedAt = Date.now()
 
@@ -299,7 +309,8 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
     const entry = indexed.get(folded)
 
     if (entry === undefined) {
-      added.push(file)
+      // A file the indexer refuses on purpose (skip_dirs, skip_files, skip_minified, large_file_skip_kb) keeps no row: the drain purges it and stops there. Reporting it as added queued it again on every sweep, so the same files were enqueued forever.
+      if (ixCfg === undefined || !isParseSkipEligible(file, ixCfg)) added.push(file)
       continue
     }
 
@@ -311,7 +322,7 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
     }
 
     // Same shape one freshness key over: chunks with no embed_sha are vectors ensureEmbeddingProvenance kept serving after a chunker change (or that a reparse left behind older content), and the content checks below compare bytes that never moved, so without this a file nobody edits keeps its old chunks forever.
-    if (entry.embedSha === '' && chunked.has(folded)) {
+    if (entry.embedSha === '' && chunked().has(folded)) {
       changed.push(file)
       embedStale++
       continue
