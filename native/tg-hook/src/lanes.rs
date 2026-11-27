@@ -257,6 +257,8 @@ mod tests {
     #[test]
     fn a_holder_child_keeps_its_stdio_while_inheritance_is_being_cleared() {
         let stop = std::sync::atomic::AtomicBool::new(false);
+        const HOLDER_REPORT_CEILING: std::time::Duration = std::time::Duration::from_secs(30);
+        let mut silent = Vec::new();
         let mut dead = Vec::new();
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -273,8 +275,15 @@ mod tests {
                 let mut holder = Holder(spawn_holder(&scratch.0));
                 match holder.0.stdout.take() {
                     Some(out) => {
-                        if !BufReader::new(out).lines().map_while(Result::ok).any(|line| line.contains("lane-held")) {
-                            dead.push(n);
+                        let (report, reported) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || {
+                            let held = BufReader::new(out).lines().map_while(Result::ok).any(|line| line.contains("lane-held"));
+                            let _ = report.send(held);
+                        });
+                        match reported.recv_timeout(HOLDER_REPORT_CEILING) {
+                            Ok(true) => {}
+                            Ok(false) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => dead.push(n),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => silent.push(n),
                         }
                     }
                     None => dead.push(n),
@@ -283,6 +292,7 @@ mod tests {
             }
             stop.store(true, std::sync::atomic::Ordering::Release);
         });
+        assert!(silent.is_empty(), "holder children wrote no report within {HOLDER_REPORT_CEILING:?}: {silent:?} of 60");
         assert!(dead.is_empty(), "holder children started with dead stdio (exit 0, no report): {dead:?} of 60");
     }
 }

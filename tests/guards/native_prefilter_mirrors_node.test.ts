@@ -52,10 +52,12 @@ function topLevelAlternatives(text: string): string[] {
 }
 
 describe('native walk-guard prefilter mirrors node', () => {
+  // FORMAT-DERIVED: src/hooks_bash.ts PREFILTER_CHARS read against native/tg-hook/src/deadline.rs PREFILTER_CHARS.
   it('holds the same character class as src/hooks_bash.ts PREFILTER_CHARS', () => {
     expect(nativeChars(), 'native PREFILTER_CHARS in deadline.rs differs from src/hooks_bash.ts PREFILTER_CHARS').toBe(nodeChars())
   })
 
+  // FORMAT-DERIVED: src/hooks_bash.ts PREFILTER_NAMES read against native/tg-hook/src/deadline.rs PREFILTER_NAMES.
   it('holds only node walker names, and every literal node name', () => {
     const nodeRe = new RegExp(`^(?:${nodeNames()})$`, 'i')
     const rust = nativeNames()

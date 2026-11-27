@@ -490,6 +490,8 @@ mod tests {
     /// HAND-DERIVED: with both ordinary lanes held, a lane wait whose poll answers on its third poll returns that answer and starts no route.
     #[test]
     fn a_lane_wait_returns_the_answer_given_on_its_third_poll() {
+        // A failure ceiling only: the answer on poll 3 ends the wait long before it.
+        const ANSWER_CEILING: Duration = Duration::from_secs(600);
         let lanes = lanes_for("answer-on-third-poll");
         let held: Vec<_> = (0..crate::lanes::ORDINARY_LANES).map(|_| lanes.acquire(crate::lanes::Class::Ordinary, Instant::now()).expect("an ordinary lane is free")).collect();
         let marker = std::env::temp_dir().join(format!("tg-cap-answer-marker-{}", std::process::id()));
@@ -499,7 +501,7 @@ mod tests {
             polls.set(polls.get() + 1);
             (polls.get() == 3).then_some(7)
         };
-        let got = exec_between(&lanes, &marker_route_argv(&marker), Stdin::Null, "test", Duration::from_secs(3), "claudecode", "PostToolUse", &between);
+        let got = exec_between(&lanes, &marker_route_argv(&marker), Stdin::Null, "test", ANSWER_CEILING, "claudecode", "PostToolUse", &between);
         assert!(matches!(got, Ok(Routed::Answered(7))), "a lane wait answered on poll 3 did not return Answered(7)");
         assert_eq!(polls.get(), 3, "the lane wait asked the between step {} times, not 3", polls.get());
         assert!(!marker.exists(), "a lane wait that was answered started a route");

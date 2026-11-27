@@ -83,7 +83,7 @@ fn tool_of(name: &str) -> Tool {
     match name.to_ascii_lowercase().replace(['_', '-'], "").as_str() {
         "bash" | "powershell" => Tool::Shell,
         "read" | "grep" | "glob" => Tool::ReadOnly,
-        "write" | "edit" => Tool::Write,
+        "write" | "edit" | "multiedit" => Tool::Write,
         _ => Tool::Other,
     }
 }
@@ -154,6 +154,17 @@ mod tests {
         ];
         for (tool, command, want) in rows {
             assert_eq!(answer(tool, command), want, "row {tool} | {command:?} must get {want:?}");
+        }
+    }
+
+    /// HAND-DERIVED: src/hooks_write.ts registers Write, Edit and MultiEdit on PreToolUse; NotebookEdit has none.
+    #[test]
+    fn the_write_tools_node_guards_get_busy_and_the_rest_stay_allowed() {
+        for tool in ["Write", "Edit", "MultiEdit"] {
+            assert_eq!(answer(tool, None), Deadline::Busy, "node's write guard denies {tool}, so it must be busy at the deadline");
+        }
+        for tool in ["NotebookEdit", "TodoWrite", "Task"] {
+            assert_eq!(answer(tool, None), Deadline::Allow, "{tool} has no node PreToolUse write guard, so it must stay allowed");
         }
     }
 

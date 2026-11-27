@@ -316,17 +316,19 @@ fn first_pass_over(slots: &Slots, deadline: Instant, mut step: impl FnMut(&str) 
 /// Lane polls between resident-server tries while no endpoint exists: a count of polls, not a duration.
 const PIPE_POLL_EVERY: u32 = 8;
 
-/// Where a waiting call's pipe tries stand: the polls so far, and whether a busy server asks for the next poll.
+/// A waiting call's pipe-try state: polls so far, a pending early try, and whether a busy run spent it.
 #[derive(Clone, Copy, Default)]
 struct Retry {
     polls: u32,
     again: bool,
+    early_spent: bool,
 }
 
 /// One lane poll: on a try poll each endpoint is connected to, bounded by `pause`, in place of the sleep; otherwise the poll sleeps.
 fn lane_poll(retry: &mut Retry, slots: &Slots, pause: Duration, mut step: impl FnMut(&str, Instant) -> Outcome) -> Option<i32> {
     retry.polls += 1;
-    if !retry.again && !retry.polls.is_multiple_of(PIPE_POLL_EVERY) {
+    let early = std::mem::take(&mut retry.again);
+    if !early && !retry.polls.is_multiple_of(PIPE_POLL_EVERY) {
         std::thread::sleep(pause);
         return None;
     }
@@ -349,7 +351,15 @@ fn lane_poll(retry: &mut Retry, slots: &Slots, pause: Duration, mut step: impl F
             Outcome::Absent | Outcome::Stale | Outcome::Refused | Outcome::NoSlotWill => {}
         }
     }
-    retry.again = busy;
+    // A busy run earns one early try; a busy answer after that try keeps the poll count.
+    if busy {
+        if !retry.early_spent {
+            retry.again = true;
+            retry.early_spent = true;
+        }
+    } else {
+        retry.early_spent = false;
+    }
     if answer.is_none() {
         std::thread::sleep(pause.saturating_sub(started.elapsed()));
     }
@@ -388,7 +398,7 @@ mod tests {
         assert_eq!(tried_on, vec![8], "an absent endpoint was tried on polls {tried_on:?}, not on poll 8 alone");
     }
 
-    /// HAND-DERIVED: a busy endpoint is tried again on the next poll, then back on the poll count.
+    /// HAND-DERIVED: a busy answer earns one early try; a second busy returns to the poll count (8, 9, 16).
     #[test]
     fn a_busy_endpoint_is_tried_again_on_the_next_poll() {
         let mut retry = Retry::default();
@@ -398,13 +408,32 @@ mod tests {
             let before = calls.get();
             lane_poll(&mut retry, &endpoints(), Duration::ZERO, |_, _| {
                 calls.set(calls.get() + 1);
-                if calls.get() == 1 { Outcome::Busy } else { Outcome::Absent }
+                if calls.get() <= 2 { Outcome::Busy } else { Outcome::Absent }
             });
             if calls.get() > before {
                 tried_on.push(poll);
             }
         }
         assert_eq!(tried_on, vec![8, 9, 16], "a busy endpoint was tried on polls {tried_on:?}, not on 8, 9 and 16");
+    }
+
+    /// HAND-DERIVED: busy on all 64 polls: tries 8 and 9, then every 8th poll 16..64, so 9 tries.
+    #[test]
+    fn a_busy_endpoint_is_tried_once_per_eight_polls_after_its_early_try() {
+        let mut retry = Retry::default();
+        let calls = Cell::new(0u32);
+        let mut tries = 0u32;
+        for _ in 1..=64u32 {
+            let before = calls.get();
+            lane_poll(&mut retry, &endpoints(), Duration::ZERO, |_, _| {
+                calls.set(calls.get() + 1);
+                Outcome::Busy
+            });
+            if calls.get() > before {
+                tries += 1;
+            }
+        }
+        assert_eq!(tries, 9, "a busy endpoint was tried on {tries} of 64 polls, not on 9 (polls 8, 9, then every 8th)");
     }
 
     /// Slots whose endpoints are counted as they are computed, so a test sees when each one is computed.
