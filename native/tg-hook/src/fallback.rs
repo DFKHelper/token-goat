@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::capture::{self, Outcome, Stdin};
-use crate::{notice, out, paths, pointer};
+use crate::{deadline, notice, out, paths, pointer};
 
 /// What of this process's stdin the child gets.
 pub enum Input {
@@ -152,6 +152,7 @@ enum Ended {
 enum Answer {
     Already,
     Safe,
+    Busy,
 }
 
 /// What [`run_with`] reaches outside itself: where the data lives, the routes it runs and how the exit waits for a record. [`Live`] is the real one; a test scripts them.
@@ -176,6 +177,7 @@ impl Host for Live {
         match answer {
             Answer::Already => out::record_waiting(write, deadline, wait),
             Answer::Safe => out::answer_then_record(out::answer_safely, write, deadline, wait),
+            Answer::Busy => out::answer_then_record(out::answer_busy, write, deadline, wait),
         }
     }
 }
@@ -206,6 +208,7 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
         pending
     };
     let mut failed_argv: Option<Vec<OsString>> = None;
+    let mut lane_busy = false;
     let second = data_dir.as_ref().map(|dir| rebuilt(opts, dir));
     let second_follows = matches!(&second, Some(Ok(s)) if s.as_slice() != argv);
     let began = notice::iso_utc(std::time::SystemTime::now());
@@ -218,6 +221,7 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
                 return Ended::Served(finish(done));
             }
             Err(failure) => {
+                lane_busy |= failure.is_busy_lane();
                 if !failure.is_busy_lane() {
                     record("node-argv", &missing_piece(argv), &failure.to_string());
                 }
@@ -235,6 +239,7 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
                             return Ended::Served(finish(done));
                         }
                         Err(failure) => {
+                            lane_busy |= failure.is_busy_lane();
                             if !failure.is_busy_lane() {
                                 record("node-pointer", &missing_piece(&second), &failure.to_string());
                             }
@@ -245,6 +250,13 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
             Ok(_) => {}
             Err(why) => record("pointer", &Path::new(dir).join(pointer::FILE_NAME).to_string_lossy(), &why),
         }
+    }
+    let harness = opts.harness.as_str();
+    let event = opts.event.as_deref().unwrap_or("");
+    if lane_busy && deadline::deadline_answer(harness, event, bytes.as_deref()) == deadline::Deadline::Busy {
+        let busy_note = ("deadline-busy", String::new(), "no lane freed before the deadline; the host was told to run the call again".to_string());
+        record_notes(pending_notes(Some(busy_note)), data_dir.clone(), opts.deadline, host, Answer::Busy);
+        return Ended::SafeAnswered;
     }
     let safe_note = ("safe-answer", String::new(), "every route failed; the host was given its safe answer".to_string());
     record_notes(pending_notes(Some(safe_note)), data_dir.clone(), opts.deadline, host, Answer::Safe);
@@ -469,7 +481,11 @@ mod tests {
         }
 
         fn record(&self, _: Box<dyn FnOnce() + Send>, _: Option<Instant>, wait: out::RecordWait, answer: Answer) -> bool {
-            let answer = if matches!(answer, Answer::Safe) { "safe answer first" } else { "answer already out" };
+            let answer = match answer {
+                Answer::Safe => "safe answer first",
+                Answer::Busy => "busy answer first",
+                Answer::Already => "answer already out",
+            };
             let wait = if matches!(wait, out::RecordWait::Deadline) { "deadline" } else { "grace" };
             self.records.borrow_mut().push((answer, wait));
             true

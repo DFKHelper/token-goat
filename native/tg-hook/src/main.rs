@@ -7,6 +7,7 @@
 mod capture;
 mod client;
 mod conn;
+mod deadline;
 mod fallback;
 mod jsstr;
 mod lanes;

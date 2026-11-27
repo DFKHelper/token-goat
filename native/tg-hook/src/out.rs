@@ -242,6 +242,13 @@ pub fn answer_safely() {
     }
 }
 
+/// Writes `deadline::BUSY_ANSWER` unless an answer is already out.
+pub fn answer_busy() {
+    if !answered() {
+        emit_claimed(&ANSWERED, BY_SAFE_ANSWER, crate::deadline::BUSY_ANSWER, write_bounded);
+    }
+}
+
 /// Runs `record` on its own thread and waits for it until `deadline` or [`RECORD_GRACE`], whichever is first, so a stalled disk cannot hold the process once the answer is out; true when the record finished. With no deadline set yet the smallest hook limit stands in for it.
 pub fn record_bounded(record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) -> bool {
     record_waiting(record, deadline, RecordWait::Grace)
