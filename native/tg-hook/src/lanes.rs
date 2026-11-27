@@ -212,15 +212,7 @@ mod tests {
     fn a_lane_whose_holder_was_killed_is_free_once_the_kill_is_awaited() {
         let scratch = Scratch::new("killed");
         let lanes = scratch.lanes();
-        let child = Command::new(std::env::current_exe().expect("the test binary path"))
-            .args(["--ignored", "--exact", "lanes::tests::hold_lane_child", "--nocapture"])
-            .arg(format!("dir={}", scratch.0.display()))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start the holder child");
-        let mut holder = Holder(child);
+        let mut holder = Holder(spawn_holder(&scratch.0));
         let stdout = BufReader::new(holder.0.stdout.take().expect("piped stdout"));
         // Ends at the child's report or at its EOF, so a child that exits first fails here rather than hanging.
         let reported = stdout.lines().map_while(Result::ok).any(|line| line.contains("lane-held"));
@@ -246,5 +238,51 @@ mod tests {
         let _held = hold_ordinary(&lanes);
         assert!(temp.join(TEMP_LANE_DIR).join("lane-0.lock").is_file(), "the lanes were not taken in the temp fallback directory");
         assert!(matches!(lanes.acquire(Class::Ordinary, Instant::now()), Err(LaneError::Busy)), "a third ordinary lane was granted through the temp fallback");
+    }
+
+    /// Starts a holder child under the spawn lock every spawn and inheritance clear shares.
+    fn spawn_holder(dir: &Path) -> Child {
+        let _spawning = crate::capture::SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        Command::new(std::env::current_exe().expect("the test binary path"))
+            .args(["--ignored", "--exact", "lanes::tests::hold_lane_child", "--nocapture"])
+            .arg(format!("dir={}", dir.display()))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start the holder child")
+    }
+
+    /// HAND-DERIVED: holder children keep their stdio while another thread keeps clearing handle inheritance.
+    #[test]
+    fn a_holder_child_keeps_its_stdio_while_inheritance_is_being_cleared() {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut dead = Vec::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                    {
+                        let _clearing = crate::capture::SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                        crate::sys::stop_handle_inheritance();
+                    }
+                    std::thread::yield_now();
+                }
+            });
+            for n in 0..60 {
+                let scratch = Scratch::new(&format!("stdio-{n}"));
+                let mut holder = Holder(spawn_holder(&scratch.0));
+                match holder.0.stdout.take() {
+                    Some(out) => {
+                        if !BufReader::new(out).lines().map_while(Result::ok).any(|line| line.contains("lane-held")) {
+                            dead.push(n);
+                        }
+                    }
+                    None => dead.push(n),
+                }
+                drop(holder);
+            }
+            stop.store(true, std::sync::atomic::Ordering::Release);
+        });
+        assert!(dead.is_empty(), "holder children started with dead stdio (exit 0, no report): {dead:?} of 60");
     }
 }

@@ -95,6 +95,40 @@ pub fn process_elapsed_ms(main_start: Instant) -> f64 {
     main_start.elapsed().as_secs_f64() * 1000.0
 }
 
+/// Identifies one process instance by its start time, so a pid the OS reused for another process gives a different identity; `None` when the process cannot be read.
+#[cfg(all(test, windows))]
+pub fn process_identity(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let (mut created, mut exited, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+    // SAFETY: opens a query-only handle that is closed on every path below before the function returns.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: writes four FILETIME out-parameters of ours, through the handle opened above.
+    let ok = unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) } != 0;
+    // SAFETY: closes the handle opened above, which nothing else holds.
+    unsafe { CloseHandle(handle) };
+    ok.then(|| ((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)).to_string())
+}
+
+/// Identifies one process instance by its start time, so a pid the OS reused for another process gives a different identity; `None` when the process cannot be read.
+#[cfg(all(test, target_os = "linux"))]
+pub fn process_identity(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Field 22 (starttime) follows the parenthesised command name, which may hold spaces.
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19).map(str::to_owned)
+}
+
+/// Identifies one process instance by its start time, so a pid the OS reused for another process gives a different identity; `None` when the process cannot be read.
+#[cfg(all(test, unix, not(target_os = "linux")))]
+pub fn process_identity(pid: u32) -> Option<String> {
+    let out = Command::new("ps").args(["-o", "lstart=", "-p", &pid.to_string()]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    let text = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
 /// Arranges, before `cmd` is spawned, for the child to die with this process: if the harness kills this client on its hook timeout, the Node command it was running on the harness's behalf goes too, as it would have when the harness ran that command itself. Linux asks the kernel for SIGKILL on parent death; Windows does it through [`adopt_child`].
 pub fn guard_child(cmd: &mut Command) {
     #[cfg(target_os = "linux")]

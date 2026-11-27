@@ -638,6 +638,18 @@ mod tests {
         }};
     }
 
+    /// The sidecar holding a pidfile's process identity; written before the pidfile, so a visible pidfile always has one.
+    fn identity_file(pidfile: &std::path::Path) -> std::path::PathBuf {
+        std::path::PathBuf::from(format!("{}.started", pidfile.display()))
+    }
+
+    /// Writes the identity of `pid` beside `pidfile`; a process whose identity cannot be read leaves none, so the reaper will not kill it.
+    fn record_identity(pidfile: &std::path::Path, pid: u32) {
+        if let Some(identity) = crate::sys::process_identity(pid) {
+            let _ = std::fs::write(identity_file(pidfile), identity);
+        }
+    }
+
     /// Maps a function path to a pidfile name; tests share one process id, so the path is the key.
     fn pidfile_for(path: &str) -> std::path::PathBuf {
         let name: String = path.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
@@ -663,6 +675,7 @@ mod tests {
     #[ignore = "only runs as the hanging child of the kill tests below"]
     fn hang_child() {
         let Some(path) = std::env::args().find_map(|a| a.strip_prefix("pidfile=").map(String::from)) else { return };
+        record_identity(std::path::Path::new(&path), std::process::id());
         std::fs::write(path, std::process::id().to_string()).unwrap();
         // Outlives BACKSTOP, so an unkilled child fails the tests waiting on it.
         std::thread::sleep(Duration::from_secs(120));
@@ -674,9 +687,13 @@ mod tests {
     impl Drop for ReapRecordedChild {
         fn drop(&mut self) {
             let recorded = std::fs::read_to_string(&self.0).ok().and_then(|t| t.trim().parse::<u32>().ok());
+            let identity = std::fs::read_to_string(identity_file(&self.0)).ok().map(|t| t.trim().to_owned());
             let _ = std::fs::remove_file(&self.0);
-            if let Some(pid) = recorded.filter(|&pid| !process_is_gone(pid)) {
-                kill_pid(pid);
+            let _ = std::fs::remove_file(identity_file(&self.0));
+            let Some(pid) = recorded.filter(|&pid| !process_is_gone(pid)) else { return };
+            match (identity, crate::sys::process_identity(pid)) {
+                (Some(recorded_identity), Some(live_identity)) if recorded_identity == live_identity => kill_pid(pid),
+                _ => eprintln!("ReapRecordedChild: pid {pid} is alive but its identity is not the recorded child's; left running"),
             }
         }
     }
@@ -692,6 +709,38 @@ mod tests {
         #[cfg(windows)]
         kill.args(["/PID", &pid.to_string(), "/T", "/F"]);
         let _ = kill.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+
+    /// HAND-DERIVED: a pidfile that names a live process whose identity is not the recorded one leaves that process running.
+    #[test]
+    fn a_reused_pid_is_left_running_by_the_reaper() {
+        struct EndChild(std::process::Child);
+        impl Drop for EndChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let pidfile = own_pidfile!();
+        let other_file = pidfile.with_extension("other");
+        let other = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "capture::tests::hang_child"])
+            .arg(format!("pidfile={}", other_file.display()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut other = EndChild(other);
+        // The recorded child is this test process, a different one: the pid below was reused by `other`.
+        let own = crate::sys::process_identity(std::process::id()).unwrap();
+        std::fs::write(identity_file(&pidfile), own).unwrap();
+        std::fs::write(&pidfile, other.0.id().to_string()).unwrap();
+        drop(ReapRecordedChild(pidfile.clone()));
+        let still_running = other.0.try_wait().unwrap().is_none();
+        let _ = std::fs::remove_file(identity_file(&other_file));
+        let _ = std::fs::remove_file(&other_file);
+        assert!(still_running, "the reaper killed pid {} although its identity is not the recorded one", other.0.id());
     }
 
     #[test]
@@ -786,6 +835,7 @@ mod tests {
     fn hang_parent() {
         let arg = |key: &str| std::env::args().find_map(|a| a.strip_prefix(key).map(String::from));
         let (Some(parentfile), Some(childfile)) = (arg("parentfile="), arg("childfile=")) else { return };
+        record_identity(std::path::Path::new(&parentfile), std::process::id());
         std::fs::write(parentfile, std::process::id().to_string()).unwrap();
         let grandchild = Command::new(std::env::current_exe().unwrap())
             .args(["--ignored", "--exact", "capture::tests::hang_child"])
@@ -805,6 +855,7 @@ mod tests {
         let arg = |key: &str| std::env::args().find_map(|a| a.strip_prefix(key).map(String::from));
         let Some(childfile) = arg("childfile=") else { return };
         // As Node does at startup, so the child does not hold this route's stdout pipe open past the route's exit.
+        let spawning = SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         crate::sys::stop_handle_inheritance();
         let mut cmd = Command::new(std::env::current_exe().unwrap());
         cmd.args(["--ignored", "--exact", "capture::tests::hang_child"]).arg(format!("pidfile={childfile}"));
@@ -816,6 +867,7 @@ mod tests {
             cmd.creation_flags(0x8 | 0x200);
         }
         drop(cmd.spawn());
+        drop(spawning);
         // Bounded by BACKSTOP; the row asserts on the pid, so a child that never wrote it fails there.
         let _ = poll_within(BACKSTOP, || std::fs::metadata(&childfile).is_ok().then_some(()));
         println!("{{}}");
