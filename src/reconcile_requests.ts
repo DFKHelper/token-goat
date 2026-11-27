@@ -30,7 +30,6 @@ function claimReconcileRequests(dir: string): string | null {
   }
 }
 
-/** Sweep every project named in the reconcile-request file under `dir` against the index in `dir`'s global.db, enqueueing the files that drifted for the next drain cycle. Only a project indexed on purpose is swept (see indexed_roots.ts), the rule session start applies; a request whose directory git cannot place in a repository any more, or whose project was not indexed on purpose, is dropped with a line in the worker error log. A sweep that ran out of its budget puts its project back so the next cycle resumes at the saved cursor. Git runs without blocking the event loop, so a repository whose git hangs delays this sweep without freezing the event loop: signal handlers and timers keep running. Returns how many projects were swept. Never throws. */
 // Minimum gap between two sweeps of one repository. Hooks raise a request per shell call that may change files (shell_writes.ts), and a sweep stats every tracked file, so a burst of requests for one repository is coalesced into one sweep per window and the rest wait for it. A policy constant, not a measured optimum: well above the 2 s worker cycle, well below the delay a reconcile exists to bound.
 export const SWEEP_MIN_INTERVAL_MS = 30_000
 
@@ -54,7 +53,8 @@ function sweepKey(dir: string, root: string): string {
 
 function sweptWithinWindow(dir: string, root: string, nowMs: number = Date.now()): boolean {
   const last = lastSweptMs.get(sweepKey(dir, root))
-  return last !== undefined && nowMs - last < SWEEP_MIN_INTERVAL_MS
+  // A clock stepped backward makes the gap negative; that is an expired window, not a held one.
+  return last !== undefined && nowMs >= last && nowMs - last < SWEEP_MIN_INTERVAL_MS
 }
 
 function markSwept(dir: string, root: string, nowMs: number = Date.now()): void {
@@ -78,6 +78,7 @@ function takeDueDeferredRequests(dir: string, nowMs: number = Date.now()): strin
   return due
 }
 
+/** Sweep every project named in the reconcile-request file under `dir` against the index in `dir`'s global.db, enqueueing the files that drifted for the next drain cycle. Only a project indexed on purpose is swept (see indexed_roots.ts), the rule session start applies; a request whose directory git cannot place in a repository any more, or whose project was not indexed on purpose, is dropped with a line in the worker error log. A sweep that ran out of its budget puts its project back so the next cycle resumes at the saved cursor. Git runs without blocking the event loop, so a repository whose git hangs delays this sweep without freezing the event loop: signal handlers and timers keep running. Returns how many projects were swept. Never throws. */
 export async function drainReconcileRequestsAsync(dir: string): Promise<number> {
   let claimed: string | null
   try {
@@ -110,6 +111,7 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
       const known = rootOfRequest.get(requestKey(dir, projectDir))
       if (known !== undefined && sweptWithinWindow(dir, known)) {
         deferSweep(dir, known, projectDir)
+        requeue.push(projectDir)
         continue
       }
       const top = await runGitAsyncLazy(['rev-parse', '--show-toplevel'], { cwd: projectDir, timeoutMs: 5000 })
@@ -132,6 +134,7 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
       rootOfRequest.set(requestKey(dir, projectDir), root)
       if (sweptWithinWindow(dir, root)) {
         deferSweep(dir, root, projectDir)
+        requeue.push(projectDir)
         continue
       }
       if (!isIndexedRoot(root, dbPath)) {
@@ -143,9 +146,9 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
       const result = reconcileProjectWith({ cwd: root, dbPath, queueDir: dir }, listing)
       progressed()
       swept++
-      markSwept(dir, root)
-      // A sweep whose file listing git did not finish found no new files, so the request goes back for the next cycle instead of being spent.
+      // An unfinished sweep is not marked swept, so its continuation runs on the next cycle instead of waiting out the window.
       if (result.budgetExhausted || result.gitTimedOut) requeue.push(root)
+      else markSwept(dir, root)
       logOutcome(dir, projectDir, `swept ${root}: ${result.scanned} scanned, ${result.enqueued} queued${result.gitTimedOut ? ', git did not answer in time listing the files, continuing next cycle' : result.budgetExhausted ? ', budget spent, continuing next cycle' : ''}`)
     } catch (e) {
       logOutcome(dir, projectDir, `failed: ${e instanceof Error ? e.message : String(e)}`)
@@ -163,7 +166,8 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
       }
     }
   }
-  for (const root of requeue) {
+  // A held request is requeued once per cycle, so the file keeps one line per held repository while its window runs.
+  for (const root of new Set(requeue)) {
     try {
       appendReconcileRequest(dir, root)
     } catch {

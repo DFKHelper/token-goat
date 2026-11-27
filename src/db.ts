@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS index_retries (
 );
 CREATE INDEX IF NOT EXISTS idx_index_retries_path_folded ON index_retries(TG_LOWER(path));
 
+-- Paths the drain gave up on after its transient-failure budget, with the mtime they had then. A sweep reports such a path again only once its mtime moves. Additive, so no MIGRATIONS entry is needed.
+CREATE TABLE IF NOT EXISTS index_giveups (
+  path TEXT PRIMARY KEY,
+  mtime_ms REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS symbols (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   file_path TEXT,
@@ -781,6 +787,42 @@ export function getReadDb(dbPath: string): SqliteDatabase {
 }
 
 /** Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access. The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle. In a process that called {@link allowReadOnlyIndex}, a database it may not write is served through a read-only connection instead (see {@link openIndexReadOnly}); in every other process that refusal propagates. */
+/** Consecutive transient read failures the drain tolerates before it stops requeuing a path. */
+export const MAX_TRANSIENT_RETRIES = 5
+
+/** Stamp `absPath` as given up, at its current mtime, in the index DB at `dbPath`. Best-effort: when the stamp cannot be written the sweep reports the file as it did before the stamp existed. */
+export function recordGiveUp(dbPath: string, absPath: string): void {
+  try {
+    const mtimeMs = fs.statSync(absPath).mtimeMs
+    getDb(dbPath)
+      .prepare('INSERT OR REPLACE INTO index_giveups (path, mtime_ms) VALUES (?, ?)')
+      .run(foldPath(normalizePath(absPath)), mtimeMs)
+  } catch {
+    // Best-effort, and a missing file has nothing to stamp; the drain's own retry bookkeeping is unaffected.
+  }
+}
+
+/** Drop the give-up stamp for `absPath`, once a read of it has succeeded again. */
+export function settleGivenUp(dbPath: string, absPath: string): void {
+  try {
+    getDb(dbPath).prepare('DELETE FROM index_giveups WHERE path = ?').run(foldPath(normalizePath(absPath)))
+  } catch {
+    // Best-effort: a stale stamp only suppresses one sweep report until the file's mtime moves.
+  }
+}
+
+/** True when `absPath` was given up at the mtime it has now, so a sweep should not report it again. */
+export function givenUpStillCurrent(dbPath: string, absPath: string): boolean {
+  try {
+    const row = getDb(dbPath)
+      .prepare('SELECT mtime_ms FROM index_giveups WHERE path = ?')
+      .get(foldPath(normalizePath(absPath))) as { mtime_ms: number } | undefined
+    return row !== undefined && fs.statSync(absPath).mtimeMs === row.mtime_ms
+  } catch {
+    return false
+  }
+}
+
 export function getDb(dbPath: string, opts: { create?: boolean } = {}): SqliteDatabase {
   // Fold only the cache key, not `resolved` itself -- the real-case path is still what gets passed to fs/Database below, so the file is created/opened with whatever casing the caller (or an existing file on disk) actually used.
   const { resolved, key } = connectionKey(dbPath)

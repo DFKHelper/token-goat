@@ -2,9 +2,9 @@
 import * as fs from 'node:fs'
 
 import { globalDbPath } from './constants.js'
-import { getDb } from './db.js'
+import { getDb, givenUpStillCurrent } from './db.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
-import { fingerprintFile, mtimeEqualsRow, mtimeProvesUnchanged, statIndexedFile, TIMESTAMP_TICK_SEC } from './fingerprint.js'
+import { fileIsAbsent, fingerprintFile, mtimeEqualsRow, mtimeProvesUnchanged, statIndexedFile, TIMESTAMP_TICK_SEC } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexedPathSpellingIsStale, isParseSkipEligible } from './parser.js'
@@ -309,7 +309,8 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
     const entry = indexed.get(folded)
 
     if (entry === undefined) {
-      // A file the indexer refuses on purpose (skip_dirs, skip_files, skip_minified, large_file_skip_kb) keeps no row: the drain purges it and stops there. Reporting it as added queued it again on every sweep, so the same files were enqueued forever.
+      // A file the indexer refuses on purpose (skip_dirs, skip_files, skip_minified, large_file_skip_kb) keeps no row: the drain purges it and stops there. Reporting it as added queued it again on every sweep, so the same files were enqueued forever. A tracked file gone from disk is not an addition, and a file the drain gave up on is reported again only once its mtime moves.
+      if (fileIsAbsent(file) || givenUpStillCurrent(dbPath, file)) continue
       if (ixCfg === undefined || !isParseSkipEligible(file, ixCfg)) added.push(file)
       continue
     }
