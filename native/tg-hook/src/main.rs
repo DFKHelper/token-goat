@@ -130,9 +130,13 @@ fn run_hook(hook: HookArgs, main_start: Instant) -> i32 {
     };
     // The relay may not outlast the call's one deadline, whatever the response timeout says.
     let call = client::Call { deadline: opts.deadline, ..call };
-    match client::relay(&call, &text, main_start) {
+    let (ending, pipe) = client::relay(call, &text, main_start);
+    match ending {
         client::Ending::Served(code) => code,
-        client::Ending::Fallback(reason) => fallback::run(&hook.fallback, fallback::Input::Read { bytes: text.into_bytes(), more: false }, reason, &opts),
+        client::Ending::Fallback(reason) => {
+            let opts = fallback::Opts { pipe, ..opts };
+            fallback::run(&hook.fallback, fallback::Input::Read { bytes: text.into_bytes(), more: false }, reason, &opts)
+        }
     }
 }
 

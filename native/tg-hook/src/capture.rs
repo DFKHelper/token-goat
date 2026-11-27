@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::lanes::{LaneError, Lanes, class_of};
+use crate::lanes::{LaneError, Lanes, Waited, class_of};
 use crate::out;
 use crate::sys::Group;
 
@@ -195,16 +195,57 @@ impl Failure {
     }
 }
 
-pub fn exec(lanes: &Lanes, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, harness: &str, event: &str) -> Result<Outcome, Failure> {
-    exec_within(lanes, argv, stdin, reason, Budget { timeout, end: Instant::now() + timeout }, harness, event)
+/// What a route call ended with: the route ran, or the resident server answered while the call waited for a lane.
+pub enum Routed {
+    Ran(Outcome),
+    Answered(i32),
+}
+
+#[cfg(test)]
+pub fn exec(lanes: &Lanes, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, harness: &str, event: &str) -> Result<Routed, Failure> {
+    exec_between(lanes, argv, stdin, reason, timeout, harness, event, &sleep_poll)
+}
+
+/// Like `exec`, but each lane poll is spent by `between`, which may return the server's answer and end the wait.
+#[allow(clippy::too_many_arguments)]
+pub fn exec_between(
+    lanes: &Lanes,
+    argv: &[OsString],
+    stdin: Stdin,
+    reason: &str,
+    timeout: Duration,
+    harness: &str,
+    event: &str,
+    between: &dyn Fn(Duration, Instant) -> Option<i32>,
+) -> Result<Routed, Failure> {
+    exec_within(lanes, argv, stdin, reason, Budget { timeout, end: Instant::now() + timeout }, harness, event, between)
+}
+
+/// The lane poll with no server to retry: it only sleeps its pause.
+pub fn sleep_poll(pause: Duration, _end: Instant) -> Option<i32> {
+    std::thread::sleep(pause);
+    None
 }
 
 /// Waits for a lane, then runs `argv` with what the wait left of the budget, so the lane wait and the run share one deadline.
-fn exec_within(lanes: &Lanes, argv: &[OsString], stdin: Stdin, reason: &str, budget: Budget, harness: &str, event: &str) -> Result<Outcome, Failure> {
+#[allow(clippy::too_many_arguments)]
+fn exec_within(
+    lanes: &Lanes,
+    argv: &[OsString],
+    stdin: Stdin,
+    reason: &str,
+    budget: Budget,
+    harness: &str,
+    event: &str,
+    between: &dyn Fn(Duration, Instant) -> Option<i32>,
+) -> Result<Routed, Failure> {
     // Held until the route is reaped, so the lane covers the node process for its whole life.
-    let _lane = lanes.acquire(class_of(event), budget.end).map_err(Failure::NoLane)?;
+    let _lane = match lanes.acquire_while(class_of(event), budget.end, &|pause| between(pause, budget.end)).map_err(Failure::NoLane)? {
+        Waited::Lane(lane) => lane,
+        Waited::Answer(code) => return Ok(Routed::Answered(code)),
+    };
     let handed = budget.timeout.min(budget.end.saturating_duration_since(Instant::now()));
-    exec_traced(argv, stdin, reason, handed, harness, event, &mut Trace::default())
+    exec_traced(argv, stdin, reason, handed, harness, event, &mut Trace::default()).map(Routed::Ran)
 }
 
 #[rustfmt::skip]
@@ -422,6 +463,69 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
     }
 
+    /// The route the lane-wait rows run: `marker_child`, which writes `marker` and exits.
+    fn marker_route_argv(marker: &std::path::Path) -> Vec<OsString> {
+        vec![
+            std::env::current_exe().expect("the test binary path").into_os_string(),
+            OsString::from("--ignored"),
+            OsString::from("--exact"),
+            OsString::from("capture::tests::marker_child"),
+            OsString::from(format!("marker={}", marker.display())),
+        ]
+    }
+
+    /// HAND-DERIVED: with both ordinary lanes held, a lane wait whose poll answers on its third poll returns that answer and starts no route.
+    #[test]
+    fn a_lane_wait_returns_the_answer_given_on_its_third_poll() {
+        let lanes = lanes_for("answer-on-third-poll");
+        let held: Vec<_> = (0..crate::lanes::ORDINARY_LANES).map(|_| lanes.acquire(crate::lanes::Class::Ordinary, Instant::now()).expect("an ordinary lane is free")).collect();
+        let marker = std::env::temp_dir().join(format!("tg-cap-answer-marker-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let polls = std::cell::Cell::new(0u32);
+        let between = |_: Duration, _: Instant| {
+            polls.set(polls.get() + 1);
+            (polls.get() == 3).then_some(7)
+        };
+        let got = exec_between(&lanes, &marker_route_argv(&marker), Stdin::Null, "test", Duration::from_secs(3), "claudecode", "PostToolUse", &between);
+        assert!(matches!(got, Ok(Routed::Answered(7))), "a lane wait answered on poll 3 did not return Answered(7)");
+        assert_eq!(polls.get(), 3, "the lane wait asked the between step {} times, not 3", polls.get());
+        assert!(!marker.exists(), "a lane wait that was answered started a route");
+        drop(held);
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    /// HAND-DERIVED: with both ordinary lanes held and no server answer, the wait ends at its deadline with NoLane(Busy) and starts no route.
+    #[test]
+    fn a_lane_wait_with_no_answer_ends_busy_at_its_deadline() {
+        let lanes = lanes_for("no-answer-deadline");
+        let held: Vec<_> = (0..crate::lanes::ORDINARY_LANES).map(|_| lanes.acquire(crate::lanes::Class::Ordinary, Instant::now()).expect("an ordinary lane is free")).collect();
+        let marker = std::env::temp_dir().join(format!("tg-cap-deadline-marker-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let between = |_: Duration, _: Instant| None::<i32>;
+        let got = exec_between(&lanes, &marker_route_argv(&marker), Stdin::Null, "test", Duration::from_millis(50), "claudecode", "PostToolUse", &between);
+        assert!(matches!(got, Err(Failure::NoLane(LaneError::Busy))), "a lane wait with no answer did not end NoLane(Busy)");
+        assert!(!marker.exists(), "a lane wait that ended busy started a route");
+        drop(held);
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    /// HAND-DERIVED: with a free lane the call takes it at once, so the between step is never asked and no answer is returned.
+    #[test]
+    fn a_free_lane_is_taken_without_asking_the_server() {
+        let lanes = lanes_for("free-lane-no-ask");
+        let marker = std::env::temp_dir().join(format!("tg-cap-free-marker-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let polls = std::cell::Cell::new(0u32);
+        let between = |_: Duration, _: Instant| {
+            polls.set(polls.get() + 1);
+            Some(9)
+        };
+        let got = exec_between(&lanes, &marker_route_argv(&marker), Stdin::Null, "test", BACKSTOP, "claudecode", "PostToolUse", &between);
+        assert_eq!(polls.get(), 0, "a free lane still asked the between step {} times, not 0", polls.get());
+        assert!(!matches!(got, Ok(Routed::Answered(_))), "a free lane returned a server answer");
+        let _ = std::fs::remove_file(&marker);
+    }
+
     fn run_traced(argv: &[OsString]) -> (Result<Outcome, Failure>, Trace) {
         let mut trace = Trace::default();
         let got = exec_traced(argv, Stdin::Null, "test", BACKSTOP, "claudecode", "pre_tool_use", &mut trace);
@@ -537,7 +641,7 @@ mod tests {
         let argv = vec![me, "--ignored".into(), "--exact".into(), "capture::tests::hang_child".into(), format!("pidfile={}", pidfile.display()).into()];
         let lanes = lanes_for("lane-wait-charged");
         let budget = Budget { timeout: Duration::from_millis(50), end: Instant::now() };
-        let got = exec_within(&lanes, &argv, Stdin::Null, "t", budget, "grok", "pre_tool_use");
+        let got = exec_within(&lanes, &argv, Stdin::Null, "t", budget, "grok", "pre_tool_use", &sleep_poll);
         assert!(matches!(&got, Err(Failure::Timeout(handed)) if handed.is_zero()), "the run was handed more than zero after the lane wait used the whole deadline");
     }
 

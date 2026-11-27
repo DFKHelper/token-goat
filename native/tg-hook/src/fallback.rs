@@ -49,11 +49,13 @@ pub struct Opts {
     pub reserve_second: bool,
     /// Arguments after the entry that the rebuilt command carries too (the startup deadline).
     pub extra: Vec<OsString>,
+    /// The resident-server request a call waiting for a lane retries; `None` when no server was tried.
+    pub pipe: Option<crate::client::Prepared>,
 }
 
 impl Opts {
     pub fn bare() -> Opts {
-        Opts { harness: String::new(), event: None, deadline: None, reserve_second: false, extra: Vec::new() }
+        Opts { harness: String::new(), event: None, deadline: None, reserve_second: false, extra: Vec::new(), pipe: None }
     }
 
     /// A hook call that began at `start`; `limit`, a test seam, can only shorten the harness's own limit.
@@ -158,7 +160,7 @@ enum Answer {
 /// What [`run_with`] reaches outside itself: where the data lives, the routes it runs and how the exit waits for a record. [`Live`] is the real one; a test scripts them.
 trait Host {
     fn data_dir(&self) -> Option<String>;
-    fn exec(&self, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, opts: &Opts) -> Result<Outcome, capture::Failure>;
+    fn exec(&self, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, opts: &Opts) -> Result<capture::Routed, capture::Failure>;
     fn record(&self, write: Box<dyn FnOnce() + Send>, deadline: Option<Instant>, wait: out::RecordWait, answer: Answer) -> bool;
 }
 
@@ -169,8 +171,13 @@ impl Host for Live {
         paths::data_dir()
     }
 
-    fn exec(&self, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, opts: &Opts) -> Result<Outcome, capture::Failure> {
-        capture::exec(&crate::lanes::Lanes::under(self.data_dir()), argv, stdin, reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or(""))
+    fn exec(&self, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, opts: &Opts) -> Result<capture::Routed, capture::Failure> {
+        // Each lane poll of a waiting call: the server is retried when this call has one prepared, else the poll only sleeps.
+        let between = |pause: Duration, end: Instant| match opts.pipe.as_ref() {
+            Some(pipe) => pipe.poll(pause, end),
+            None => capture::sleep_poll(pause, end),
+        };
+        capture::exec_between(&crate::lanes::Lanes::under(self.data_dir()), argv, stdin, reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or(""), &between)
     }
 
     fn record(&self, write: Box<dyn FnOnce() + Send>, deadline: Option<Instant>, wait: out::RecordWait, answer: Answer) -> bool {
@@ -214,7 +221,9 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
     let began = notice::iso_utc(std::time::SystemTime::now());
     if let Some(timeout) = first_budget(opts, second_follows) {
         match host.exec(argv, first_in(), reason, timeout, opts) {
-            Ok(done) => {
+            // A server answered while the call waited for a lane: served as it is, with no route failure recorded.
+            Ok(capture::Routed::Answered(code)) => return Ended::Served(code),
+            Ok(capture::Routed::Ran(done)) => {
                 if let Some(dir) = data_dir.clone() {
                     out::record_bounded(move || notice::clear(&dir, &began), opts.deadline);
                 }
@@ -234,7 +243,8 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
             Ok(second) if failed_argv.as_deref() != Some(second.as_slice()) => {
                 if let Some(timeout) = budget(opts) {
                     match host.exec(&second, later_in(), "pointer-route", timeout, opts) {
-                        Ok(done) => {
+                        Ok(capture::Routed::Answered(code)) => return Ended::Served(code),
+                        Ok(capture::Routed::Ran(done)) => {
                             record_notes(pending_notes(None), data_dir.clone(), opts.deadline, host, Answer::Already);
                             return Ended::Served(finish(done));
                         }
@@ -476,8 +486,8 @@ mod tests {
             Some(self.dir.clone())
         }
 
-        fn exec(&self, _: &[OsString], _: Stdin, _: &str, _: Duration, _: &Opts) -> Result<Outcome, capture::Failure> {
-            self.routes.borrow_mut().pop_front().expect("a route ran that the script did not give an end")
+        fn exec(&self, _: &[OsString], _: Stdin, _: &str, _: Duration, _: &Opts) -> Result<capture::Routed, capture::Failure> {
+            self.routes.borrow_mut().pop_front().expect("a route ran that the script did not give an end").map(capture::Routed::Ran)
         }
 
         fn record(&self, _: Box<dyn FnOnce() + Send>, _: Option<Instant>, wait: out::RecordWait, answer: Answer) -> bool {

@@ -62,6 +62,18 @@ impl Lanes {
 
     /// Takes a lane for `class` before `deadline`; an `Err` says why none was taken.
     pub fn acquire(&self, class: Class, deadline: Instant) -> Result<Lane, LaneError> {
+        let sleep_only = |pause: Duration| -> Option<std::convert::Infallible> {
+            std::thread::sleep(pause);
+            None
+        };
+        match self.acquire_while(class, deadline, &sleep_only)? {
+            Waited::Lane(lane) => Ok(lane),
+            Waited::Answer(never) => match never {},
+        }
+    }
+
+    /// Waits for a lane like `acquire`; each poll's pause goes to `between`, which spends it, and an answer it returns ends the wait.
+    pub fn acquire_while<T>(&self, class: Class, deadline: Instant, between: &dyn Fn(Duration) -> Option<T>) -> Result<Waited<T>, LaneError> {
         let Some(data) = &self.dir else { return Err(LaneError::Unusable("no data directory to hold a lane in".into())) };
         let dir = usable_dir(data, &self.temp).map_err(LaneError::Unusable)?;
         let indices: Vec<usize> = match class {
@@ -71,15 +83,24 @@ impl Lanes {
         loop {
             for index in &indices {
                 if let Some(lane) = try_take(&dir, *index).map_err(LaneError::Unusable)? {
-                    return Ok(lane);
+                    return Ok(Waited::Lane(lane));
                 }
             }
             if Instant::now() >= deadline {
                 return Err(LaneError::Busy);
             }
-            std::thread::sleep(RETRY.min(deadline.saturating_duration_since(Instant::now())));
+            let pause = RETRY.min(deadline.saturating_duration_since(Instant::now()));
+            if let Some(answer) = between(pause) {
+                return Ok(Waited::Answer(answer));
+            }
         }
     }
+}
+
+/// How a lane wait ended: with a lane held, or with an answer `between` gave during the wait.
+pub enum Waited<T> {
+    Lane(Lane),
+    Answer(T),
 }
 
 /// The lane directory: the data dir's if its lane files open, else one fixed temp directory; both failing takes no lane.

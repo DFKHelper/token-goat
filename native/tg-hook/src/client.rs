@@ -1,6 +1,7 @@
 //! The relay: `callServer` and `relayViaServer` from src/hook_client.ts, speaking the harness-aware protocol (`HARNESS_PROTOCOL_VERSION`, src/hook_server.ts `serveConnection`) so this client carries no harness logic. Every outcome maps to one of two endings: the server answered (its bytes are printed and its exit code returned), or nothing was dispatched and the caller runs the wrapped Node command. A request lost after it was handed over prints the harness's no-op instead, because running a hook twice is worse than failing it open.
 
 use crate::out::emit;
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -121,12 +122,12 @@ fn challenge_noops(msg: &Map<String, Value>) -> Option<(String, Vec<(String, Str
     Some((noop, noops))
 }
 
-/// One attempt against `slot`: connect, hello, verified challenge, request, then the `out` frames (each printed as it arrives) and the `done` frame.
-fn attempt(endpoint: &str, key: &[u8], call: &Call, body: &str) -> Outcome {
+/// One attempt against `slot`: connect (by `connect_by`), hello, verified challenge, request, then the `out` frames and the `done` frame.
+fn attempt(endpoint: &str, key: &[u8], call: &Call, body: &str, connect_by: Option<Instant>, limit: Option<Instant>) -> Outcome {
     let started = Instant::now();
     let cap = |t: Instant| call.deadline.map_or(t, |d| t.min(d));
-    let handshake_deadline = cap(started + HANDSHAKE_TIMEOUT);
-    let conn = match Conn::connect(endpoint, handshake_deadline) {
+    let handshake_deadline = limit.map_or(cap(started + HANDSHAKE_TIMEOUT), |end| cap(started + HANDSHAKE_TIMEOUT).min(end));
+    let conn = match Conn::connect(endpoint, connect_by.unwrap_or(handshake_deadline)) {
         Ok(conn) => conn,
         Err(ConnectError::Absent) => return Outcome::Absent,
         #[cfg(windows)]
@@ -207,16 +208,16 @@ fn attempt(endpoint: &str, key: &[u8], call: &Call, body: &str) -> Outcome {
 }
 
 /// `relayViaServer` for `call` with `input`, the whole of stdin. Prints what the server answers; `Fallback` means nothing was printed and nothing dispatched.
-pub fn relay(call: &Call, input: &str, main_start: Instant) -> Ending {
+pub fn relay(call: Call, input: &str, main_start: Instant) -> (Ending, Option<Prepared>) {
     if !server_enabled() {
-        return Ending::Fallback("server-off");
+        return (Ending::Fallback("server-off"), None);
     }
-    let Some(data_dir) = paths::data_dir() else { return Ending::Fallback("no-data-dir") };
+    let Some(data_dir) = paths::data_dir() else { return (Ending::Fallback("no-data-dir"), None) };
     if recently_disabled(&data_dir) {
-        return Ending::Fallback("server-disabled");
+        return (Ending::Fallback("server-disabled"), None);
     }
-    let Some(key) = paths::read_server_key(&data_dir) else { return Ending::Fallback("no-key") };
-    let Some(cwd) = node_cwd() else { return Ending::Fallback("no-cwd") };
+    let Some(key) = paths::read_server_key(&data_dir) else { return (Ending::Fallback("no-key"), None) };
+    let Some(cwd) = node_cwd() else { return (Ending::Fallback("no-cwd"), None) };
     let bundle_dir = paths::bundle_dir_for_entry(&call.entry);
     let mut request = json!({
         "kind": "hook",
@@ -231,28 +232,149 @@ pub fn relay(call: &Call, input: &str, main_start: Instant) -> Ending {
         request["scriptDir"] = Value::String(dir.clone());
     }
     let body = request.to_string();
-    let find_end = Instant::now() + FIND_BUDGET;
-    let deadline = call.deadline.map_or(find_end, |d| find_end.min(d));
-    for slot in 0..SERVER_SLOTS {
-        if Instant::now() >= deadline {
-            break;
+    let endpoints: Vec<String> = (0..SERVER_SLOTS).map(|slot| paths::endpoint_for(slot, &data_dir, &bundle_dir)).collect();
+    let pipe = Prepared { call, endpoints, key: key.to_vec(), body, retry: Cell::new(Retry::default()) };
+    let ending = pipe.first_pass();
+    match ending {
+        Ending::Served(_) => (ending, None),
+        Ending::Fallback(_) => (ending, Some(pipe)),
+    }
+}
+
+/// The request `relay` built, kept so a call waiting for a lane can retry the resident server with the same body.
+pub struct Prepared {
+    call: Call,
+    endpoints: Vec<String>,
+    key: Vec<u8>,
+    body: String,
+    retry: Cell<Retry>,
+}
+
+impl Prepared {
+    /// The first pass over every slot, before any lane is waited for; its answers and fallbacks are the ones `relay` always gave.
+    fn first_pass(&self) -> Ending {
+        let find_end = Instant::now() + FIND_BUDGET;
+        let deadline = self.call.deadline.map_or(find_end, |d| find_end.min(d));
+        for endpoint in &self.endpoints {
+            if Instant::now() >= deadline {
+                break;
+            }
+            match attempt(endpoint, &self.key, &self.call, &self.body, None, None) {
+                Outcome::Served { stdout, exit } => {
+                    emit(&stdout);
+                    return Ending::Served(exit);
+                }
+                // What relayViaServer answers for a request a server took and never answered, in this harness's form.
+                Outcome::Lost { noop } => {
+                    emit(&noop);
+                    return Ending::Served(0);
+                }
+                // No server on this slot: the Node command starts one in the background, so the next call is served.
+                Outcome::Absent => return Ending::Fallback("absent"),
+                Outcome::Stale => return Ending::Fallback("stale"),
+                Outcome::NoSlotWill => return Ending::Fallback("refused"),
+                Outcome::Busy | Outcome::Refused => {}
+            }
         }
-        match attempt(&paths::endpoint_for(slot, &data_dir, &bundle_dir), &key, call, &body) {
+        Ending::Fallback("busy")
+    }
+
+    /// One lane poll of a waiting call: a server answer ends the wait, otherwise `pause` is spent on this poll.
+    pub fn poll(&self, pause: Duration, end: Instant) -> Option<i32> {
+        let mut retry = self.retry.get();
+        let answer = lane_poll(&mut retry, &self.endpoints, pause, |endpoint, connect_by| attempt(endpoint, &self.key, &self.call, &self.body, Some(connect_by), Some(end)));
+        self.retry.set(retry);
+        answer
+    }
+}
+
+/// Lane polls between resident-server tries while no endpoint exists: a count of polls, not a duration.
+const PIPE_POLL_EVERY: u32 = 8;
+
+/// Where a waiting call's pipe tries stand: the polls so far, and whether a busy server asks for the next poll.
+#[derive(Clone, Copy, Default)]
+struct Retry {
+    polls: u32,
+    again: bool,
+}
+
+/// One lane poll: on a try poll each endpoint is connected to, bounded by `pause`, in place of the sleep; otherwise the poll sleeps.
+fn lane_poll(retry: &mut Retry, endpoints: &[String], pause: Duration, mut step: impl FnMut(&str, Instant) -> Outcome) -> Option<i32> {
+    retry.polls += 1;
+    if !retry.again && !retry.polls.is_multiple_of(PIPE_POLL_EVERY) {
+        std::thread::sleep(pause);
+        return None;
+    }
+    let started = Instant::now();
+    let mut busy = false;
+    let mut answer = None;
+    for endpoint in endpoints {
+        match step(endpoint, Instant::now() + pause) {
             Outcome::Served { stdout, exit } => {
                 emit(&stdout);
-                return Ending::Served(exit);
+                answer = Some(exit);
+                break;
             }
-            // What relayViaServer answers for a request a server took and never answered, in this harness's form.
             Outcome::Lost { noop } => {
                 emit(&noop);
-                return Ending::Served(0);
+                answer = Some(0);
+                break;
             }
-            // No server on this slot: the Node command starts one in the background, so the next call is served.
-            Outcome::Absent => return Ending::Fallback("absent"),
-            Outcome::Stale => return Ending::Fallback("stale"),
-            Outcome::NoSlotWill => return Ending::Fallback("refused"),
-            Outcome::Busy | Outcome::Refused => {}
+            Outcome::Busy => busy = true,
+            Outcome::Absent | Outcome::Stale | Outcome::Refused | Outcome::NoSlotWill => {}
         }
     }
-    Ending::Fallback("busy")
+    retry.again = busy;
+    if answer.is_none() {
+        std::thread::sleep(pause.saturating_sub(started.elapsed()));
+    }
+    answer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn endpoints() -> Vec<String> {
+        vec!["pipe-0".to_string()]
+    }
+
+    /// HAND-DERIVED: an endpoint that is absent is tried on poll 8 and on no poll before it.
+    #[test]
+    fn an_absent_endpoint_is_tried_on_poll_eight_and_not_before() {
+        let mut retry = Retry::default();
+        let calls = Cell::new(0u32);
+        let mut tried_on = Vec::new();
+        for poll in 1..=8u32 {
+            let before = calls.get();
+            lane_poll(&mut retry, &endpoints(), Duration::ZERO, |_, _| {
+                calls.set(calls.get() + 1);
+                Outcome::Absent
+            });
+            if calls.get() > before {
+                tried_on.push(poll);
+            }
+        }
+        assert_eq!(tried_on, vec![8], "an absent endpoint was tried on polls {tried_on:?}, not on poll 8 alone");
+    }
+
+    /// HAND-DERIVED: a busy endpoint is tried again on the next poll, then back on the poll count.
+    #[test]
+    fn a_busy_endpoint_is_tried_again_on_the_next_poll() {
+        let mut retry = Retry::default();
+        let calls = Cell::new(0u32);
+        let mut tried_on = Vec::new();
+        for poll in 1..=16u32 {
+            let before = calls.get();
+            lane_poll(&mut retry, &endpoints(), Duration::ZERO, |_, _| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 { Outcome::Busy } else { Outcome::Absent }
+            });
+            if calls.get() > before {
+                tried_on.push(poll);
+            }
+        }
+        assert_eq!(tried_on, vec![8, 9, 16], "a busy endpoint was tried on polls {tried_on:?}, not on 8, 9 and 16");
+    }
 }
