@@ -9,6 +9,7 @@ import type { SqliteDatabase } from './sqlite_driver.js'
 
 import { dataDir, globalDbPath, MAX_FULL_SCAN_BYTES, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { isDotenvPath } from './dotenv_redact.js'
+import { mtimeProvesUnchanged } from './fingerprint.js'
 import { safeJoin } from './paths.js'
 import { projectScopeClause } from './sql_path.js'
 import { ensureDirSync, foldCase, foldPath, normalizePath, sleepSync } from './util.js'
@@ -786,17 +787,16 @@ export function getReadDb(dbPath: string): SqliteDatabase {
   return getDb(dbPath, { create: false })
 }
 
-/** Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access. The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle. In a process that called {@link allowReadOnlyIndex}, a database it may not write is served through a read-only connection instead (see {@link openIndexReadOnly}); in every other process that refusal propagates. */
 /** Consecutive transient read failures the drain tolerates before it stops requeuing a path. */
 export const MAX_TRANSIENT_RETRIES = 5
 
-/** Stamp `absPath` as given up, at its current mtime, in the index DB at `dbPath`. Best-effort: when the stamp cannot be written the sweep reports the file as it did before the stamp existed. */
-export function recordGiveUp(dbPath: string, absPath: string): void {
+/** Stamp `absPath` as given up at `stamp`, the mtime its failing attempt was read under, in the index DB at `dbPath`. The mtime is read before the attempt, so an edit that lands during it is not hidden behind the stamp. A stamp inside one timestamp tick of its own mtime is not recorded: an edit in that tick keeps the same mtime, so the give-up would hide it ({@link mtimeProvesUnchanged}'s rule). The drain stamps again on each over-budget attempt, so a skipped stamp is taken once it is old enough. Best-effort: when the stamp cannot be written the sweep reports the file as it did before the stamp existed. */
+export function recordGiveUp(dbPath: string, absPath: string, stamp: { readonly mtimeMs: number; readonly clockSec: number } | undefined): void {
+  if (stamp === undefined || !mtimeProvesUnchanged({ mtime: stamp.mtimeMs / 1000, indexedAt: stamp.clockSec }, stamp.mtimeMs)) return
   try {
-    const mtimeMs = fs.statSync(absPath).mtimeMs
     getDb(dbPath)
       .prepare('INSERT OR REPLACE INTO index_giveups (path, mtime_ms) VALUES (?, ?)')
-      .run(foldPath(normalizePath(absPath)), mtimeMs)
+      .run(foldPath(normalizePath(absPath)), stamp.mtimeMs)
   } catch {
     // Best-effort, and a missing file has nothing to stamp; the drain's own retry bookkeeping is unaffected.
   }
@@ -811,18 +811,7 @@ export function settleGivenUp(dbPath: string, absPath: string): void {
   }
 }
 
-/** True when `absPath` was given up at the mtime it has now, so a sweep should not report it again. */
-export function givenUpStillCurrent(dbPath: string, absPath: string): boolean {
-  try {
-    const row = getDb(dbPath)
-      .prepare('SELECT mtime_ms FROM index_giveups WHERE path = ?')
-      .get(foldPath(normalizePath(absPath))) as { mtime_ms: number } | undefined
-    return row !== undefined && fs.statSync(absPath).mtimeMs === row.mtime_ms
-  } catch {
-    return false
-  }
-}
-
+/** Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access. The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle. In a process that called {@link allowReadOnlyIndex}, a database it may not write is served through a read-only connection instead (see {@link openIndexReadOnly}); in every other process that refusal propagates. */
 export function getDb(dbPath: string, opts: { create?: boolean } = {}): SqliteDatabase {
   // Fold only the cache key, not `resolved` itself -- the real-case path is still what gets passed to fs/Database below, so the file is created/opened with whatever casing the caller (or an existing file on disk) actually used.
   const { resolved, key } = connectionKey(dbPath)

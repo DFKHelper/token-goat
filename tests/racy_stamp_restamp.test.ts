@@ -270,7 +270,7 @@ describe('restampVerifiedUnchanged at the tick boundary', () => {
     const indexedPath = (getDb(dbPath).prepare('SELECT path FROM files WHERE path LIKE ?').get('%/edge.ts') as { path: string }).path
     const sha = (getDb(dbPath).prepare('SELECT sha FROM files WHERE path = ?').get(indexedPath) as { sha: string }).sha
 
-    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, stamp: { mtimeSec: NOW - 2, clockSec: NOW } }])
+    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, stamp: { mtimeMs: (NOW - 2) * 1000, mtimeSec: NOW - 2, clockSec: NOW } }])
 
     expect(row('edge.ts')).toEqual({ mtime: NOW - 2, indexed_at: NOW })
   })
@@ -280,7 +280,7 @@ describe('restampVerifiedUnchanged at the tick boundary', () => {
     const indexedPath = (getDb(dbPath).prepare('SELECT path FROM files WHERE path LIKE ?').get('%/young.ts') as { path: string }).path
     const sha = (getDb(dbPath).prepare('SELECT sha FROM files WHERE path = ?').get(indexedPath) as { sha: string }).sha
 
-    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, stamp: { mtimeSec: NOW - 1.9, clockSec: NOW } }])
+    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, stamp: { mtimeMs: (NOW - 1.9) * 1000, mtimeSec: NOW - 1.9, clockSec: NOW } }])
 
     expect(row('young.ts')).toEqual({ mtime: NOW - 1.9, indexed_at: OLD })
   })
@@ -290,7 +290,7 @@ describe('restampVerifiedUnchanged at the tick boundary', () => {
     const stored = row('moved.ts')
     const indexedPath = (getDb(dbPath).prepare('SELECT path FROM files WHERE path LIKE ?').get('%/moved.ts') as { path: string }).path
 
-    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha: 'not-the-row-sha', stamp: { mtimeSec: NOW - 100, clockSec: NOW } }])
+    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha: 'not-the-row-sha', stamp: { mtimeMs: (NOW - 100) * 1000, mtimeSec: NOW - 100, clockSec: NOW } }])
 
     expect(row('moved.ts')).toEqual(stored)
   })
@@ -353,7 +353,7 @@ describe('a clock that stepped back after the row was indexed', () => {
       const found = getDb(dbPath).prepare('SELECT path, sha FROM files WHERE path LIKE ?').get(`%/${name}`) as { path: string; sha: string }
       return { indexedPath: found.path, sha: found.sha }
     }
-    const stamp = { mtimeSec: SAME_TICK, clockSec: CLOCK_SEC }
+    const stamp = { mtimeMs: SAME_TICK * 1000, mtimeSec: SAME_TICK, clockSec: CLOCK_SEC }
 
     restampVerifiedUnchanged(dbPath, [
       { ...pathOf('before.ts'), stamp },

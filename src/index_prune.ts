@@ -21,6 +21,7 @@ export function removeFileFromIndex(db: DbHandle, filePath: string): void {
     deleteFileRows(db, filePath)
     deleteFileEmbeddings(db, filePath)
     db.prepare(`DELETE FROM index_retries WHERE ${pathEqClause('path')}`).run(foldPath(filePath))
+    db.prepare(`DELETE FROM index_giveups WHERE ${pathEqClause('path')}`).run(foldPath(filePath))
   })
   // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN, which takes a read snapshot first and only asks for the write lock at the first writing statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright. This database is shared by the worker daemon, the hook processes and the CLI at once, so that is an ordinary situation rather than a rare one. See writeParseResult in parser.ts.
   tx.immediate()
@@ -292,11 +293,13 @@ export function findDeadRetryPaths(dbPath: string = globalDbPath()): string[] {
 export function pruneDeadRetryRows(dbPath: string = globalDbPath()): string[] {
   const db = getDb(dbPath)
   const stmt = db.prepare(`DELETE FROM index_retries WHERE ${pathEqClause('path')}`)
+  const giveUpStmt = db.prepare(`DELETE FROM index_giveups WHERE ${pathEqClause('path')}`)
   const removed: string[] = []
   for (const p of findDeadRetryPaths(dbPath)) {
     if (!indexedFileIsGone(p)) continue
     try {
       stmt.run(foldPath(p))
+      giveUpStmt.run(foldPath(p))
       removed.push(p)
     } catch {
       // Best-effort, same contract as removeFilesBestEffort: one row's failure must not abort the rest.

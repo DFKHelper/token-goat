@@ -350,6 +350,23 @@ describe('index_prune', () => {
     expect(db.prepare('SELECT count(*) AS n FROM index_retries').get()).toEqual({ n: 0 })
   })
 
+  it('reclaims a give-up stamp with the retry counter of a path that was never indexed', () => {
+    const neverIndexed = normalizePath(path.join(dir, 'goner-stamped.ts'))
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO index_retries (path, retry_count) VALUES (?, 6)').run(neverIndexed)
+    db.prepare('INSERT INTO index_giveups (path, mtime_ms) VALUES (?, ?)').run(neverIndexed, 1000)
+    expect(pruneDeadRetryRows(dbPath)).toEqual([neverIndexed])
+    expect(db.prepare('SELECT count(*) AS n FROM index_giveups').get(), 'the stamp of a deleted file is dead state').toEqual({ n: 0 })
+  })
+
+  it('takes a give-up stamp with the file when removeFileFromIndex deletes it', () => {
+    const stampedPath = normalizePath(path.join(dir, 'stamped.ts'))
+    const db = getDb(dbPath)
+    db.prepare('INSERT INTO index_giveups (path, mtime_ms) VALUES (?, ?)').run(stampedPath, 1000)
+    removeFileFromIndex(db, stampedPath)
+    expect(db.prepare('SELECT count(*) AS n FROM index_giveups').get(), 'the stamp of a removed file is dead state').toEqual({ n: 0 })
+  })
+
   it('keeps the retry counter of a file that is still on disk, however many times it has failed', () => {
     const lockedPath = path.join(dir, 'locked.ts')
     fs.writeFileSync(lockedPath, 'export const lockedSym = 1\n')

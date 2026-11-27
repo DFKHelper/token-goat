@@ -260,6 +260,9 @@ describe('a file that keeps no row is not re-enqueued by repeated sweeps', () =>
     fs.writeFileSync(file, fn(NEW_SYMBOL))
     git(fx.repo, 'add', 'unreadable.ts')
     git(fx.repo, 'commit', '-qm', 'add a file the drain cannot read')
+    // Backdated past the timestamp tick so the give-up stamp is recorded (a file written this instant is racy-clean and never stamped).
+    const aged = new Date('2000-01-01T00:00:00Z')
+    fs.utimesSync(file, aged, aged)
     const target = foldPath(normalizePath(file))
     const realRead = fingerprintModule.fingerprintFileWithBytes
     // Injected read failure: the file exists, so only the drain's own read gives up on it, through its real retry bookkeeping.
@@ -274,6 +277,62 @@ describe('a file that keeps no row is not re-enqueued by repeated sweeps', () =>
     fs.utimesSync(file, moved, moved)
     const second = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
     expect(second.added, 'after its mtime moves the given-up file is reported again').toHaveLength(1)
+  })
+
+  it('suppresses a given-up file that keeps its row, so an edit it failed to read is not re-enqueued each sweep', () => {
+    const fx = fixture()
+    const file = path.join(fx.repo, 'stale-row.ts')
+    fs.writeFileSync(file, fn(NEW_SYMBOL))
+    git(fx.repo, 'add', 'stale-row.ts')
+    git(fx.repo, 'commit', '-qm', 'add a file the drain indexes first')
+    appendDirtyQueuePaths(fx.dir, [file])
+    drainAll(fx.dir)
+    // Edited to new content and backdated past the timestamp tick, so the drain's stamp is proven and the row's sha is stale.
+    fs.writeFileSync(file, fn('givenUpRowEdit'))
+    const edited = new Date('2001-01-01T00:00:00Z')
+    fs.utimesSync(file, edited, edited)
+    const target = foldPath(normalizePath(file))
+    const realRead = fingerprintModule.fingerprintFileWithBytes
+    vi.spyOn(fingerprintModule, 'fingerprintFileWithBytes').mockImplementation((p) => (foldPath(normalizePath(p)) === target ? null : realRead(p)))
+    appendDirtyQueuePaths(fx.dir, [file])
+    for (let cycle = 0; cycle < 10; cycle++) drainOnce(fx.dir)
+    expect(retryCountFor(fx.dbPath, target), 'the drain gave up after its retries').toBeGreaterThan(MAX_TRANSIENT_RETRIES)
+    for (let sweep = 1; sweep <= 3; sweep++) {
+      const r = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+      expect(r.enqueued, `sweep ${sweep}: a given-up file that keeps its row is not re-enqueued`).toBe(0)
+    }
+    const moved = new Date('2002-01-01T00:00:00Z')
+    fs.utimesSync(file, moved, moved)
+    const afterMove = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(afterMove.enqueued, 'after its mtime moves the given-up file is enqueued again').toBeGreaterThan(0)
+  })
+
+  it('does not hide an edit that lands during the failed read behind the give-up stamp', () => {
+    const fx = fixture()
+    const file = path.join(fx.repo, 'edited-mid-read.ts')
+    fs.writeFileSync(file, fn(NEW_SYMBOL))
+    git(fx.repo, 'add', 'edited-mid-read.ts')
+    git(fx.repo, 'commit', '-qm', 'add a file whose mtime moves during a failed read')
+    const target = foldPath(normalizePath(file))
+    const realRead = fingerprintModule.fingerprintFileWithBytes
+    // Backdated before the attempts; the attempt that gives up has its mtime moved after its own pre-read stat, so the stamp must hold the pre-read mtime.
+    const backdated = new Date('2001-01-01T00:00:00Z')
+    fs.utimesSync(file, backdated, backdated)
+    let reads = 0
+    vi.spyOn(fingerprintModule, 'fingerprintFileWithBytes').mockImplementation((p) => {
+      if (foldPath(normalizePath(p)) !== target) return realRead(p)
+      reads += 1
+      if (reads === MAX_TRANSIENT_RETRIES + 1) {
+        const moved = new Date('2002-01-01T00:00:00Z')
+        fs.utimesSync(file, moved, moved)
+      }
+      return null
+    })
+    appendDirtyQueuePaths(fx.dir, [file])
+    for (let cycle = 0; cycle < 10; cycle++) drainOnce(fx.dir)
+    expect(retryCountFor(fx.dbPath, target), 'the drain gave up after its retries').toBeGreaterThan(MAX_TRANSIENT_RETRIES)
+    const sweep = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(sweep.added, 'the moved mtime is not suppressed by a stamp taken before the moved read').toHaveLength(1)
   })
 })
 

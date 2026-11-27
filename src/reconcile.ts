@@ -2,7 +2,7 @@
 import * as fs from 'node:fs'
 
 import { globalDbPath } from './constants.js'
-import { getDb, givenUpStillCurrent } from './db.js'
+import { getDb } from './db.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
 import { fileIsAbsent, fingerprintFile, mtimeEqualsRow, mtimeProvesUnchanged, statIndexedFile, TIMESTAMP_TICK_SEC } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
@@ -24,6 +24,8 @@ const MIN_FILES_PER_SWEEP = 1
 
 /** What a caller reads just before it hashes a file: the file's mtime in seconds, then the clock. The stat comes BEFORE the bytes are hashed, so the mtime is the stamp the hashed bytes carried (a stat after the hash could record the stamp of a later edit against the old bytes); the clock is read no later than the hash, so any edit made after the hash happened after it. */
 export interface PreHashStamp {
+  /** The stat's mtime exactly as `fs.Stats.mtimeMs` reports it, so an equality check against a later stat is exact. */
+  readonly mtimeMs: number
   readonly mtimeSec: number
   readonly clockSec: number
 }
@@ -31,8 +33,8 @@ export interface PreHashStamp {
 /** Read the {@link PreHashStamp} for `absPath`, or undefined when it cannot be statted. Call it before the hash, never after. */
 export function readPreHashStamp(absPath: string): PreHashStamp | undefined {
   try {
-    const mtimeSec = fs.statSync(absPath).mtimeMs / 1000
-    return { mtimeSec, clockSec: Date.now() / 1000 }
+    const mtimeMs = fs.statSync(absPath).mtimeMs
+    return { mtimeMs, mtimeSec: mtimeMs / 1000, clockSec: Date.now() / 1000 }
   } catch {
     return undefined
   }
@@ -110,6 +112,32 @@ function clearReconcileCursor(dbPath: string, root: string): void {
     getDb(dbPath).prepare('DELETE FROM reconcile_cursor WHERE root = ?').run(root)
   } catch {
     // Best-effort persistence: see readReconcileCursor's doc comment.
+  }
+}
+
+/** The give-up stamps under `root` (folded path to the mtime the drain gave up at), read once per sweep so the scan never queries per file. Never throws: an unreadable table suppresses nothing, which is the sweep's behaviour before the stamps existed. */
+function loadGiveUps(dbPath: string, root: string): ReadonlyMap<string, number> {
+  const stamps = new Map<string, number>()
+  try {
+    const scope = projectScopeClause('path')
+    const rows = getDb(dbPath)
+      .prepare(`SELECT path, mtime_ms FROM index_giveups WHERE ${scope.clause}`)
+      .all(...scope.params(root)) as Array<{ path: string; mtime_ms: number }>
+    for (const row of rows) stamps.set(foldPath(normalizePath(row.path)), row.mtime_ms)
+  } catch {
+    // Unreadable: nothing is suppressed, so the sweep reports as it did before the stamps existed.
+  }
+  return stamps
+}
+
+/** True when a file the drain gave up on still has the mtime it was stamped with, so the drain would read the same bytes it gave up on. The stamp is recorded only when it was already a timestamp tick old (see recordGiveUp), so an exact match cannot be an edit the tick hid. */
+function givenUpStillCurrent(givenUp: ReadonlyMap<string, number>, folded: string, absPath: string): boolean {
+  const stamped = givenUp.get(folded)
+  if (stamped === undefined) return false
+  try {
+    return fs.statSync(absPath).mtimeMs === stamped
+  } catch {
+    return false
   }
 }
 
@@ -253,6 +281,8 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
   // Absolutized before scoping: the index stores absolute paths, and `projectScopeClause` builds a prefix-range bound straight from the root it is handed. A relative `cwd` -- what `token-goat reconcile` from inside the project passes -- would produce a relative prefix that matches no stored row, so every tracked file would look unindexed and the sweep would enqueue the entire project as "added" on every run.
   const projectRoot = resolveIndexPath('.', cwd)
   const indexed = getProjectFileEntries(projectRoot, dbPath)
+  // Read once per sweep: the scan below checks each tracked file against it, so a query per file would cost more than the stat it guards.
+  const givenUp = loadGiveUps(dbPath, projectRoot)
   // The indexing keys the scan below needs, read once: skip-eligibility mirrors the drain's own gate in makeIndexer.
   const ixCfg = loadConfig().indexing
   // Read only when a row needs it (an empty embed_sha), since it scans every chunk of the project on every sweep otherwise.
@@ -310,7 +340,7 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
 
     if (entry === undefined) {
       // A file the indexer refuses on purpose (skip_dirs, skip_files, skip_minified, large_file_skip_kb) keeps no row: the drain purges it and stops there. Reporting it as added queued it again on every sweep, so the same files were enqueued forever. A tracked file gone from disk is not an addition, and a file the drain gave up on is reported again only once its mtime moves.
-      if (fileIsAbsent(file) || givenUpStillCurrent(dbPath, file)) continue
+      if (fileIsAbsent(file) || givenUpStillCurrent(givenUp, folded, file)) continue
       if (ixCfg === undefined || !isParseSkipEligible(file, ixCfg)) added.push(file)
       continue
     }
@@ -343,6 +373,8 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
       changed.push(file)
       continue
     }
+    // A file the drain gave up on keeps its row, so it is suppressed here at the mtime it was stamped with, as the no-row branch above suppresses it.
+    if (givenUp.get(folded) === mtimeMs) continue
 
     // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch. `entry.mtime` is stored in seconds (see `safeMtime` in parser.ts) while `mtimeMs` is milliseconds, so the comparison converts here rather than at the write side, which would require migrating every already-indexed row.
     if (mtimeProvesUnchanged(entry, mtimeMs)) continue
@@ -357,7 +389,7 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
     if (diskSha === entry.sha) {
       if (!mtimeEqualsRow(entry, mtimeMs)) mtimeOnly++
       // The hash proved the bytes unchanged, so it is recorded once the sweep ends: without that a file indexed inside the tick of its own edit, or one whose mtime moved over identical bytes, is hashed again on every sweep. The stat above and the clock read at the top of the iteration are the ones taken before the hash.
-      verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, stamp: { mtimeSec: mtimeMs / 1000, clockSec } })
+      verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, stamp: { mtimeMs, mtimeSec: mtimeMs / 1000, clockSec } })
       continue
     }
     changed.push(file)
@@ -399,7 +431,7 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
       if (diskSha === entry.sha) {
         if (!mtimeEqualsRow(entry, st.mtimeMs)) mtimeOnly++
         // Same proof, same record as the scan above; `st` and the clock were read before the hash.
-        verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, stamp: { mtimeSec: st.mtimeMs / 1000, clockSec } })
+        verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, stamp: { mtimeMs: st.mtimeMs, mtimeSec: st.mtimeMs / 1000, clockSec } })
       } else if (diskSha !== null) changed.push(entry.filePath)
     }
   }

@@ -387,17 +387,18 @@ function logTransientReadFailure(dir: string, absPath: string): void {
 }
 
 // Bumps the transient-retry count for `absPath` and decides whether it is still within its retry budget. Returns true when the caller should go on to actually requeue the path (append it to a dirty queue); false once MAX_TRANSIENT_RETRIES has been exceeded (logging the give-up message exactly once, on the cycle the cap is first exceeded). Split out of the old requeueDirtyPath so drainOnce can bump the retry counter immediately (once per real failure) while deferring the actual queue-file append -- see drainOnce's stage (a)/(b) doc comment for why the append must not land in the SAME cycle's live queue.
-function bumpAndCheckRetry(dir: string, absPath: string): boolean {
+function bumpAndCheckRetry(dir: string, absPath: string, stamp?: PreHashStamp): boolean {
   const dbPath = path.join(dir, 'global.db')
   const attempts = bumpRetryCount(dbPath, absPath)
   if (attempts > MAX_TRANSIENT_RETRIES) {
+    // Stamped on every over-budget drop, not only the first: recordGiveUp declines a stamp inside its timestamp tick, so the next drop is the one that can record it.
+    recordGiveUp(path.join(dir, 'global.db'), absPath, stamp)
     // Permanently stuck (e.g. a read lock that never clears): stop requeuing so this path doesn't get hammered every single drain cycle forever. Log exactly once -- on the cycle the cap is first exceeded, not on every subsequent cycle -- so the failure is visible without spamming the log. A future edit to this path re-dirties it through the normal queue-append path (not this function), which gets it one more attempt -- and a fresh budget only once that attempt's read actually succeeds, since clearRetryCount runs on success and the edit hook deliberately does not reset the counter itself (see hooks_index.ts). An edit to a file whose lock has still not cleared therefore gets exactly that one attempt, not MAX_TRANSIENT_RETRIES more.
     if (attempts === MAX_TRANSIENT_RETRIES + 1) {
       appendWorkerErrorLog(
         dir,
         `${new Date().toISOString()} giving up on ${absPath} after ${MAX_TRANSIENT_RETRIES} consecutive transient failures -- no longer retrying automatically (will retry again if the file changes)\n`,
       )
-      recordGiveUp(path.join(dir, 'global.db'), absPath)
     }
     return false
   }
@@ -416,8 +417,8 @@ function appendToDirtyQueue(dir: string, ...absPaths: string[]): boolean {
 }
 
 // Re-adds `absPath` to the live dirty queue after a transient read failure. This is the default `requeue` callback processDirtyBatch uses outside of drainOnce (e.g. direct callers/tests); drainOnce itself injects a callback that defers the appendToDirtyQueue half -- see its doc comment for why.
-function requeueDirtyPath(dir: string, absPath: string): void {
-  if (bumpAndCheckRetry(dir, absPath)) appendToDirtyQueue(dir, absPath)
+function requeueDirtyPath(dir: string, absPath: string, stamp?: PreHashStamp): void {
+  if (bumpAndCheckRetry(dir, absPath, stamp)) appendToDirtyQueue(dir, absPath)
 }
 
 /** Answers, for a file, which project's configuration decides whether it is embedded and what that configuration decides: `indexing.embeddings_enabled` from the `.token-goat.toml` that {@link configProjectRootFor} picks for the file's directory. Never the working directory's: the daemon runs in the temp directory and `token-goat index` runs wherever it was typed, and deciding by the working directory made the index and the drain stamp one file two ways, each undoing the other. The drain, the backlog sweep and cmdIndex all decide through one of these, built once per drain, sweep cycle or index run: each directory is walked once, since every level of the walk probes nine project markers, and each root's configuration is read once, and a `.token-goat.toml` added, removed or edited is seen by the next one. */
@@ -535,7 +536,7 @@ function makeRemover(dbPath: string): (absPath: string) => void {
 }
 
 /** Prune `p`'s rows through `remove` and clear its retry streak; on failure log it and requeue it within the same retry budget, since a failed prune leaves stale symbols just like a failed reindex. Returns whether the prune succeeded. */
-function pruneDirtyPath(p: string, remove: (absPath: string) => void, dir: string, requeue: (dir: string, absPath: string) => void): boolean {
+function pruneDirtyPath(p: string, remove: (absPath: string) => void, dir: string, requeue: (dir: string, absPath: string, stamp?: PreHashStamp) => void): boolean {
   try {
     remove(p)
     clearRetryCount(path.join(dir, 'global.db'), p)
@@ -558,7 +559,7 @@ export function processDirtyBatch(
   ) => unknown = makeIndexer(globalDbPath()),
   remove: (absPath: string) => void = makeRemover(globalDbPath()),
   dir: string = dataDir(),
-  requeue: (dir: string, absPath: string) => void = requeueDirtyPath,
+  requeue: (dir: string, absPath: string, stamp?: PreHashStamp) => void = requeueDirtyPath,
   handBack: (dir: string, absPath: string) => void = (handBackDir, absPath) => {
     appendToDirtyQueue(handBackDir, absPath)
   },
@@ -597,7 +598,7 @@ export function processDirtyBatch(
     if (fingerprint === null) {
       // The file exists but couldn't be read right now (lock/permission/race) -- see logTransientReadFailure's doc comment. Log and requeue instead of silently dropping it.
       logTransientReadFailure(dir, p)
-      requeue(dir, p)
+      requeue(dir, p, stamp)
       continue
     }
     // Opportunistically learn the active project root from this batch's traffic -- see lastKnownProjectRoots' doc comment for why this global, path-keyed queue has no other standing notion of "the current project" for drainOnce's periodic prune sweep to target.
@@ -619,7 +620,7 @@ export function processDirtyBatch(
     const result = index(p, fingerprint.sha, stamp, fingerprint.bytes)
     if (result === INDEX_FAILED) {
       // Requeue for the same reason the fingerprint branch above does, and it is the same class of failure: makeIndexer's catch covers a SQLITE_BUSY on the index write and a lock inside indexFileSync that the earlier fingerprint read happened to miss, both of which clear on their own. drainOnce has already claimed this batch by renaming the queue file aside and will delete it, so a path not requeued here is gone for good -- its rows then stay stale until something edits the file again, silently, which is worse than being visibly behind. The bounded budget in bumpAndCheckRetry is what keeps a genuinely unindexable file from being retried forever.
-      requeue(dir, p)
+      requeue(dir, p, stamp)
       continue
     }
     // Clear the transient-retry streak only now, once the path is actually current, so a later failure starts from a full budget instead of resuming a much earlier streak (see requeueDirtyPath / bumpRetryCount). Deliberately after the index rather than after the read that preceded it: a successful read followed by a failed index has made no progress, and clearing there would hand a permanently failing file a fresh budget on every single cycle, so the requeue above would hammer it forever instead of giving up. `false` (the sha-gate found the content already indexed) is progress and belongs on this side of the branch; only INDEX_FAILED is not.
@@ -663,8 +664,8 @@ export function drainOnce(
       // The in-memory copy still reaches the live queue at the end of this cycle; only a kill before then loses it.
     }
   }
-  const requeueFn = (requeueDir: string, absPath: string): void => {
-    if (!bumpAndCheckRetry(requeueDir, absPath)) return
+  const requeueFn = (requeueDir: string, absPath: string, stamp?: PreHashStamp): void => {
+    if (!bumpAndCheckRetry(requeueDir, absPath, stamp)) return
     deferAppend(absPath)
   }
   // Unreached paths of a retiring drain: deferred the same way, but never charged a retry, since nothing failed.
