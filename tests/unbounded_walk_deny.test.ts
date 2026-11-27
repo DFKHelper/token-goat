@@ -464,6 +464,9 @@ describe('detectUnboundedWalk -- nesting, obscured command words and indirection
 describe('detectUnboundedWalk -- PowerShell assignments and expression statements are not command words', () => {
   const OBSERVED = String.raw`$dst='C:\Users\zelys\USB-stick-backup-2026-11-25'; robocopy H:\ $dst /E /XD H:\boot H:\efi /XF bootmgr /R:1 /W:1 /NFL /NDL /NP | Select-Object -Last 12; "robocopy rc=$LASTEXITCODE"; $src=Get-ChildItem H:\ -Force -File | Where-Object Name -notin 'bootmgr','setup.exe'; $bk=Get-ChildItem $dst -Force -File; "root files: stick=$($src.Count) backup=$($bk.Count)"; Test-Path "$dst\Fix\fix-startup.cmd"`
 
+  // A target of 30 index groups: each group doubles the work a backtracking shape check would do.
+  const DEEP_GROUPS = '$a' + '[0]'.repeat(30)
+
   it('accepts the observed backup command', () => {
     expect(form(OBSERVED, POWERSHELL)).toBeNull()
   })
@@ -486,6 +489,10 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     ['$h[ k ] = 5'],
     ["$h[ k ] = 'a'"],
     ['$a=$b=5'],
+    ['[int]$x = 5'],
+    ['$x.$y = 5'],
+    ['[math]::Max(1,2)'],
+    [`${DEEP_GROUPS}-x=1`],
   ])('lets %s through', (command) => {
     expect(form(command, POWERSHELL)).toBeNull()
   })
@@ -517,6 +524,13 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     [String.raw`$h[ k ] = gci C:\ -Recurse`, 'gci'],
     [String.raw`$h[ k ]=gci C:\ -Recurse`, 'gci'],
     [String.raw`$o.A[ 0 ].B = gci C:\ -Recurse`, 'gci'],
+    [String.raw`[int]$x = gci C:\ -Recurse`, 'gci'],
+    [String.raw`[int]$x=gci C:\ -Recurse`, 'gci'],
+    [String.raw`$x.$y = gci C:\ -Recurse`, 'gci'],
+    ['$h["]"] = gci C:\\ -Recurse', 'obscured'],
+    ['$h[0]] = gci C:\\ -Recurse', 'obscured'],
+    [`${DEEP_GROUPS}-x=gci C:\\ -Recurse`, 'gci'],
+    [`${DEEP_GROUPS} = gci C:\\ -Recurse`, 'gci'],
     ['$h[ k = gci C:\\ -Recurse', 'obscured'],
     ['$a=$b=$c=$d=5', 'obscured'],
   ])('still refuses %s', (command, expected) => {

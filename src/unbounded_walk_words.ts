@@ -85,9 +85,6 @@ interface PsAssignment {
   readonly rest: string
 }
 
-/** A PowerShell assignment target: a variable with `.Member` or `[index]` links; index text is unchecked. */
-const PS_TARGET_SHAPE = /^\$\{?[\w:]+\}?(?:\.\w+|\[.*\])*$/s
-
 /** The length of the operator at `text[k]` (`=`, `+=` and kin, `??=`); 0 for none, -1 for `==`. */
 function operatorLength(text: string, k: number): number {
   if (text[k] === '=') return text[k + 1] === '=' ? -1 : 1
@@ -95,30 +92,39 @@ function operatorLength(text: string, k: number): number {
   return text.startsWith('??=', k) ? 3 : 0
 }
 
+/** Whether a word starts a variable target: `$name`, or a bracketed type cast right before one (`[int]$x`). */
+function startsVariableTarget(text: string): boolean {
+  if (text.startsWith('$')) return true
+  if (!text.startsWith('[')) return false
+  let depth = 0
+  for (let k = 0; k < text.length; k++) {
+    if (text[k] === '[') depth++
+    else if (text[k] === ']' && --depth === 0) return text[k + 1] === '$'
+  }
+  return false
+}
+
 /** The assignment whose target starts at word `start`: its operator is the first `=` outside brackets. */
 export function psAssignment(words: readonly Word[], start: number): PsAssignment | 'obscured' | null {
-  if (!(words[start]?.text ?? '').startsWith('$')) return null
+  if (!startsVariableTarget(words[start]?.text ?? '')) return null
   let depth = 0
-  let target = ''
   for (let j = start; j < words.length; j++) {
     const text = words[j]!.text
-    // Whitespace at depth zero may only sit before the operator, so the next word must start with one.
+    // Whitespace at depth zero may only sit before the operator, so the next word must begin with one.
     let edge = j > start && depth === 0
     for (let k = 0; k < text.length; k++) {
-      const c = text[k]!
-      if (edge && c !== '=' && !'+-*/%?'.includes(c)) return null
+      if (edge && operatorLength(text, k) === 0) return null
       edge = false
+      const c = text[k]!
       if (c === '[') depth++
-      else if (c === ']' && --depth < 0) return null
-      else if (depth === 0) {
+      else if (c === ']') {
+        if (--depth < 0) return 'obscured'
+      } else if (depth === 0) {
         const length = operatorLength(text, k)
         if (length < 0) return null
-        if (length > 0) {
-          return PS_TARGET_SHAPE.test(target + text.slice(0, k)) ? { word: j, rest: text.slice(k + length) } : null
-        }
+        if (length > 0) return { word: j, rest: text.slice(k + length) }
       }
     }
-    target += text
   }
   return depth > 0 ? 'obscured' : null
 }
