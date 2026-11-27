@@ -2,11 +2,10 @@
 
 use std::time::Instant;
 
-/// Why no connection was made. `Absent` is the ENOENT/ECONNREFUSED of `attempt` (nobody listening); `Busy` is a pipe whose every instance is taken for longer than the deadline allows, which only a named pipe can be; anything else is `Other`, which `attempt` reports as refused.
+/// `Absent` is nobody listening; `Busy` is no free instance, out of time, or a full backlog; else `Other`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConnectError {
     Absent,
-    #[cfg(windows)]
     Busy,
     Other,
 }
@@ -200,7 +199,7 @@ mod imp {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(ConnectError::Other);
+                return Err(ConnectError::Busy);
             }
             let timeout_ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
             descriptor.revents = 0;
@@ -221,7 +220,7 @@ mod imp {
                 return Err(ConnectError::Other);
             }
             if socket_error == 0 {
-                return if Instant::now() < deadline { Ok(()) } else { Err(ConnectError::Other) };
+                return if Instant::now() < deadline { Ok(()) } else { Err(ConnectError::Busy) };
             }
             if socket_error == libc::ENOENT || socket_error == libc::ECONNREFUSED {
                 return Err(ConnectError::Absent);
@@ -280,6 +279,8 @@ mod imp {
                 }
                 if error == libc::EINPROGRESS || error == libc::EALREADY || error == libc::EINTR {
                     wait_for_connect(socket.as_raw_fd(), deadline)?;
+                } else if error == libc::EAGAIN {
+                    return Err(ConnectError::Busy);
                 } else {
                     return Err(ConnectError::Other);
                 }

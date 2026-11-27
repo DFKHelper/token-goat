@@ -1,7 +1,7 @@
 //! The relay: `callServer` and `relayViaServer` from src/hook_client.ts, speaking the harness-aware protocol (`HARNESS_PROTOCOL_VERSION`, src/hook_server.ts `serveConnection`) so this client carries no harness logic. Every outcome maps to one of two endings: the server answered (its bytes are printed and its exit code returned), or nothing was dispatched and the caller runs the wrapped Node command. A request lost after it was handed over prints the harness's no-op instead, because running a hook twice is worse than failing it open.
 
 use crate::out::emit;
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -130,7 +130,6 @@ fn attempt(endpoint: &str, key: &[u8], call: &Call, body: &str, connect_by: Opti
     let conn = match Conn::connect(endpoint, connect_by.unwrap_or(handshake_deadline)) {
         Ok(conn) => conn,
         Err(ConnectError::Absent) => return Outcome::Absent,
-        #[cfg(windows)]
         Err(ConnectError::Busy) => return Outcome::Busy,
         Err(ConnectError::Other) => return Outcome::Refused,
     };
@@ -232,8 +231,8 @@ pub fn relay(call: Call, input: &str, main_start: Instant) -> (Ending, Option<Pr
         request["scriptDir"] = Value::String(dir.clone());
     }
     let body = request.to_string();
-    let endpoints: Vec<String> = (0..SERVER_SLOTS).map(|slot| paths::endpoint_for(slot, &data_dir, &bundle_dir)).collect();
-    let pipe = Prepared { call, endpoints, key: key.to_vec(), body, retry: Cell::new(Retry::default()) };
+    let slots = Slots::new(SERVER_SLOTS, Box::new(move |slot| paths::endpoint_for(slot, &data_dir, &bundle_dir)));
+    let pipe = Prepared { call, slots, key: key.to_vec(), body, retry: Cell::new(Retry::default()) };
     let ending = pipe.first_pass();
     match ending {
         Ending::Served(_) => (ending, None),
@@ -244,7 +243,7 @@ pub fn relay(call: Call, input: &str, main_start: Instant) -> (Ending, Option<Pr
 /// The request `relay` built, kept so a call waiting for a lane can retry the resident server with the same body.
 pub struct Prepared {
     call: Call,
-    endpoints: Vec<String>,
+    slots: Slots,
     key: Vec<u8>,
     body: String,
     retry: Cell<Retry>,
@@ -255,37 +254,63 @@ impl Prepared {
     fn first_pass(&self) -> Ending {
         let find_end = Instant::now() + FIND_BUDGET;
         let deadline = self.call.deadline.map_or(find_end, |d| find_end.min(d));
-        for endpoint in &self.endpoints {
-            if Instant::now() >= deadline {
-                break;
-            }
-            match attempt(endpoint, &self.key, &self.call, &self.body, None, None) {
-                Outcome::Served { stdout, exit } => {
-                    emit(&stdout);
-                    return Ending::Served(exit);
-                }
-                // What relayViaServer answers for a request a server took and never answered, in this harness's form.
-                Outcome::Lost { noop } => {
-                    emit(&noop);
-                    return Ending::Served(0);
-                }
-                // No server on this slot: the Node command starts one in the background, so the next call is served.
-                Outcome::Absent => return Ending::Fallback("absent"),
-                Outcome::Stale => return Ending::Fallback("stale"),
-                Outcome::NoSlotWill => return Ending::Fallback("refused"),
-                Outcome::Busy | Outcome::Refused => {}
-            }
-        }
-        Ending::Fallback("busy")
+        first_pass_over(&self.slots, deadline, |endpoint| attempt(endpoint, &self.key, &self.call, &self.body, None, None))
     }
 
     /// One lane poll of a waiting call: a server answer ends the wait, otherwise `pause` is spent on this poll.
     pub fn poll(&self, pause: Duration, end: Instant) -> Option<i32> {
         let mut retry = self.retry.get();
-        let answer = lane_poll(&mut retry, &self.endpoints, pause, |endpoint, connect_by| attempt(endpoint, &self.key, &self.call, &self.body, Some(connect_by), Some(end)));
+        let answer = lane_poll(&mut retry, &self.slots, pause, |endpoint, connect_by| attempt(endpoint, &self.key, &self.call, &self.body, Some(connect_by), Some(end)));
         self.retry.set(retry);
         answer
     }
+}
+
+/// Each slot's endpoint, computed when the slot is first tried and reused by every later try of the call.
+struct Slots {
+    endpoints: Vec<OnceCell<String>>,
+    compute: Box<dyn Fn(u32) -> String>,
+}
+
+impl Slots {
+    fn new(count: u32, compute: Box<dyn Fn(u32) -> String>) -> Slots {
+        let endpoints = (0..count).map(|_| OnceCell::new()).collect();
+        Slots { endpoints, compute }
+    }
+
+    fn len(&self) -> usize {
+        self.endpoints.len()
+    }
+
+    fn endpoint(&self, slot: usize) -> &str {
+        self.endpoints[slot].get_or_init(|| (self.compute)(slot as u32))
+    }
+}
+
+/// One pass over the slots in order, stopping at the first answer that ends the call; `step` makes each attempt.
+fn first_pass_over(slots: &Slots, deadline: Instant, mut step: impl FnMut(&str) -> Outcome) -> Ending {
+    for slot in 0..slots.len() {
+        if Instant::now() >= deadline {
+            break;
+        }
+        match step(slots.endpoint(slot)) {
+            Outcome::Served { stdout, exit } => {
+                emit(&stdout);
+                return Ending::Served(exit);
+            }
+            // What relayViaServer answers for a request a server took and never answered, in this harness's form.
+            Outcome::Lost { noop } => {
+                emit(&noop);
+                return Ending::Served(0);
+            }
+            // No server on this slot: the Node command starts one in the background, so the next call is served.
+            Outcome::Absent => return Ending::Fallback("absent"),
+            Outcome::Stale => return Ending::Fallback("stale"),
+            Outcome::NoSlotWill => return Ending::Fallback("refused"),
+            Outcome::Busy | Outcome::Refused => {}
+        }
+    }
+    Ending::Fallback("busy")
 }
 
 /// Lane polls between resident-server tries while no endpoint exists: a count of polls, not a duration.
@@ -299,7 +324,7 @@ struct Retry {
 }
 
 /// One lane poll: on a try poll each endpoint is connected to, bounded by `pause`, in place of the sleep; otherwise the poll sleeps.
-fn lane_poll(retry: &mut Retry, endpoints: &[String], pause: Duration, mut step: impl FnMut(&str, Instant) -> Outcome) -> Option<i32> {
+fn lane_poll(retry: &mut Retry, slots: &Slots, pause: Duration, mut step: impl FnMut(&str, Instant) -> Outcome) -> Option<i32> {
     retry.polls += 1;
     if !retry.again && !retry.polls.is_multiple_of(PIPE_POLL_EVERY) {
         std::thread::sleep(pause);
@@ -308,8 +333,8 @@ fn lane_poll(retry: &mut Retry, endpoints: &[String], pause: Duration, mut step:
     let started = Instant::now();
     let mut busy = false;
     let mut answer = None;
-    for endpoint in endpoints {
-        match step(endpoint, Instant::now() + pause) {
+    for slot in 0..slots.len() {
+        match step(slots.endpoint(slot), Instant::now() + pause) {
             Outcome::Served { stdout, exit } => {
                 emit(&stdout);
                 answer = Some(exit);
@@ -335,9 +360,10 @@ fn lane_poll(retry: &mut Retry, endpoints: &[String], pause: Duration, mut step:
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::rc::Rc;
 
-    fn endpoints() -> Vec<String> {
-        vec!["pipe-0".to_string()]
+    fn endpoints() -> Slots {
+        Slots::new(1, Box::new(|_| "pipe-0".to_string()))
     }
 
     /// HAND-DERIVED: an endpoint that is absent is tried on poll 8 and on no poll before it.
@@ -376,5 +402,43 @@ mod tests {
             }
         }
         assert_eq!(tried_on, vec![8, 9, 16], "a busy endpoint was tried on polls {tried_on:?}, not on 8, 9 and 16");
+    }
+
+    /// Slots whose endpoints are counted as they are computed, so a test sees when each one is computed.
+    fn counted_slots() -> (Slots, Rc<Cell<u32>>) {
+        let computed = Rc::new(Cell::new(0u32));
+        let counter = Rc::clone(&computed);
+        let slots = Slots::new(
+            SERVER_SLOTS,
+            Box::new(move |slot| {
+                counter.set(counter.get() + 1);
+                format!("pipe-{slot}")
+            }),
+        );
+        (slots, computed)
+    }
+
+    /// HAND-DERIVED: a pass answered by slot 0 computes the endpoint of slot 0 and no other.
+    #[test]
+    fn a_pass_answered_by_slot_zero_computes_one_endpoint() {
+        let (slots, computed) = counted_slots();
+        let ending = first_pass_over(&slots, Instant::now() + FIND_BUDGET, |_| Outcome::Stale);
+        assert!(matches!(ending, Ending::Fallback("stale")), "the pass did not end at slot 0");
+        assert_eq!(computed.get(), 1, "a pass answered by slot 0 computed {} endpoints, not 1", computed.get());
+    }
+
+    /// HAND-DERIVED: a pass that reaches slot 2 computes three endpoints, and a later poll that tries every slot computes none.
+    #[test]
+    fn a_pass_reaching_slot_two_computes_three_endpoints_and_a_later_poll_none() {
+        let (slots, computed) = counted_slots();
+        let mut steps = vec![Outcome::Busy, Outcome::Refused, Outcome::Absent].into_iter();
+        let ending = first_pass_over(&slots, Instant::now() + FIND_BUDGET, |_| steps.next().expect("one step per slot"));
+        assert!(matches!(ending, Ending::Fallback("absent")), "the pass did not end at slot 2");
+        assert_eq!(computed.get(), 3, "a pass reaching slot 2 computed {} endpoints, not 3", computed.get());
+        let mut retry = Retry::default();
+        for _ in 0..PIPE_POLL_EVERY {
+            lane_poll(&mut retry, &slots, Duration::ZERO, |_, _| Outcome::Absent);
+        }
+        assert_eq!(computed.get(), 3, "a later poll computed endpoints again: {} in all, not 3", computed.get());
     }
 }
