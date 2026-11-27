@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::lanes::{Lanes, class_of};
+use crate::lanes::{LaneError, Lanes, class_of};
 use crate::out;
 use crate::sys::Group;
 
@@ -31,7 +31,7 @@ pub struct Outcome {
 #[derive(Debug)]
 pub enum Failure {
     NoCommand,
-    NoLane(String),
+    NoLane(LaneError),
     Spawn(String),
     Timeout(Duration),
     Signal,
@@ -181,10 +181,30 @@ pub struct Trace {
     pub stderr_bytes: Option<usize>,
 }
 
+/// The timeout a call was given and the instant that timeout ends, shared by its lane wait and its run.
+#[derive(Clone, Copy)]
+struct Budget {
+    timeout: Duration,
+    end: Instant,
+}
+
+impl Failure {
+    /// A lane that stayed busy: the route never ran, so it is not a broken route and nothing is recorded for it.
+    pub fn is_busy_lane(&self) -> bool {
+        matches!(self, Failure::NoLane(LaneError::Busy))
+    }
+}
+
 pub fn exec(lanes: &Lanes, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, harness: &str, event: &str) -> Result<Outcome, Failure> {
+    exec_within(lanes, argv, stdin, reason, Budget { timeout, end: Instant::now() + timeout }, harness, event)
+}
+
+/// Waits for a lane, then runs `argv` with what the wait left of the budget, so the lane wait and the run share one deadline.
+fn exec_within(lanes: &Lanes, argv: &[OsString], stdin: Stdin, reason: &str, budget: Budget, harness: &str, event: &str) -> Result<Outcome, Failure> {
     // Held until the route is reaped, so the lane covers the node process for its whole life.
-    let _lane = lanes.acquire(class_of(event), Instant::now() + timeout).map_err(Failure::NoLane)?;
-    exec_traced(argv, stdin, reason, timeout, harness, event, &mut Trace::default())
+    let _lane = lanes.acquire(class_of(event), budget.end).map_err(Failure::NoLane)?;
+    let handed = budget.timeout.min(budget.end.saturating_duration_since(Instant::now()));
+    exec_traced(argv, stdin, reason, handed, harness, event, &mut Trace::default())
 }
 
 #[rustfmt::skip]
@@ -350,10 +370,28 @@ mod tests {
         println!("{{}}");
     }
 
-    /// Lanes in a directory of one test's own, so no other test's holders count against it.
-    fn lanes_for(name: &str) -> Lanes {
+    /// Lanes in a directory of one test's own, removed when the guard drops, so no other test's holders count against it.
+    struct TestLanes {
+        lanes: Lanes,
+        dir: std::path::PathBuf,
+    }
+
+    impl std::ops::Deref for TestLanes {
+        type Target = Lanes;
+        fn deref(&self) -> &Lanes {
+            &self.lanes
+        }
+    }
+
+    impl Drop for TestLanes {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn lanes_for(name: &str) -> TestLanes {
         let dir = std::env::temp_dir().join(format!("tg-cap-lanes-{name}-{}", std::process::id()));
-        Lanes::under(Some(dir.display().to_string()))
+        TestLanes { lanes: Lanes::under(Some(dir.display().to_string())), dir }
     }
 
     #[test]
@@ -487,6 +525,20 @@ mod tests {
     fn pidfile_for(path: &str) -> std::path::PathBuf {
         let name: String = path.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
         std::env::temp_dir().join(format!("tg-cap-{name}-{}.pid", std::process::id()))
+    }
+
+    /// HAND-DERIVED: a call whose deadline has already passed when its lane is taken hands its run none of its timeout.
+    #[test]
+    fn the_run_is_handed_what_the_lane_wait_left_of_the_deadline() {
+        let pidfile = own_pidfile!();
+        // Ends the hanging child by its recorded pid however this test ends, so a red row leaves nothing running.
+        let _reap = ReapRecordedChild(pidfile.clone());
+        let me = std::env::current_exe().unwrap().into_os_string();
+        let argv = vec![me, "--ignored".into(), "--exact".into(), "capture::tests::hang_child".into(), format!("pidfile={}", pidfile.display()).into()];
+        let lanes = lanes_for("lane-wait-charged");
+        let budget = Budget { timeout: Duration::from_millis(50), end: Instant::now() };
+        let got = exec_within(&lanes, &argv, Stdin::Null, "t", budget, "grok", "pre_tool_use");
+        assert!(matches!(&got, Err(Failure::Timeout(handed)) if handed.is_zero()), "the run was handed more than zero after the lane wait used the whole deadline");
     }
 
     /// Hanging child for the next test: `--ignored --exact <this> pidfile=<path>` writes its pid, then hangs.

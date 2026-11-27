@@ -218,7 +218,9 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
                 return Ended::Served(finish(done));
             }
             Err(failure) => {
-                record("node-argv", &missing_piece(argv), &failure.to_string());
+                if !failure.is_busy_lane() {
+                    record("node-argv", &missing_piece(argv), &failure.to_string());
+                }
                 failed_argv = Some(argv.to_vec());
             }
         }
@@ -232,7 +234,11 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
                             record_notes(pending_notes(None), data_dir.clone(), opts.deadline, host, Answer::Already);
                             return Ended::Served(finish(done));
                         }
-                        Err(failure) => record("node-pointer", &missing_piece(&second), &failure.to_string()),
+                        Err(failure) => {
+                            if !failure.is_busy_lane() {
+                                record("node-pointer", &missing_piece(&second), &failure.to_string());
+                            }
+                        }
                     }
                 }
             }

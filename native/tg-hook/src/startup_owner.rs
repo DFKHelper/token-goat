@@ -1,4 +1,5 @@
 //! Internal v1 startup protocol: publish a candidate only after kernel-confirmed cleanup.
+use crate::lanes::{Class, Lane, Lanes};
 use crate::startup_process::{Child, Job};
 use std::ffi::OsString;
 use std::io::{Read, Write};
@@ -7,6 +8,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub(crate) const MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const RESERVE_MS: u64 = 1000;
+
+/// Takes the ordinary lane a canonical node start needs, then starts it; with no lane free before `until`, nothing starts.
+fn start_held<T>(lanes: &Lanes, until: Instant, start: impl FnOnce() -> Result<T, String>) -> Result<(Lane, T), String> {
+    let lane = lanes.acquire(Class::Ordinary, until).map_err(|e| format!("startup refused: {e}"))?;
+    Ok((lane, start()?))
+}
 
 fn remaining(epoch: u64, now: u64) -> Result<u64, String> {
     let remaining = epoch.saturating_sub(now);
@@ -84,7 +91,9 @@ fn execute(args: &[OsString]) -> Result<String, String> {
     if deadline.saturating_duration_since(Instant::now()) <= Duration::from_millis(RESERVE_MS) {
         return Err("insufficient time for process-tree cleanup".into());
     }
-    let mut child = Child::spawn(&job, &args[1..]).map_err(|e| format!("startup job association/process creation failed: {e}"))?;
+    // Held until this owner returns, so the lane covers the node process for its whole life.
+    let lanes = Lanes::under(crate::paths::data_dir());
+    let (_lane, mut child) = start_held(&lanes, work_deadline, || Child::spawn(&job, &args[1..]).map_err(|e| format!("startup job association/process creation failed: {e}")))?;
     let output = reader(child.output.try_clone().map_err(|e| e.to_string())?, MAX_BYTES);
     let errors = reader(child.errors.try_clone().map_err(|e| e.to_string())?, MAX_BYTES);
     // The originals must close too, or they keep the reads artificially alive.
@@ -216,6 +225,24 @@ pub fn run(args: &[OsString]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    /// HAND-DERIVED: with both ordinary lanes held, a session-start node start is refused and its start never runs.
+    #[test]
+    fn a_session_start_node_start_with_all_lanes_held_starts_no_process() {
+        let dir = std::env::temp_dir().join(format!("tg-owner-lanes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lanes = Lanes::under(Some(dir.display().to_string()));
+        let held: Vec<Lane> = (0..crate::lanes::ORDINARY_LANES).map(|_| lanes.acquire(Class::Ordinary, Instant::now()).expect("an ordinary lane is free")).collect();
+        let mut started = false;
+        let refused = start_held(&lanes, Instant::now(), || {
+            started = true;
+            Ok(())
+        });
+        assert!(refused.is_err(), "a session-start node start took a lane while every ordinary lane was held");
+        assert!(!started, "the node start ran while every ordinary lane was held");
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     #[test]
     fn worker_request_is_only_an_exact_bounded_marker() {
