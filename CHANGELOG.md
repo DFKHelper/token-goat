@@ -11,6 +11,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### Added
 
 - **`doctor --repair --dev` registers a git checkout build as the hook entry, as `install --dev` does.** `post-merge` passes it when it refreshes a checkout.
+### Changed
+
+- **Two first principles are recorded in `AGENTS.md`: never degrade the host machine, and hooks are always fast.** Both rank above every feature and every saving of turns, context or tokens. The file documents this principle only; no behavior changes.
+
 ## [2.9.36] - 2026-11-24
 
 ### Added
