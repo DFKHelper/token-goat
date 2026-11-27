@@ -52,10 +52,12 @@ CREATE TABLE IF NOT EXISTS index_retries (
 );
 CREATE INDEX IF NOT EXISTS idx_index_retries_path_folded ON index_retries(TG_LOWER(path));
 
--- Paths the drain gave up on after its transient-failure budget, with the mtime they had then. A sweep reports such a path again only once its mtime moves. Additive, so no MIGRATIONS entry is needed.
+-- Paths the drain gave up on after its transient-failure budget, with the mtime they had then, when they gave up, and when a sweep may report them again (a sweep holds one back until its mtime moves or next_try_ms passes). Unreleased table, so no MIGRATIONS entry or SCHEMA_VERSION bump.
 CREATE TABLE IF NOT EXISTS index_giveups (
   path TEXT PRIMARY KEY,
-  mtime_ms REAL NOT NULL
+  mtime_ms REAL NOT NULL,
+  given_up_ms REAL NOT NULL,
+  next_try_ms REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -790,13 +792,21 @@ export function getReadDb(dbPath: string): SqliteDatabase {
 /** Consecutive transient read failures the drain tolerates before it stops requeuing a path. */
 export const MAX_TRANSIENT_RETRIES = 5
 
-/** Stamp `absPath` as given up at `stamp`, the mtime its failing attempt was read under, in the index DB at `dbPath`. The mtime is read before the attempt, so an edit that lands during it is not hidden behind the stamp. A stamp inside one timestamp tick of its own mtime is not recorded: an edit in that tick keeps the same mtime, so the give-up would hide it ({@link mtimeProvesUnchanged}'s rule). The drain stamps again on each over-budget attempt, so a skipped stamp is taken once it is old enough. Best-effort: when the stamp cannot be written the sweep reports the file as it did before the stamp existed. */
+/** The first retry delay after a give-up, in ms; each further give-up on the same path doubles it up to {@link GIVE_UP_MAX_DELAY_MS}. */
+const GIVE_UP_FIRST_DELAY_MS = 30_000
+/** The longest a given-up path waits between sweeps' retries, in ms. */
+const GIVE_UP_MAX_DELAY_MS = 600_000
+
+/** Stamp `absPath` as given up at `stamp`, the mtime its failing attempt was read under, in the index DB at `dbPath`. The mtime is read before the attempt, so an edit that lands during it is not hidden behind the stamp. A stamp inside one timestamp tick of its own mtime is not recorded: an edit in that tick keeps the same mtime, so the give-up would hide it ({@link mtimeProvesUnchanged}'s rule). The drain stamps again on each over-budget attempt, so a skipped stamp is taken once it is old enough. The retry time is `stamp.clockSec` plus a backoff that doubles on each further give-up of the same path. Best-effort: when the stamp cannot be written the sweep reports the file as it did before the stamp existed. */
 export function recordGiveUp(dbPath: string, absPath: string, stamp: { readonly mtimeMs: number; readonly clockSec: number } | undefined): void {
   if (stamp === undefined || !mtimeProvesUnchanged({ mtime: stamp.mtimeMs / 1000, indexedAt: stamp.clockSec }, stamp.mtimeMs)) return
   try {
-    getDb(dbPath)
-      .prepare('INSERT OR REPLACE INTO index_giveups (path, mtime_ms) VALUES (?, ?)')
-      .run(foldPath(normalizePath(absPath)), stamp.mtimeMs)
+    const db = getDb(dbPath)
+    const key = foldPath(normalizePath(absPath))
+    const prior = db.prepare('SELECT given_up_ms, next_try_ms FROM index_giveups WHERE path = ?').get(key) as { given_up_ms: number; next_try_ms: number } | undefined
+    const delayMs = prior === undefined ? GIVE_UP_FIRST_DELAY_MS : Math.min(GIVE_UP_MAX_DELAY_MS, (prior.next_try_ms - prior.given_up_ms) * 2)
+    const givenUpMs = Math.round(stamp.clockSec * 1000)
+    db.prepare('INSERT OR REPLACE INTO index_giveups (path, mtime_ms, given_up_ms, next_try_ms) VALUES (?, ?, ?, ?)').run(key, stamp.mtimeMs, givenUpMs, givenUpMs + delayMs)
   } catch {
     // Best-effort, and a missing file has nothing to stamp; the drain's own retry bookkeeping is unaffected.
   }

@@ -146,9 +146,9 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
       const result = reconcileProjectWith({ cwd: root, dbPath, queueDir: dir }, listing)
       progressed()
       swept++
-      // An unfinished sweep is not marked swept, so its continuation runs on the next cycle instead of waiting out the window.
+      // A budget-cut sweep continues next cycle; a git timeout retries only once the window has passed.
       if (result.budgetExhausted || result.gitTimedOut) requeue.push(root)
-      else markSwept(dir, root)
+      if (!result.budgetExhausted) markSwept(dir, root)
       logOutcome(dir, projectDir, `swept ${root}: ${result.scanned} scanned, ${result.enqueued} queued${result.gitTimedOut ? ', git did not answer in time listing the files, continuing next cycle' : result.budgetExhausted ? ', budget spent, continuing next cycle' : ''}`)
     } catch (e) {
       logOutcome(dir, projectDir, `failed: ${e instanceof Error ? e.message : String(e)}`)

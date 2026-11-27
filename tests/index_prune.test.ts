@@ -354,7 +354,7 @@ describe('index_prune', () => {
     const neverIndexed = normalizePath(path.join(dir, 'goner-stamped.ts'))
     const db = getDb(dbPath)
     db.prepare('INSERT INTO index_retries (path, retry_count) VALUES (?, 6)').run(neverIndexed)
-    db.prepare('INSERT INTO index_giveups (path, mtime_ms) VALUES (?, ?)').run(neverIndexed, 1000)
+    db.prepare('INSERT INTO index_giveups (path, mtime_ms, given_up_ms, next_try_ms) VALUES (?, ?, ?, ?)').run(neverIndexed, 1000, 1000, 2000)
     expect(pruneDeadRetryRows(dbPath)).toEqual([neverIndexed])
     expect(db.prepare('SELECT count(*) AS n FROM index_giveups').get(), 'the stamp of a deleted file is dead state').toEqual({ n: 0 })
   })
@@ -362,7 +362,7 @@ describe('index_prune', () => {
   it('takes a give-up stamp with the file when removeFileFromIndex deletes it', () => {
     const stampedPath = normalizePath(path.join(dir, 'stamped.ts'))
     const db = getDb(dbPath)
-    db.prepare('INSERT INTO index_giveups (path, mtime_ms) VALUES (?, ?)').run(stampedPath, 1000)
+    db.prepare('INSERT INTO index_giveups (path, mtime_ms, given_up_ms, next_try_ms) VALUES (?, ?, ?, ?)').run(stampedPath, 1000, 1000, 2000)
     removeFileFromIndex(db, stampedPath)
     expect(db.prepare('SELECT count(*) AS n FROM index_giveups').get(), 'the stamp of a removed file is dead state').toEqual({ n: 0 })
   })

@@ -8,15 +8,18 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import * as configModule from '../src/config.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { closeAllDbs, getDb, MAX_TRANSIENT_RETRIES } from '../src/db.js'
 import { appendDirtyQueuePaths, appendReconcileRequest, reconcileRequestPathFor } from '../src/dirty_queue.js'
 import * as fingerprintModule from '../src/fingerprint.js'
 import { querySymbols } from '../src/index_reader.js'
+import * as parserModule from '../src/parser.js'
 import { recordIndexedRoot } from '../src/indexed_roots.js'
 import { normalizePath } from '../src/paths.js'
 import { reconcileProject } from '../src/reconcile.js'
 import { SWEEP_MIN_INTERVAL_MS, drainReconcileRequestsAsync } from '../src/reconcile_requests.js'
+import * as repomap from '../src/repomap.js'
 import { foldPath } from '../src/util.js'
 import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 import { indexableDir } from './helpers/temp-config.js'
@@ -26,6 +29,9 @@ const NEW_SYMBOL = 'idleSweepNewSym'
 const fn = (name: string): string => `export function ${name}(): number {\n  return 1\n}\n`
 
 const clock = { now: 1_700_000_000_000 }
+// The clock a give-up is stamped at, and the first backoff the stamp allows.
+const GIVE_UP_AT = 1_700_000_000_000
+const FIRST_BACKOFF_MS = 30_000
 const scratch: string[] = []
 
 interface Fixture {
@@ -187,6 +193,20 @@ describe('reconcile requests sweep a repository at most once per window', () => 
     appendReconcileRequest(fx.dir, fx.repo)
     expect(await drainReconcileRequestsAsync(fx.dir), 'a backward clock step does not hold the sweep').toBe(1)
   })
+
+  it('sweeps a repository whose listing always times out once per window, not once per drain', async () => {
+    const fx = fixture()
+    // A killed `git ls-files` answers with no files and timedOut set, as repomap.ts reports it.
+    vi.spyOn(repomap, 'listTrackedFilesAsync').mockImplementation(async () => ({ files: [], timedOut: true }))
+    appendReconcileRequest(fx.dir, fx.repo)
+    expect(await drainReconcileRequestsAsync(fx.dir), 'the first request sweeps the repository').toBe(1)
+    for (let drain = 0; drain < 5; drain++) {
+      clock.now += 1000
+      expect(await drainReconcileRequestsAsync(fx.dir), `drain ${drain} inside the window does not sweep the timed-out repository again`).toBe(0)
+    }
+    clock.now += SWEEP_MIN_INTERVAL_MS
+    expect(await drainReconcileRequestsAsync(fx.dir), 'the timed-out sweep is retried once the window has passed').toBe(1)
+  })
 })
 
 // Provenance: row (c) is FORMAT-DERIVED from src/config_defaults.ts:203 (large_file_skip_kb 2048) read by src/parser.ts isParseSkipEligible; rows (b) and (d) are HAND-DERIVED (a path and NUL bytes chosen here, no producer output).
@@ -255,6 +275,7 @@ describe('a file that keeps no row is not re-enqueued by repeated sweeps', () =>
   })
 
   it('does not re-report a file the drain gave up on until its mtime moves', () => {
+    clock.now = GIVE_UP_AT
     const fx = fixture()
     const file = path.join(fx.repo, 'unreadable.ts')
     fs.writeFileSync(file, fn(NEW_SYMBOL))
@@ -280,6 +301,7 @@ describe('a file that keeps no row is not re-enqueued by repeated sweeps', () =>
   })
 
   it('suppresses a given-up file that keeps its row, so an edit it failed to read is not re-enqueued each sweep', () => {
+    clock.now = GIVE_UP_AT
     const fx = fixture()
     const file = path.join(fx.repo, 'stale-row.ts')
     fs.writeFileSync(file, fn(NEW_SYMBOL))
@@ -334,6 +356,126 @@ describe('a file that keeps no row is not re-enqueued by repeated sweeps', () =>
     const sweep = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
     expect(sweep.added, 'the moved mtime is not suppressed by a stamp taken before the moved read').toHaveLength(1)
   })
+
+  it('holds a given-up file that keeps its row until its retry time, then re-enqueues it and clears the stamp once it reads', () => {
+    clock.now = GIVE_UP_AT
+    const fx = fixture()
+    const file = path.join(fx.repo, 'row-retry.ts')
+    fs.writeFileSync(file, fn(OLD_SYMBOL))
+    git(fx.repo, 'add', 'row-retry.ts')
+    git(fx.repo, 'commit', '-qm', 'add a file the drain indexes first')
+    appendDirtyQueuePaths(fx.dir, [file])
+    drainAll(fx.dir)
+    fs.writeFileSync(file, fn('givenUpRetryEdit'))
+    const edited = new Date('2001-01-01T00:00:00Z')
+    fs.utimesSync(file, edited, edited)
+    const target = foldPath(normalizePath(file))
+    const realRead = fingerprintModule.fingerprintFileWithBytes
+    let failing = true
+    vi.spyOn(fingerprintModule, 'fingerprintFileWithBytes').mockImplementation((p) => (failing && foldPath(normalizePath(p)) === target ? null : realRead(p)))
+    appendDirtyQueuePaths(fx.dir, [file])
+    for (let cycle = 0; cycle < 10; cycle++) drainOnce(fx.dir)
+    const stamp = giveUpRow(fx.dbPath, target)
+    expect(stamp, 'the drain stamped the give-up').toBeDefined()
+    expect(stamp && stamp.next_try_ms - stamp.given_up_ms, 'the first retry is 30 s after the give-up').toBe(FIRST_BACKOFF_MS)
+    clock.now = GIVE_UP_AT + FIRST_BACKOFF_MS - 1
+    const held = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(held.enqueued, 'one millisecond before the retry time the given-up file is held back').toBe(0)
+    clock.now = GIVE_UP_AT + FIRST_BACKOFF_MS
+    const due = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(due.enqueued, 'at the retry time the sweep re-enqueues the given-up file').toBeGreaterThan(0)
+    failing = false
+    drainAll(fx.dir)
+    expect(querySymbols({ name: 'givenUpRetryEdit' }, fx.dbPath), 'once the read succeeds the edit is indexed').toHaveLength(1)
+    expect(giveUpRow(fx.dbPath, target), 'and the give-up row is gone').toBeUndefined()
+  })
+
+  it('holds a given-up file with no row until its retry time, then re-reports it once', () => {
+    clock.now = GIVE_UP_AT
+    const fx = fixture()
+    const file = path.join(fx.repo, 'no-row-retry.ts')
+    fs.writeFileSync(file, fn(NEW_SYMBOL))
+    git(fx.repo, 'add', 'no-row-retry.ts')
+    git(fx.repo, 'commit', '-qm', 'add a file the drain cannot read yet')
+    const aged = new Date('2000-01-01T00:00:00Z')
+    fs.utimesSync(file, aged, aged)
+    const target = foldPath(normalizePath(file))
+    const realRead = fingerprintModule.fingerprintFileWithBytes
+    let failing = true
+    vi.spyOn(fingerprintModule, 'fingerprintFileWithBytes').mockImplementation((p) => (failing && foldPath(normalizePath(p)) === target ? null : realRead(p)))
+    appendDirtyQueuePaths(fx.dir, [file])
+    for (let cycle = 0; cycle < 10; cycle++) drainOnce(fx.dir)
+    clock.now = GIVE_UP_AT + FIRST_BACKOFF_MS - 1
+    const held = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(held.added, 'one millisecond before the retry time a given-up file with no row is not re-reported').toEqual([])
+    clock.now = GIVE_UP_AT + FIRST_BACKOFF_MS
+    const due = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(due.added, 'at the retry time the sweep re-reports the given-up file once').toHaveLength(1)
+    failing = false
+    drainAll(fx.dir)
+    expect(querySymbols({ name: NEW_SYMBOL }, fx.dbPath), 'once the read succeeds the file is indexed').toHaveLength(1)
+    expect(giveUpRow(fx.dbPath, target), 'and the give-up row is gone').toBeUndefined()
+  })
+
+  it('doubles the retry delay on each further give-up of the same path, capped at 10 minutes', () => {
+    clock.now = GIVE_UP_AT
+    const fx = fixture()
+    const file = path.join(fx.repo, 'keeps-failing.ts')
+    fs.writeFileSync(file, fn(NEW_SYMBOL))
+    git(fx.repo, 'add', 'keeps-failing.ts')
+    git(fx.repo, 'commit', '-qm', 'add a file that keeps failing')
+    const aged = new Date('2000-01-01T00:00:00Z')
+    fs.utimesSync(file, aged, aged)
+    const target = foldPath(normalizePath(file))
+    const realRead = fingerprintModule.fingerprintFileWithBytes
+    vi.spyOn(fingerprintModule, 'fingerprintFileWithBytes').mockImplementation((p) => (foldPath(normalizePath(p)) === target ? null : realRead(p)))
+    appendDirtyQueuePaths(fx.dir, [file])
+    for (let cycle = 0; cycle < 10; cycle++) drainOnce(fx.dir)
+    const delays: number[] = []
+    for (let round = 0; round < 7; round++) {
+      const stamp = giveUpRow(fx.dbPath, target)
+      if (stamp === undefined) break
+      delays.push(stamp.next_try_ms - stamp.given_up_ms)
+      clock.now = stamp.next_try_ms
+      reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+      for (let cycle = 0; cycle < 10; cycle++) drainOnce(fx.dir)
+    }
+    expect(delays, 'each further give-up doubles the delay, and the delay stops at 10 minutes').toEqual([30_000, 60_000, 120_000, 240_000, 480_000, 600_000, 600_000])
+  })
+
+  it('counts a clock stepped backward before the give-up as due', () => {
+    clock.now = GIVE_UP_AT
+    const fx = fixture()
+    const file = path.join(fx.repo, 'clock-back.ts')
+    fs.writeFileSync(file, fn(NEW_SYMBOL))
+    git(fx.repo, 'add', 'clock-back.ts')
+    git(fx.repo, 'commit', '-qm', 'add a file given up on before the clock steps back')
+    const aged = new Date('2000-01-01T00:00:00Z')
+    fs.utimesSync(file, aged, aged)
+    const target = foldPath(normalizePath(file))
+    const realRead = fingerprintModule.fingerprintFileWithBytes
+    vi.spyOn(fingerprintModule, 'fingerprintFileWithBytes').mockImplementation((p) => (foldPath(normalizePath(p)) === target ? null : realRead(p)))
+    appendDirtyQueuePaths(fx.dir, [file])
+    for (let cycle = 0; cycle < 10; cycle++) drainOnce(fx.dir)
+    clock.now = GIVE_UP_AT - 5_000
+    const back = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(back.added, 'a sweep whose clock reads before the give-up re-reports the file').toHaveLength(1)
+  })
+
+  it('loads the config once per sweep and checks each tracked file with no row once for absence', () => {
+    const fx = fixture()
+    for (const name of ['count-a.ts', 'count-b.ts', 'count-c.ts']) fs.writeFileSync(path.join(fx.repo, name), fn(name.replace('.ts', '')))
+    git(fx.repo, 'add', 'count-a.ts', 'count-b.ts', 'count-c.ts')
+    git(fx.repo, 'commit', '-qm', 'add three files the index has no row for')
+    const loads = vi.spyOn(configModule, 'loadConfig')
+    const absence = vi.spyOn(fingerprintModule, 'fileIsAbsent')
+    const skip = vi.spyOn(parserModule, 'isParseSkipEligible')
+    const r = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(loads, 'one sweep reads the config once, not once per file').toHaveBeenCalledTimes(1)
+    expect(absence, 'each tracked file with no row is stat-checked once for absence (four in this fixture)').toHaveBeenCalledTimes(4)
+    expect(skip, 'each no-row file gets one skip-eligibility check (which stats it when not skipped by name)').toHaveBeenCalledTimes(4)
+    expect(r.added, 'the three new files are reported as additions').toHaveLength(3)
+  })
 })
 
 describe('the chunk table is read only for a row that lacks its embed stamp', () => {
@@ -355,4 +497,9 @@ describe('the chunk table is read only for a row that lacks its embed stamp', ()
 function retryCountFor(dbPath: string, folded: string): number {
   const rows = getDb(dbPath).prepare('SELECT path, retry_count FROM index_retries').all() as Array<{ path: string; retry_count: number }>
   return rows.find((r) => foldPath(normalizePath(r.path)) === folded)?.retry_count ?? 0
+}
+
+function giveUpRow(dbPath: string, folded: string): { given_up_ms: number; next_try_ms: number } | undefined {
+  const rows = getDb(dbPath).prepare('SELECT path, given_up_ms, next_try_ms FROM index_giveups').all() as Array<{ path: string; given_up_ms: number; next_try_ms: number }>
+  return rows.find((r) => foldPath(normalizePath(r.path)) === folded)
 }

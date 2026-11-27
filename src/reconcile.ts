@@ -115,27 +115,40 @@ function clearReconcileCursor(dbPath: string, root: string): void {
   }
 }
 
-/** The give-up stamps under `root` (folded path to the mtime the drain gave up at), read once per sweep so the scan never queries per file. Never throws: an unreadable table suppresses nothing, which is the sweep's behaviour before the stamps existed. */
-function loadGiveUps(dbPath: string, root: string): ReadonlyMap<string, number> {
-  const stamps = new Map<string, number>()
+/** One give-up stamp: the mtime the drain gave up at, and the clock times of the give-up and of the first sweep allowed to retry it. */
+interface GiveUpStamp {
+  readonly mtimeMs: number
+  readonly givenUpMs: number
+  readonly nextTryMs: number
+}
+
+/** The give-up stamps under `root` (folded path to its stamp), read once per sweep so the scan never queries per file. Never throws: an unreadable table suppresses nothing, which is the sweep's behaviour before the stamps existed. */
+function loadGiveUps(dbPath: string, root: string): ReadonlyMap<string, GiveUpStamp> {
+  const stamps = new Map<string, GiveUpStamp>()
   try {
     const scope = projectScopeClause('path')
     const rows = getDb(dbPath)
-      .prepare(`SELECT path, mtime_ms FROM index_giveups WHERE ${scope.clause}`)
-      .all(...scope.params(root)) as Array<{ path: string; mtime_ms: number }>
-    for (const row of rows) stamps.set(foldPath(normalizePath(row.path)), row.mtime_ms)
+      .prepare(`SELECT path, mtime_ms, given_up_ms, next_try_ms FROM index_giveups WHERE ${scope.clause}`)
+      .all(...scope.params(root)) as Array<{ path: string; mtime_ms: number; given_up_ms: number; next_try_ms: number }>
+    for (const row of rows) stamps.set(foldPath(normalizePath(row.path)), { mtimeMs: row.mtime_ms, givenUpMs: row.given_up_ms, nextTryMs: row.next_try_ms })
   } catch {
     // Unreadable: nothing is suppressed, so the sweep reports as it did before the stamps existed.
   }
   return stamps
 }
 
-/** True when a file the drain gave up on still has the mtime it was stamped with, so the drain would read the same bytes it gave up on. The stamp is recorded only when it was already a timestamp tick old (see recordGiveUp), so an exact match cannot be an edit the tick hid. */
-function givenUpStillCurrent(givenUp: ReadonlyMap<string, number>, folded: string, absPath: string): boolean {
-  const stamped = givenUp.get(folded)
-  if (stamped === undefined) return false
+/** True while a give-up stamp holds its file back: the file still has the mtime it was stamped with, so the drain would read the same bytes it gave up on, and `nowMs` is inside the backoff. The stamp is recorded only when it was already a timestamp tick old (see recordGiveUp), so an exact match cannot be an edit the tick hid. A clock stepped backward before the give-up counts as due. */
+function givenUpHolds(stamp: GiveUpStamp | undefined, mtimeMs: number, nowMs: number): boolean {
+  if (stamp === undefined || stamp.mtimeMs !== mtimeMs) return false
+  return nowMs >= stamp.givenUpMs && nowMs < stamp.nextTryMs
+}
+
+/** {@link givenUpHolds} for a file with no row, whose mtime is read from disk here. */
+function givenUpHeld(givenUp: ReadonlyMap<string, GiveUpStamp>, folded: string, absPath: string, nowMs: number): boolean {
+  const stamp = givenUp.get(folded)
+  if (stamp === undefined) return false
   try {
-    return fs.statSync(absPath).mtimeMs === stamped
+    return givenUpHolds(stamp, fs.statSync(absPath).mtimeMs, nowMs)
   } catch {
     return false
   }
@@ -339,8 +352,8 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
     const entry = indexed.get(folded)
 
     if (entry === undefined) {
-      // A file the indexer refuses on purpose (skip_dirs, skip_files, skip_minified, large_file_skip_kb) keeps no row: the drain purges it and stops there. Reporting it as added queued it again on every sweep, so the same files were enqueued forever. A tracked file gone from disk is not an addition, and a file the drain gave up on is reported again only once its mtime moves.
-      if (fileIsAbsent(file) || givenUpStillCurrent(givenUp, folded, file)) continue
+      // A file the indexer refuses on purpose (skip_dirs, skip_files, skip_minified, large_file_skip_kb) keeps no row: the drain purges it and stops there. Reporting it as added queued it again on every sweep, so the same files were enqueued forever. A tracked file gone from disk is not an addition, and a file the drain gave up on is reported again once its retry time passes or its mtime moves.
+      if (fileIsAbsent(file) || givenUpHeld(givenUp, folded, file, clockMs)) continue
       if (ixCfg === undefined || !isParseSkipEligible(file, ixCfg)) added.push(file)
       continue
     }
@@ -373,8 +386,8 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
       changed.push(file)
       continue
     }
-    // A file the drain gave up on keeps its row, so it is suppressed here at the mtime it was stamped with, as the no-row branch above suppresses it.
-    if (givenUp.get(folded) === mtimeMs) continue
+    // A file the drain gave up on keeps its row, so it is held back here until its retry time, at the mtime it was stamped with, as the no-row branch above holds it.
+    if (givenUpHolds(givenUp.get(folded), mtimeMs, clockMs)) continue
 
     // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch. `entry.mtime` is stored in seconds (see `safeMtime` in parser.ts) while `mtimeMs` is milliseconds, so the comparison converts here rather than at the write side, which would require migrating every already-indexed row.
     if (mtimeProvesUnchanged(entry, mtimeMs)) continue
