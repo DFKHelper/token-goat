@@ -482,6 +482,10 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     ['$x.Count'],
     [String.raw`$bk=Get-ChildItem $dst -Force -File`],
     [String.raw`$src=Get-ChildItem .\src -Recurse`],
+    ['$h["a=b"]=5'],
+    ['$h[ k ] = 5'],
+    ["$h[ k ] = 'a'"],
+    ['$a=$b=5'],
   ])('lets %s through', (command) => {
     expect(form(command, POWERSHELL)).toBeNull()
   })
@@ -508,6 +512,13 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     [String.raw`cd C:/; $x=.\fd.exe`, 'fd'],
     ['$a=$b=$c=gci C:\\ -Recurse', 'gci'],
     ['$a=$b=$c=$d=gci C:\\ -Recurse', 'obscured'],
+    [String.raw`$h["a=b"]=gci C:\ -Recurse`, 'gci'],
+    [String.raw`$h['a=b'] = gci C:\ -Recurse`, 'gci'],
+    [String.raw`$h[ k ] = gci C:\ -Recurse`, 'gci'],
+    [String.raw`$h[ k ]=gci C:\ -Recurse`, 'gci'],
+    [String.raw`$o.A[ 0 ].B = gci C:\ -Recurse`, 'gci'],
+    ['$h[ k = gci C:\\ -Recurse', 'obscured'],
+    ['$a=$b=$c=$d=5', 'obscured'],
   ])('still refuses %s', (command, expected) => {
     expect(form(command, POWERSHELL)).toBe(expected)
   })
@@ -516,6 +527,8 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     ['$cmd /', 'obscured'],
     ['"$tool" / -name x', 'obscured'],
     ['F=find; $F /', 'obscured'],
+    ['x=find; $x = /', 'obscured'],
+    ['x=find; $x.y = /', 'obscured'],
   ])('keeps bash %s refused', (command, expected) => {
     expect(form(command, POSIX)).toBe(expected)
   })
@@ -523,6 +536,7 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
   it('lets a bash VAR=value prefix assignment through', () => {
     expect(form('F=/tmp/x ls src', POSIX)).toBeNull()
     expect(form('F=x find / -name x', POSIX)).toBe('find')
+    expect(form('x=5; echo $x', POSIX)).toBeNull()
   })
 })
 

@@ -1,6 +1,6 @@
 /** Refuses a shell command that walks a whole filesystem root or the home directory with no depth bound, or that starts the Windows `find.exe` text search with nothing to read, because both outlive a timed-out shell and keep burning CPU. The scanner here is its own because the shared ones lose what this rule reads: `shlexSplit` consumes backslashes (so `C:\` and `C:\Windows\System32\find.exe` stop being paths) and `splitShellSegments` drops which operator joined two commands (a piped `find "x"` reads stdin, a chained one waits on it forever) and does not split a subshell. */
 import { refuse, scan, MAX_NESTING, type Segment, type Word, type WalkContext, type WalkRefusal } from './unbounded_walk_scan.js'
-import { anyRoot, cdLandsAtRoot, commandIndex, commandName, EXEC_END, EXEC_PRIMARY, isRelativeStart, isRoot, PS_ASSIGN_HEAD, SKIPPED_KEYWORDS, texts, VALUED_PRIMARY } from './unbounded_walk_words.js'
+import { anyRoot, cdLandsAtRoot, commandIndex, commandName, EXEC_END, EXEC_PRIMARY, isRelativeStart, isRoot, psAssignment, SKIPPED_KEYWORDS, texts, VALUED_PRIMARY } from './unbounded_walk_words.js'
 import {
   atNestingLimit, DIGITS, envOptions, EXTRA_WALKERS, fedText, inspectDu, inspectFd, inspectFindstr, inspectGrep,
   inspectListing, inspectRecursive, inspectRg, inspectTree, nestedScript, SHELLS, WALKER_WORD,
@@ -119,13 +119,13 @@ function inspectXargs(
   }
   const rest = args.slice(i)
   // No command word: a bare `xargs` runs echo, but the scanner also splits a backtick command off its segment.
-  if (rest.length === 0) return listerProven(seg, prev, fromRoot) ? null : refuse('xargs')
+  if (rest.length === 0) return listerProven(seg, prev, fromRoot, ctx) ? null : refuse('xargs')
   // A list read from a file is not the lister's output, so no lister can vouch for it.
   if (args.slice(0, i).some((w) => XARGS_FILE_OPTION.test(w.text))) return refuse('xargs')
   const inner: Segment = { ...seg, words: rest, pipedIn: true, stdin: [], subs: [] }
   const hit = inspectSegment(inner, ctx, depth + 1, false)
   if (hit !== null) return hit
-  const proven = listerProven(seg, prev, fromRoot)
+  const proven = listerProven(seg, prev, fromRoot, ctx)
   const parsed = xargsCommand(args)
   // A replace string (`-I{}`) is understood only for grep behind a proven lister; otherwise it is unparsed.
   const replaceOk = parsed?.replace == null
@@ -161,7 +161,7 @@ function inspectSegment(
   next?: Segment,
   prev?: Segment,
 ): WalkRefusal | null {
-  const at = commandIndex(seg.words)
+  const at = commandIndex(seg.words, ctx)
   const env = envOptions(seg.words, at)
   const root = fromRoot || (env.chdir !== undefined && isRoot(env.chdir))
   const sub = (script: string): WalkRefusal | null =>
@@ -173,21 +173,22 @@ function inspectSegment(
   }
   const head = seg.words[at]
   if (head === undefined) return null
-  // A PowerShell `$x=value` or `$x=Cmd args` is an assignment: the word after `=` is the value or the command the statement runs.
-  const assigned = ctx.powershell ? PS_ASSIGN_HEAD.exec(head.text) : null
+  // A PowerShell assignment is a statement whose value, or the command it runs, is the text after its operator.
+  const assigned = ctx.powershell ? psAssignment(seg.words, at) : null
+  if (assigned === 'obscured') return refuse('obscured')
   if (assigned !== null) {
-    const rest = assigned[1]!
-    const after = seg.words.slice(at + 1)
     // Each `=` in a chain is one nesting level; past the limit the rest of the chain is not read.
     if (depth >= MAX_NESTING) return refuse('obscured')
-    return inspectSegment({ ...seg, words: [{ text: rest, quoted: false }, ...after], subs: [] }, ctx, depth + 1, fromRoot, next, prev)
+    const after = seg.words.slice(assigned.word + 1)
+    const value = assigned.rest === '' ? after : [{ text: assigned.rest, quoted: false }, ...after]
+    return inspectSegment({ ...seg, words: value, subs: [] }, ctx, depth + 1, fromRoot, next, prev)
   }
   const { name, dir } = commandName(head.text)
   const args = seg.words.slice(at + 1)
   const script = nestedScript(name, args)
   // A shell reads a script from a heredoc, a `<<<` string or a pipe from `echo`, `printf` or `cat`.
   if (SHELLS.has(name) && script === null) {
-    const fed = seg.pipedIn && prev !== undefined ? fedText(prev) : []
+    const fed = seg.pipedIn && prev !== undefined ? fedText(prev, ctx) : []
     for (const text of [...seg.stdin.map((s) => s.text), ...fed]) {
       const hit = sub(text)
       if (hit !== null) return hit
@@ -197,7 +198,7 @@ function inspectSegment(
   const headVariable = name.includes('$') && name !== '$'
     && !(ctx.powershell && (seg.group !== 0 || /[.[(]/.test(name) || args.every((w) => w.text === '}')))
     && !(args.length === 0 && seg.endOp === '|'
-      && /^([%?]|[A-Z][A-Za-z]+-[A-Z][A-Za-z]+)$/.test(next?.words[commandIndex(next.words)]?.text ?? ''))
+      && /^([%?]|[A-Z][A-Za-z]+-[A-Z][A-Za-z]+)$/.test(next?.words[commandIndex(next.words, ctx)]?.text ?? ''))
   if (headVariable && (args.length === 0 || anyRoot(args)
     || (root && args.some((w) => isRelativeStart(w.text))))) return refuse('obscured')
   if (script !== null) {

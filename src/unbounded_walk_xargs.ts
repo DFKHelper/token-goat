@@ -1,5 +1,5 @@
 /** Lister and xargs rule tables for the unbounded-walk guard, split out of unbounded_walk.ts. */
-import type { Segment, Word } from './unbounded_walk_scan.js'
+import type { Segment, Word, WalkContext } from './unbounded_walk_scan.js'
 import { commandIndex } from './unbounded_walk_words.js'
 import { DIGITS } from './unbounded_walk_tools.js'
 
@@ -67,10 +67,10 @@ function listerWordsOk(args: readonly Word[], spec: ListerSpec): boolean {
 }
 
 /** Rule 1: the whole left side of the pipe is one plain command from a short list, with nothing unreadable. */
-function isBoundedLister(left: Segment): boolean {
+function isBoundedLister(left: Segment, ctx: WalkContext): boolean {
   const head = left.words[0]
   if (head === undefined || left.redirectedIn || left.pipedIn || left.endOp !== '|') return false
-  if (commandIndex(left.words) !== 0) return false
+  if (commandIndex(left.words, ctx) !== 0) return false
   const args = left.words.slice(1)
   // The one backslash allowed is the printf format `%s\n`, checked below as a whole word.
   const read = head.text === 'printf' ? args.slice(1) : args
@@ -262,8 +262,9 @@ export function listerProven(
   seg: Segment,
   prev: Segment | undefined,
   fromRoot: boolean,
+  ctx: WalkContext,
 ): boolean {
   if (!seg.pipedIn || fromRoot || seg.redirectedIn) return false
   if (prev === undefined || prev.group !== seg.group) return false
-  return !seg.words.some((w) => !w.quoted && /</.test(w.text)) && isBoundedLister(prev)
+  return !seg.words.some((w) => !w.quoted && /</.test(w.text)) && isBoundedLister(prev, ctx)
 }

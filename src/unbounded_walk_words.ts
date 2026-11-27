@@ -79,17 +79,52 @@ const SUDO_VALUED = [
   '-u', '-g', '-C', '-h', '-p', '-U', '-D', '-R', '-T', '--user', '--group', '--host', '--prompt',
   '--chdir', '--chroot', '--role', '--type', '--other-user', '--close-from', '--command-timeout']
 
-/** PowerShell assignment target shapes: a variable with optional `.Member` or `[index]` links; the heads are `$x=v`, `$o.P=` and `$h[k]`. */
-const PS_TARGET = String.raw`\$\{?[\w:]+\}?(?:\.\w+|\[[^\]=]*\])*`
+/** A PowerShell assignment: the word holding its value, and the text after its operator in that word. */
+interface PsAssignment {
+  readonly word: number
+  readonly rest: string
+}
 
-export const PS_ASSIGN_HEAD = new RegExp(`^${PS_TARGET}[-+*/%]?=(.+)$`, 's')
+/** A PowerShell assignment target: a variable with `.Member` or `[index]` links; index text is unchecked. */
+const PS_TARGET_SHAPE = /^\$\{?[\w:]+\}?(?:\.\w+|\[.*\])*$/s
 
-export const PS_ASSIGN_OP_WORD = new RegExp(`^${PS_TARGET}[-+*/%]?=$`)
+/** The length of the operator at `text[k]` (`=`, `+=` and kin, `??=`); 0 for none, -1 for `==`. */
+function operatorLength(text: string, k: number): number {
+  if (text[k] === '=') return text[k + 1] === '=' ? -1 : 1
+  if ('+-*/%'.includes(text[k]!) && text[k + 1] === '=') return 2
+  return text.startsWith('??=', k) ? 3 : 0
+}
 
-export const PS_TARGET_WORD = new RegExp(`^${PS_TARGET}$`)
+/** The assignment whose target starts at word `start`: its operator is the first `=` outside brackets. */
+export function psAssignment(words: readonly Word[], start: number): PsAssignment | 'obscured' | null {
+  if (!(words[start]?.text ?? '').startsWith('$')) return null
+  let depth = 0
+  let target = ''
+  for (let j = start; j < words.length; j++) {
+    const text = words[j]!.text
+    // Whitespace at depth zero may only sit before the operator, so the next word must start with one.
+    let edge = j > start && depth === 0
+    for (let k = 0; k < text.length; k++) {
+      const c = text[k]!
+      if (edge && c !== '=' && !'+-*/%?'.includes(c)) return null
+      edge = false
+      if (c === '[') depth++
+      else if (c === ']' && --depth < 0) return null
+      else if (depth === 0) {
+        const length = operatorLength(text, k)
+        if (length < 0) return null
+        if (length > 0) {
+          return PS_TARGET_SHAPE.test(target + text.slice(0, k)) ? { word: j, rest: text.slice(k + length) } : null
+        }
+      }
+    }
+    target += text
+  }
+  return depth > 0 ? 'obscured' : null
+}
 
 /** The index of the command a segment runs, past the words that only prefix it: assignments, keywords, and wrappers such as `sudo`, `env`, `nice`, `timeout` and `wsl`. */
-export function commandIndex(words: readonly Word[]): number {
+export function commandIndex(words: readonly Word[], ctx: { readonly powershell: boolean }): number {
   let i = 0
   const skipOptions = (valued: readonly string[]): void => {
     while (i < words.length && words[i]!.text.startsWith('-')) i += valued.includes(words[i]!.text) ? 2 : 1
@@ -97,15 +132,14 @@ export function commandIndex(words: readonly Word[]): number {
   while (i < words.length) {
     const text = words[i]!.text
     const { name } = commandName(text)
+    const ps = ctx.powershell ? psAssignment(words, i) : null
     if (/^[A-Za-z_]\w*=/.test(text) || SKIPPED_KEYWORDS.has(name)) {
       i++
       if (KEYWORD_OPTIONS.has(name)) skipOptions(KEYWORD_OPTIONS.get(name)!)
-    } else if (PS_ASSIGN_OP_WORD.test(text)) {
-      // A PowerShell assignment, `$x= cmd`, runs the command that follows it.
-      i++
-    } else if (PS_TARGET_WORD.test(text) && /^[-+*/%]?=$/.test(words[i + 1]?.text ?? '')) {
-      // A PowerShell assignment, `$x = cmd`.
-      i += 2
+    } else if (ps !== null && ps !== 'obscured') {
+      // A PowerShell assignment runs the command after its operator, in this word or the next one.
+      if (ps.rest !== '') return i
+      i = ps.word + 1
     } else if (name === 'sudo' || name === 'doas') {
       i++
       skipOptions(SUDO_VALUED)
@@ -159,7 +193,7 @@ const CD_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd', 'set-location', 'sl
 
 /** Whether a directory-changing command leaves the shell in a filesystem root or the home directory (`wasRoot` is where it started, which `cd ..` keeps), or null when the segment changes no directory. `cd -`, `popd` and anything else that lands somewhere unknown count as not a root, so only a visible root target is refused. */
 export function cdLandsAtRoot(seg: Segment, wasRoot: boolean, ctx: WalkContext): boolean | null {
-  const at = commandIndex(seg.words)
+  const at = commandIndex(seg.words, ctx)
   const head = seg.words[at]
   if (head === undefined) return null
   const { name } = commandName(head.text)
