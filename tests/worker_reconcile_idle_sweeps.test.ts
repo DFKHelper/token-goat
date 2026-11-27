@@ -390,6 +390,33 @@ describe('a file that keeps no row is not re-enqueued by repeated sweeps', () =>
     expect(giveUpRow(fx.dbPath, target), 'and the give-up row is gone').toBeUndefined()
   })
 
+  it('holds a given-up file whose row has a stale parser stamp until its retry time, then re-enqueues it', () => {
+    clock.now = GIVE_UP_AT
+    const fx = fixture()
+    const file = path.join(fx.repo, 'row-stale-parser.ts')
+    fs.writeFileSync(file, fn(OLD_SYMBOL))
+    git(fx.repo, 'add', 'row-stale-parser.ts')
+    git(fx.repo, 'commit', '-qm', 'add a file the drain indexes first')
+    appendDirtyQueuePaths(fx.dir, [file])
+    drainAll(fx.dir)
+    // Backdated past the timestamp tick so the give-up is stamped, and its row predates the running parser.
+    const backdated = new Date('2001-01-01T00:00:00Z')
+    fs.utimesSync(file, backdated, backdated)
+    getDb(fx.dbPath).prepare('UPDATE files SET parser_sha = ? WHERE path LIKE ?').run('predates-parser-stamp', '%row-stale-parser.ts')
+    const target = foldPath(normalizePath(file))
+    const realRead = fingerprintModule.fingerprintFileWithBytes
+    vi.spyOn(fingerprintModule, 'fingerprintFileWithBytes').mockImplementation((p) => (foldPath(normalizePath(p)) === target ? null : realRead(p)))
+    appendDirtyQueuePaths(fx.dir, [file])
+    for (let cycle = 0; cycle < 10; cycle++) drainOnce(fx.dir)
+    expect(giveUpRow(fx.dbPath, target), 'the drain stamped the give-up').toBeDefined()
+    clock.now = GIVE_UP_AT + FIRST_BACKOFF_MS - 1
+    const held = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(held.enqueued, 'inside its backoff the given-up file with a stale parser stamp is not re-enqueued').toBe(0)
+    clock.now = GIVE_UP_AT + FIRST_BACKOFF_MS
+    const due = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(due.enqueued, 'at its retry time the sweep re-enqueues it').toBeGreaterThan(0)
+  })
+
   it('holds a given-up file with no row until its retry time, then re-reports it once', () => {
     clock.now = GIVE_UP_AT
     const fx = fixture()

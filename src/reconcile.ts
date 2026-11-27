@@ -358,6 +358,9 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
       continue
     }
 
+    // A given-up row holds its file back before the checks below; givenUpHeld stats only a file with a stamp.
+    if (givenUpHeld(givenUp, folded, file, clockMs)) continue
+
     // Checked before the mtime shortcut below, and unconditionally: a parser upgrade changes what gets extracted from content that never moved, so the mtime/content diff below -- which only ever compares this file's bytes against themselves -- can never notice it. Without this, a file nobody edits after a parser bump keeps the old parser's rows forever (this is the same failure shape files.parser_sha exists to close on the per-file gates in worker.ts/cli.ts; reconcileProject is the sweep that is supposed to find drift nothing edited, so it is the one place a content-only key silently misses this bucket entirely). An empty parserSha is a row written before the column existed and is correctly stale, same as the per-file gates. The expected stamp is the one for the language the row itself records, so a fix to one adapter sweeps that language's files back into the queue and leaves every other language's rows alone.
     if (!parserStampCurrent(dbPath, entry.parserSha, entry.language)) {
       changed.push(file)
@@ -386,8 +389,6 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
       changed.push(file)
       continue
     }
-    // A file the drain gave up on keeps its row, so it is held back here until its retry time, at the mtime it was stamped with, as the no-row branch above holds it.
-    if (givenUpHolds(givenUp.get(folded), mtimeMs, clockMs)) continue
 
     // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch. `entry.mtime` is stored in seconds (see `safeMtime` in parser.ts) while `mtimeMs` is milliseconds, so the comparison converts here rather than at the write side, which would require migrating every already-indexed row.
     if (mtimeProvesUnchanged(entry, mtimeMs)) continue
