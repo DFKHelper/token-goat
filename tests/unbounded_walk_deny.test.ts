@@ -471,6 +471,8 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
   it.each([
     [String.raw`$dst='C:\Users\me\x'`],
     ['$n=5'],
+    ['$x=5'],
+    ['$x=C:/tools/fd.exe . .'],
     ['$s=$x'],
     ['"rc=$LASTEXITCODE"'],
     ['$x.Count'],
@@ -488,6 +490,11 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     ["$c='find'; & $c /", 'obscured'],
     ['$a=$b=Get-ChildItem C:\\ -Recurse', 'gci'],
     ['$x=$(Get-ChildItem C:\\ -Recurse)', 'gci'],
+    ['$x=C:/tools/fd.exe . C:/', 'fd'],
+    [String.raw`$x=.\find.exe / -name a`, 'find'],
+    ['$x=$cmd C:\\', 'obscured'],
+    ['$o.Prop=gci C:\\ -Recurse', 'gci'],
+    ['$h[k]=gci C:\\ -Recurse', 'gci'],
   ])('still refuses %s', (command, expected) => {
     expect(form(command, POWERSHELL)).toBe(expected)
   })

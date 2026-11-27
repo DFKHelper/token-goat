@@ -174,12 +174,15 @@ function inspectSegment(
   const head = seg.words[at]
   if (head === undefined) return null
   // A PowerShell `$x=value` or `$x=Cmd args` is an assignment: the word after `=` is the value or the command the statement runs.
-  const assigned = ctx.powershell ? /^\$\{?[\w:]+\}?[-+*/%]?=(.+)$/s.exec(head.text) : null
+  const assigned = ctx.powershell ? /^\$\{?[\w:]+\}?(?:\.\w+|\[[^\]=]*\])*[-+*/%]?=(.+)$/s.exec(head.text) : null
   if (assigned !== null) {
     const rest = assigned[1]!
-    const runs = /^[A-Za-z][\w.-]*$/.test(rest) || /^\$\{?[\w:]+\}?[-+*/%]?=./s.test(rest)
-    const words = runs ? [{ text: rest, quoted: false }, ...seg.words.slice(at + 1)] : seg.words.slice(at + 1)
-    return words.length === 0 ? null : inspectSegment({ ...seg, words, subs: [] }, ctx, depth, fromRoot, next, prev)
+    const after = seg.words.slice(at + 1)
+    // A lone value runs nothing unless it is a bare command name, so only that one is read as a command.
+    if (after.length === 0 && !/^[A-Za-z][\w.-]*$/.test(rest)) return null
+    // Each `=` in a chain is one nesting level; past the limit the rest of the chain is not read.
+    if (depth >= MAX_NESTING) return refuse('obscured')
+    return inspectSegment({ ...seg, words: [{ text: rest, quoted: false }, ...after], subs: [] }, ctx, depth + 1, fromRoot, next, prev)
   }
   const { name, dir } = commandName(head.text)
   const args = seg.words.slice(at + 1)
