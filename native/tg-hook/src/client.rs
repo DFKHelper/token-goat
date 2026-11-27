@@ -362,6 +362,9 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
+    /// A find deadline a slow machine cannot reach during these tests; the production FIND_BUDGET stays as it is.
+    const ROOMY_FIND_BUDGET: Duration = Duration::from_secs(600);
+
     fn endpoints() -> Slots {
         Slots::new(1, Box::new(|_| "pipe-0".to_string()))
     }
@@ -422,7 +425,7 @@ mod tests {
     #[test]
     fn a_pass_answered_by_slot_zero_computes_one_endpoint() {
         let (slots, computed) = counted_slots();
-        let ending = first_pass_over(&slots, Instant::now() + FIND_BUDGET, |_| Outcome::Stale);
+        let ending = first_pass_over(&slots, Instant::now() + ROOMY_FIND_BUDGET, |_| Outcome::Stale);
         assert!(matches!(ending, Ending::Fallback("stale")), "the pass did not end at slot 0");
         assert_eq!(computed.get(), 1, "a pass answered by slot 0 computed {} endpoints, not 1", computed.get());
     }
@@ -432,7 +435,7 @@ mod tests {
     fn a_pass_reaching_slot_two_computes_three_endpoints_and_a_later_poll_none() {
         let (slots, computed) = counted_slots();
         let mut steps = vec![Outcome::Busy, Outcome::Refused, Outcome::Absent].into_iter();
-        let ending = first_pass_over(&slots, Instant::now() + FIND_BUDGET, |_| steps.next().expect("one step per slot"));
+        let ending = first_pass_over(&slots, Instant::now() + ROOMY_FIND_BUDGET, |_| steps.next().expect("one step per slot"));
         assert!(matches!(ending, Ending::Fallback("absent")), "the pass did not end at slot 2");
         assert_eq!(computed.get(), 3, "a pass reaching slot 2 computed {} endpoints, not 3", computed.get());
         let mut retry = Retry::default();

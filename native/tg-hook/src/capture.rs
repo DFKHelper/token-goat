@@ -193,6 +193,19 @@ impl Failure {
     pub fn is_busy_lane(&self) -> bool {
         matches!(self, Failure::NoLane(LaneError::Busy))
     }
+
+    /// A route that never ran for want of a lane, busy or unusable: it is not a broken route, so nothing is recorded as one.
+    pub fn is_lane_refusal(&self) -> bool {
+        matches!(self, Failure::NoLane(_))
+    }
+
+    /// The reason the lane folder could not be used, when that is why no lane was taken.
+    pub fn unusable_lane(&self) -> Option<String> {
+        match self {
+            Failure::NoLane(LaneError::Unusable(why)) => Some(why.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// What a route call ended with: the route ran, or the resident server answered while the call waited for a lane.
