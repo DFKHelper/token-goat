@@ -580,6 +580,56 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     expect(form('F=x find / -name x', POSIX)).toBe('find')
     expect(form('x=5; echo $x', POSIX)).toBeNull()
   })
+
+  it.each([
+    [String.raw`powershell -Command '[int] $x = gci C:\ -Recurse'`, 'gci'],
+    [String.raw`powershell -Command '$x = gci C:\ -Recurse'`, 'gci'],
+    [String.raw`pwsh -Command '[int] $x = gci C:\ -Recurse'`, 'gci'],
+    [String.raw`pwsh -c '$x=gci C:\ -Recurse'`, 'gci'],
+    [String.raw`powershell.exe -NoProfile -Command '[int][string]$x = gci C:\ -Recurse'`, 'gci'],
+    [String.raw`powershell -Command '[int] $x=cd C:\; gci -Recurse'`, 'gci'],
+    [String.raw`pwsh -Command '$x=cd C:\; gci -Recurse'`, 'gci'],
+  ])('refuses the PowerShell launcher script %s under a bash harness', (command, expected) => {
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBe(expected)
+  })
+
+  it.each([
+    [String.raw`powershell -Command '[int] $x = 5'`],
+    [String.raw`powershell -Command '$x = Get-Date'`],
+    [String.raw`pwsh -Command '[math]::Max(1,2)'`],
+  ])('lets the PowerShell launcher script %s through under a bash harness', (command) => {
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it('gives a PowerShell launcher script the verdict of the same script without its assignment', () => {
+    expect(form(String.raw`powershell -Command '[int] $x=cd C:\; gci -Recurse'`, GIT_BASH_ON_WINDOWS))
+      .toBe(form(String.raw`powershell -Command 'cd C:\; gci -Recurse'`, GIT_BASH_ON_WINDOWS))
+  })
+
+  it.each([
+    [String.raw`$x += gci C:\ -Recurse`, 'gci'],
+    [String.raw`$x ??= gci C:\ -Recurse`, 'gci'],
+  ])('still refuses the compound assignment %s', (command, expected) => {
+    expect(form(command, POWERSHELL)).toBe(expected)
+  })
+
+  it.each([
+    ['$global:x = 5'],
+    ['$x += 5'],
+    ['$x.Method("a=b")'],
+  ])('lets the PowerShell statement %s through', (command) => {
+    expect(form(command, POWERSHELL)).toBeNull()
+  })
+
+  // Either-report rows: the verdict they have at this tip is pinned, not judged.
+  it.each([
+    [String.raw`bash -c 'X=1 find / -name a'`, POWERSHELL, 'find'],
+    [String.raw`bash -c 'x=$(find / -name a)'`, POWERSHELL, 'find'],
+    [String.raw`X=1 find / -name a`, GIT_BASH_ON_WINDOWS, 'find'],
+    [String.raw`X=1 ls`, GIT_BASH_ON_WINDOWS, null],
+  ])('pins the verdict of %s', (command, shell, expected) => {
+    expect(form(command, shell)).toBe(expected)
+  })
 })
 
 // HAND-DERIVED: written from what each left side prints; only a bounded lister may feed an xargs walker.

@@ -85,6 +85,11 @@ const EXEMPT: readonly Exemption[] = [
     reason: 'FILES is the direct return value of pinnedPopulation(), which fails on an empty or under-25 population, or one missing any of five named hook files, before this table is used.',
   },
   {
+    file: 'tests/guards/unbounded_walk_regex_shape.test.ts',
+    table: 'FILES',
+    reason: 'FILES is the direct return value of pinnedPopulation() with a floor of five and two anchors, and the first test in the same file asserts it equals the five pinned names, so an emptied directory fails there before this table is used.',
+  },
+  {
     file: 'tests/guards/installer_writes_are_always_backed_up.test.ts',
     table: 'population',
     reason: 'population is the direct return value of pinnedPopulation(), which fails on an empty or under-30 population before this table is used.',

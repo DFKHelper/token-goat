@@ -14,8 +14,9 @@ const rootOperand = (pos: readonly Word[], fromRoot: boolean, glob = false, winO
 // A depth bound is `-d N`, `--max-depth N`, `-LN` or `-Depth N` with ASCII digits; other values are no bound.
 export const DIGITS = /^[0-9]+$/
 // fd 10.5.0 and rg 15.2.0 (real runs): `-d N`, `-dN`, `-d=N`, `--max-depth`, `--maxdepth`; no abbreviations.
-const FD_DEPTH = /^(?:-d(?:=?([0-9]+))?|--(?:max-?depth|exact-depth)(?:=(.*))?)$/
+
 // A long value is never attached without `=`, and only fd has `--exact-depth`.
+const FD_DEPTH = /^(?:-d(?:=?([0-9]+))?|--(?:max-?depth|exact-depth)(?:=(.*))?)$/
 const RG_DEPTH = /^(?:-d(?:=?([0-9]+))?|--max-?depth(?:=(.*))?)$/
 const TREE_DEPTH = /^-[A-Za-z]*L([0-9]+)?$/
 const PS_DEPTH = /^-de(?:p(?:t(?:h)?)?)?(?::(.*))?$/i

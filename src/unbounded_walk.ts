@@ -167,8 +167,8 @@ function inspectSegment(
   const at = commandIndex(words)
   const env = envOptions(words, at)
   const root = fromRoot || (env.chdir !== undefined && isRoot(env.chdir))
-  const sub = (script: string): WalkRefusal | null =>
-    depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1, root) : atNestingLimit(script)
+  const sub = (script: string, inner: WalkContext = ctx): WalkRefusal | null =>
+    depth < MAX_NESTING ? detectUnboundedWalk(script, inner, depth + 1, root) : atNestingLimit(script)
   // Scripts from `$(...)`, backticks in double quotes, heredocs and `env -S` run whatever the command is.
   for (const script of [...seg.subs, ...(env.split === undefined ? [] : [env.split])]) {
     const hit = sub(script)
@@ -180,11 +180,13 @@ function inspectSegment(
   const { name, dir } = commandName(head.text)
   const args = words.slice(at + 1)
   const script = nestedScript(name, args)
+  // A script a PowerShell launcher runs is read as PowerShell, whatever the outer harness is.
+  const shellCtx: WalkContext = name === 'powershell' || name === 'pwsh' ? { ...ctx, powershell: true } : ctx
   // A shell reads a script from a heredoc, a `<<<` string or a pipe from `echo`, `printf` or `cat`.
   if (SHELLS.has(name) && script === null) {
     const fed = seg.pipedIn && prev !== undefined ? fedText(prev, ctx) : []
     for (const text of [...seg.stdin.map((s) => s.text), ...fed]) {
-      const hit = sub(text)
+      const hit = sub(text, shellCtx)
       if (hit !== null) return hit
     }
   }
@@ -196,10 +198,10 @@ function inspectSegment(
   if (headVariable && (args.length === 0 || anyRoot(args)
     || (root && args.some((w) => isRelativeStart(w.text))))) return refuse('obscured')
   if (script !== null) {
-    const hit = sub(script)
+    const hit = sub(script, shellCtx)
     if (hit !== null) return hit
     // A script that leaves a quote open in both readings is not one the check can vouch for.
-    const open = scan(script, true, ctx.powershell).open && scan(script, false, ctx.powershell).open
+    const open = scan(script, true, shellCtx.powershell).open && scan(script, false, shellCtx.powershell).open
     return open ? refuse('unparsed') : null
   }
   // An xargs command word with a substitution is refused whatever the lister; quoted xargs never gets here.
