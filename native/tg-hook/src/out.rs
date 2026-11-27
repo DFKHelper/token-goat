@@ -276,7 +276,7 @@ pub fn record_waiting(record: impl FnOnce() + Send + 'static, deadline: Option<I
     rx.recv_timeout(end.saturating_duration_since(Instant::now())).is_ok()
 }
 
-/// How long the process waits for a record once the answer is out; a stalled disk loses the record, not the exit.
+/// Caps the exit's wait for a routine record; a failed-route note waits to the deadline (the answer is out).
 // limit: a record slower than this is dropped when the process exits, except the fail-open notice, which [`RecordWait::Deadline`] waits for to the call's deadline; revisit-when: notes go missing on healthy disks
 // lost: a routine note, or a hook-broken.json.<pid>.tmp left behind; accepted, a normal exit is never delayed
 pub(crate) const RECORD_GRACE: Duration = Duration::from_millis(300);

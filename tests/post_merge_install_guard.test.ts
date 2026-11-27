@@ -2,11 +2,12 @@
 import { spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import { POST_MERGE_DOCTOR_DEV_ARGV } from './helpers/post_merge_argv.js'
 import { stopOwnedChild, trackOwnedChild } from './helpers/stop_owned_child.js'
 import { tempDir } from './helpers/temp-config.js'
+import { tokenGoatOnPath } from './helpers/token_goat_on_path.js'
 
 const REPO_ROOT = path.resolve(__dirname, '..')
 const SCRIPTS_DIR = path.join(REPO_ROOT, 'scripts')
@@ -160,6 +161,11 @@ describe('post-merge registers a checkout bundle with --dev only where an entry 
 
   it('a project hook gap under an entry naming this checkout: the post-merge doctor argv writes the missing project hooks', async () => {
     // stub row 'a project hook gap under an entry naming this checkout' asserts the same argv
+    const removeStandIn = tokenGoatOnPath('0.0.0-test') // doctor's Installation row fails with no token-goat on PATH, as on CI.
+    onTestFinished(() => {
+      removeStandIn()
+      vi.unstubAllEnvs()
+    })
     const checkout = makeCheckout()
     const installed = await runBundle(checkout, ['install', '--dev'])
     expect(installed.status, output(installed)).toBe(0)

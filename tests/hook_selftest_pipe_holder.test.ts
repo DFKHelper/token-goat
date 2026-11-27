@@ -103,8 +103,10 @@ describe('the self-test helper settles a job when it exits, not when its pipes c
 describe('the direct fallback returns when the shell exits, not when its pipes close', () => {
   it('returns a shell whose output a surviving process still holds', () => {
     const { release, pidFile } = scratch()
-    // The holder's own cap is short: with pipes the call waits for it and the row fails by the assertions below instead of hanging.
-    const run = directShellRun({ program: process.execPath, args: ['-e', JOB, release, pidFile, '12000'], verbatim: false }, '', 20000)
+    // The holder's cap (120 s) outlives the 20 s timeout: a call that waits on the pipe fails the row below.
+    const run = directShellRun({ program: process.execPath, args: ['-e', JOB, release, pidFile, '120000'], verbatim: false }, '', 20000)
+    // The call blocks, so scratch()'s watcher cannot record the holder pid before this point.
+    if (fs.existsSync(pidFile)) holders.push(Number(fs.readFileSync(pidFile, 'utf8')))
     expect(run.stderr, 'the run was ended by its timeout').not.toMatch(/ETIMEDOUT|timed out/)
     expect(run.status).toBe(0)
     expect(run.stdout, 'the job output must come back').toBe('job-done')

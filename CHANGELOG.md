@@ -11,7 +11,6 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### Added
 
 - **`doctor --repair --dev` registers a git checkout build as the hook entry, as `install --dev` does.** `post-merge` passes it when it refreshes a checkout.
->
 ## [2.9.36] - 2026-11-24
 
 ### Added

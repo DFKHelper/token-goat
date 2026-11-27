@@ -1021,7 +1021,7 @@ describe('post-merge sync in a checkout that is not the active install', () => {
         '[token-goat] post-merge: Running doctor repairs across configured harnesses timed out after 8000ms',
       )
       expect(res.stderr).toContain('Synchronization incomplete; failed steps:')
-      expect(loggedArgs(log)).not.toContain('doctor --repair --dev')
+      expect(loggedArgs(log).filter((a) => a.startsWith('doctor --repair'))).toEqual([])
       expect(fs.existsSync(grandchildPidFile), `${res.stdout}\n${res.stderr}`).toBe(true)
       grandchildPid = Number(fs.readFileSync(grandchildPidFile, 'utf8'))
       expect(Number.isInteger(grandchildPid)).toBe(true)
