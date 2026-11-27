@@ -336,6 +336,22 @@ describe('a file that keeps no row is not re-enqueued by repeated sweeps', () =>
   })
 })
 
+describe('the chunk table is read only for a row that lacks its embed stamp', () => {
+  it('reads the chunk table for no sweep over stamped rows, and once for a sweep that meets an unstamped row', () => {
+    const fx = fixture()
+    const db = getDb(fx.dbPath)
+    // HAND-DERIVED: an embed run leaves files.embed_sha equal to the row's sha, so every row here carries the stamp a finished embed writes.
+    db.prepare('UPDATE files SET embed_sha = sha').run()
+    const prepare = vi.spyOn(db, 'prepare')
+    const chunkReads = (): number => prepare.mock.calls.filter(([sql]) => /SELECT DISTINCT file_path FROM chunks/.test(String(sql))).length
+    reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(chunkReads(), 'a sweep over rows that all carry an embed stamp never reads the chunk table').toBe(0)
+    db.prepare('UPDATE files SET embed_sha = NULL').run()
+    reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+    expect(chunkReads(), 'a sweep that meets a row with no embed stamp reads the chunk table once (the positive control for the count above)').toBe(1)
+  })
+})
+
 function retryCountFor(dbPath: string, folded: string): number {
   const rows = getDb(dbPath).prepare('SELECT path, retry_count FROM index_retries').all() as Array<{ path: string; retry_count: number }>
   return rows.find((r) => foldPath(normalizePath(r.path)) === folded)?.retry_count ?? 0
