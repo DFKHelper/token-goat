@@ -117,4 +117,46 @@ describe('reconcile requests sweep a repository at most once per window', () => 
     await pendingEmbeddings()
     expect(querySymbols({ name: NEW_SYMBOL }, fx.dbPath), 'the genuine change reaches the index').toHaveLength(1)
   })
+
+  it('enqueues a file added after a completed sweep on the first request past the window', async () => {
+    const fx = fixture()
+    appendReconcileRequest(fx.dir, fx.repo)
+    expect(await drainReconcileRequestsAsync(fx.dir), 'the first request sweeps the repository').toBe(1)
+    fs.writeFileSync(path.join(fx.repo, 'added.ts'), fn(NEW_SYMBOL))
+    git(fx.repo, 'add', 'added.ts')
+    clock.now += SWEEP_MIN_INTERVAL_MS
+    appendReconcileRequest(fx.dir, fx.repo)
+    expect(await drainReconcileRequestsAsync(fx.dir), 'a request past the window sweeps the repository with the new tracked file').toBe(1)
+    drainAll(fx.dir)
+    await pendingEmbeddings()
+    expect(querySymbols({ name: NEW_SYMBOL }, fx.dbPath), 'the new tracked file reaches the index').toHaveLength(1)
+  })
+})
+
+// Provenance: row (c) is FORMAT-DERIVED from src/config_defaults.ts:203 (large_file_skip_kb 2048) read by src/parser.ts isParseSkipEligible; rows (b) and (d) are HAND-DERIVED (a path and NUL bytes chosen here, no producer output).
+const NO_ROW_FILES: Array<[string, string, string | Buffer]> = [
+  ['(b) a path under .claude/worktrees/ in the indexed repository', '.claude/worktrees/w1/worker.ts', fn('idleSweepWorktreeSym')],
+  ['(c) a file over indexing.large_file_skip_kb', 'big_generated.ts', 'export const v = 1\n'.repeat(130_000)],
+  ['(d) a binary file', 'blob.bin', Buffer.from([0x00, 0x01, 0xfe, 0xff, 0x00, 0x42])],
+]
+
+describe('a file that keeps no row is not re-enqueued by repeated sweeps', () => {
+  it.each(NO_ROW_FILES)('%s: sweeps 1-3 of an unchanged tree enqueue nothing', (_label, rel, content) => {
+    const fx = fixture()
+    const file = path.join(fx.repo, rel)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, content)
+    // coverage.json is removed so its own skip-eligible addition cannot stand in for the row under test.
+    git(fx.repo, 'rm', '-q', 'coverage.json')
+    git(fx.repo, 'add', '-f', rel)
+    git(fx.repo, 'commit', '-qm', 'add a file that keeps no row')
+    appendDirtyQueuePaths(fx.dir, [file])
+    drainAll(fx.dir)
+    for (let sweep = 1; sweep <= 3; sweep++) {
+      const r = reconcileProject({ cwd: fx.repo, dbPath: fx.dbPath, queueDir: fx.dir })
+      expect(r.added, `sweep ${sweep}: the file is not reported as an unindexed addition`).toEqual([])
+      expect(r.enqueued, `sweep ${sweep}: nothing is enqueued for an unchanged tree`).toBe(0)
+      drainAll(fx.dir)
+    }
+  })
 })
