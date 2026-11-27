@@ -169,6 +169,21 @@ describe('checkHookBroken splits busy answers from route failures', () => {
     ])
   })
 
+  it('gives the busy row alone when the notice holds only a busy object', () => {
+    const home = scratch()
+    fs.writeFileSync(hookBrokenPath(home), JSON.stringify({ schema: 1, count: 0, events: [], busy: { count: 20, first: 'a', last: 'b' } }))
+    expect(checkHookBroken(home)).toEqual([{ name: 'Hook busy answers', status: 'ok', message: expect.stringContaining('20 hook calls were answered busy') }])
+  })
+
+  it('counts a busy object beside one route failure, and the FAIL counts only the route failure', () => {
+    const home = scratch()
+    fs.writeFileSync(hookBrokenPath(home), JSON.stringify({ schema: 1, first: 'a', last: 'b', count: 1, events: [failure], busy: { count: 20, first: 'a', last: 'b' } }))
+    expect(checkHookBroken(home)).toEqual([
+      { name: 'Hook busy answers', status: 'ok', message: expect.stringContaining('20 hook calls were answered busy') },
+      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route 1 time ') },
+    ])
+  })
+
   it('gives no row at all without a notice', () => {
     expect(checkHookBroken(scratch())).toEqual([])
   })

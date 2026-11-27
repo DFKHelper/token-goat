@@ -268,20 +268,22 @@ export function checkNativeEntryPaths(wiring: NativeWiring): DoctorResult | null
 export function checkHookBroken(home: string): DoctorResult[] {
   const notice = readHookBroken(home)
   if (notice === undefined) return []
-  const busy = notice.events.filter((e) => e.route === 'deadline-busy')
+  // Busy answers written before the busy object existed are still events; the native client now counts new ones in `busy` only.
+  const oldBusy = notice.events.filter((e) => e.route === 'deadline-busy')
   const failures = notice.events.filter((e) => e.route !== 'deadline-busy')
+  const busyCount = (notice.busy?.count ?? 0) + oldBusy.length
   const rows: DoctorResult[] = []
-  if (busy.length > 0) {
+  if (busyCount > 0) {
     rows.push({
       name: 'Hook busy answers',
       status: 'ok',
-      message: `${String(busy.length)} hook call${busy.length === 1 ? ' was' : 's were'} answered busy: no lane freed before the deadline, so the host was told to run ${busy.length === 1 ? 'it' : 'them'} again; this is contention, not damage, and needs no reinstall (${HOOK_BROKEN_FILE})`,
+      message: `${String(busyCount)} hook call${busyCount === 1 ? ' was' : 's were'} answered busy: no lane freed before the deadline, so the host was told to run ${busyCount === 1 ? 'it' : 'them'} again; this is contention, not damage, and needs no reinstall (${HOOK_BROKEN_FILE})`,
     })
   }
   const last = failures[failures.length - 1]
   if (last === undefined) return rows
-  // notice.count counts every event, busy ones included, so the busy events kept here are taken out of it.
-  const routeFailures = notice.count - busy.length
+  // notice.count counts the old-format busy events kept in events; new busy answers never enter it, so only those are taken out.
+  const routeFailures = notice.count - oldBusy.length
   const what = `${last.route}${last.path === '' ? '' : ` ${displaySafeText(last.path)}`}: ${displaySafeText(last.error)}`
   rows.push({
     name: 'Hook fallback',

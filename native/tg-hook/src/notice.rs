@@ -7,6 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 pub const FILE_NAME: &str = "hook-broken.json";
+/// The route of a busy answer: counted in the `busy` object, never in `events` or `count`.
+pub const BUSY_ROUTE: &str = "deadline-busy";
 /// Entries kept; older ones fall off so the file stays well under [`MAX_BYTES`].
 const KEEP: usize = 8;
 const MAX_FIELD_CHARS: usize = 120;
@@ -56,7 +58,21 @@ fn merged(previous: Option<Value>, event: Value, now: &str) -> Value {
     events.push(event);
     let drop = events.len().saturating_sub(KEEP);
     events.drain(..drop);
-    json!({ "schema": 1, "first": first, "last": now, "count": count, "events": events })
+    let mut value = json!({ "schema": 1, "first": first, "last": now, "count": count, "events": events });
+    if let Some(busy) = old.as_ref().and_then(|v| v.get("busy")) {
+        value["busy"] = busy.clone();
+    }
+    value
+}
+
+/// Counts one busy answer in the `busy` object, which holds no event and is never trimmed with the events.
+fn with_busy(previous: Option<Value>, now: &str) -> Value {
+    let mut value = previous.filter(|v| v.get("schema").and_then(Value::as_u64) == Some(1)).unwrap_or_else(|| json!({ "schema": 1, "count": 0, "events": [] }));
+    let prior = value.get("busy").cloned().unwrap_or_else(|| json!({ "count": 0, "first": now }));
+    let count = prior.get("count").and_then(Value::as_u64).unwrap_or(0).saturating_add(1);
+    let first = prior.get("first").cloned().unwrap_or_else(|| json!(now));
+    value["busy"] = json!({ "count": count, "first": first, "last": now });
+    value
 }
 
 /// Records that `route` could not be used because of `error` at `path` (empty when no one path is to blame).
@@ -180,10 +196,15 @@ where
 
 fn try_record_many(data_dir: &str, entries: &[(&str, &str, &str)]) -> std::io::Result<()> {
     let now = iso_utc(SystemTime::now());
-    let events: Vec<Value> = entries.iter().map(|(route, path, error)| json!({ "time": now, "route": clip(route), "path": clip(path), "error": clip(error) })).collect();
+    let events: Vec<Value> =
+        entries.iter().filter(|(route, _, _)| *route != BUSY_ROUTE).map(|(route, path, error)| json!({ "time": now, "route": clip(route), "path": clip(path), "error": clip(error) })).collect();
+    let busy = entries.iter().filter(|(route, _, _)| *route == BUSY_ROUTE).count();
     update(data_dir, &mut || std::thread::sleep(LOCK_PAUSE), |mut previous| {
         for event in events {
             previous = Some(merged(previous, event, &now));
+        }
+        for _ in 0..busy {
+            previous = Some(with_busy(previous, &now));
         }
         previous
     })
@@ -209,11 +230,18 @@ fn unseen(previous: Option<Value>, began: &str) -> Option<Value> {
     let all = old["events"].as_array()?;
     let newer = |e: &&Value| e["time"].as_str().is_some_and(|t| t >= began);
     let kept: Vec<Value> = all.iter().filter(newer).cloned().collect();
-    let first = kept.first()?["time"].clone();
+    let busy = old.get("busy").cloned();
+    let Some(first) = kept.first().map(|e| e["time"].clone()) else {
+        return busy.map(|busy| json!({ "schema": 1, "count": 0, "events": [], "busy": busy }));
+    };
     if kept.len() == all.len() {
         return Some(old);
     }
-    Some(json!({ "schema": 1, "first": first, "last": old["last"], "count": kept.len(), "events": kept }))
+    let mut value = json!({ "schema": 1, "first": first, "last": old["last"], "count": kept.len(), "events": kept });
+    if let Some(busy) = busy {
+        value["busy"] = busy;
+    }
+    Some(value)
 }
 
 #[cfg(test)]
@@ -259,6 +287,83 @@ mod tests {
         assert_eq!(value["events"][KEEP - 1]["path"], "/gone/19");
         clear(d, "9999-12-31T23:59:59.999Z");
         assert!(!dir.join(FILE_NAME).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn read_value(dir: &std::path::Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join(FILE_NAME)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_route_failure_keeps_its_count_when_busy_answers_follow() {
+        let dir = scratch("busy-after");
+        let d = dir.to_str().unwrap();
+        record(d, "node-argv", "/gone", "missing");
+        for _ in 0..20 {
+            record(d, "deadline-busy", "", "no lane freed");
+        }
+        let value = read_value(&dir);
+        assert_eq!(value["count"], 1, "a busy answer must not count as a route failure");
+        assert_eq!(value["events"].as_array().unwrap().len(), 1, "a busy answer must not enter events");
+        assert_eq!(value["events"][0]["route"], "node-argv");
+        assert_eq!(value["busy"]["count"], 20, "every busy answer must be counted in busy");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_route_failure_keeps_busy_answers_written_before_it() {
+        let dir = scratch("busy-before");
+        let d = dir.to_str().unwrap();
+        for _ in 0..3 {
+            record(d, "deadline-busy", "", "no lane freed");
+        }
+        record(d, "node-argv", "/gone", "missing");
+        let value = read_value(&dir);
+        assert_eq!(value["count"], 1, "a route failure must keep the count of route failures only");
+        assert_eq!(value["busy"]["count"], 3, "a route failure must not drop the busy object");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn busy_answers_alone_leave_no_event_and_a_zero_count() {
+        let dir = scratch("busy-only");
+        let d = dir.to_str().unwrap();
+        for _ in 0..3 {
+            record(d, "deadline-busy", "", "no lane freed");
+        }
+        let value = read_value(&dir);
+        assert_eq!(value["count"], 0);
+        assert_eq!(value["events"].as_array().unwrap().len(), 0, "busy answers alone must leave no event");
+        assert_eq!(value["busy"]["count"], 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_clear_that_drops_every_event_keeps_the_busy_count() {
+        let dir = scratch("busy-clear");
+        let d = dir.to_str().unwrap();
+        record(d, "node-argv", "/gone", "missing");
+        for _ in 0..2 {
+            record(d, "deadline-busy", "", "no lane freed");
+        }
+        clear(d, "9999-12-31T23:59:59.999Z");
+        let value = read_value(&dir);
+        assert_eq!(value["events"].as_array().unwrap().len(), 0, "the clear must drop the route failure");
+        assert_eq!(value["busy"]["count"], 2, "a clear must keep the busy count, or a clean run erases it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_size_cap_trims_events_and_never_the_busy_object() {
+        let dir = scratch("busy-cap");
+        let d = dir.to_str().unwrap();
+        for i in 0..20 {
+            record(d, "node-argv", &format!("/gone/{i}"), &"x".repeat(1000));
+            record(d, "deadline-busy", "", "no lane freed");
+        }
+        let size = std::fs::metadata(dir.join(FILE_NAME)).unwrap().len();
+        assert!(size <= MAX_BYTES, "{size}");
+        assert_eq!(read_value(&dir)["busy"]["count"], 20, "the cap must never trim the busy object");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
