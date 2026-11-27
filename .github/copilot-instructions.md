@@ -51,7 +51,7 @@ Shell binaries and editor programs are commands run through the shell tool, neve
 Exemptions (gate passes, read directly): file under ~200 lines (tokens <file>) and need all of it; unindexed (new/untracked); opaque binary (not image); target has no symbol handle.
 
 Failure shapes to catch yourself in, and the command that replaces each:
-- not knowing which command answers a question you can already state in words → answer "<question>", which runs the right command and refuses rather than guess
+- not knowing which command answers a question you can already state in words → run token-goat answer "<question>" before asking for a command choice; it selects a command and refuses rather than guess
 - a shell text search with context flags to find a function body → read "file" "symbol"
 - paging a function/file or receiving a [tg] range denial → stop range reads; run its exact command, read "file" "symbol" for a definition, read "file" "start-end" for a window, skeleton file for structure, or grep "<pattern>" file -C 15 --symbol for an excerpt
 - reading a symbol plus chasing its callers and containing doc section as separate reads → brief "file::symbol"
@@ -68,7 +68,7 @@ Failure shapes to catch yourself in, and the command that replaces each:
 - checking file size/lines before reading → tokens <file>
 - passing concatenated or unquoted paths to shell tools → verify whitespace and argument separation in multi-path commands (e.g. git add path1 path2, never git add path1path2)
 
-Commands: symbol NAME, tokens <file>, outline <file>, changed --symbol, config-get file KEY, json-outline/yaml-outline/xml-outline, gdrive-sections <file-id>, and token-goat --help for the rest.
+Commands: symbol NAME, answer "<question>", tokens <file>, outline <file>, changed --symbol, config-get file KEY, json-outline/yaml-outline/xml-outline, gdrive-sections <file-id>, and token-goat --help for the rest.
 
 Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.
 

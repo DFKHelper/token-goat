@@ -212,3 +212,8 @@ coverage.json
 artifacts/
 reports/
 
+# Local scratch files and installer backups, not repo content
+.github/copilot-instructions.md.bak.*
+.tg-codex-kmem-measure.mjs
+HOOK_KERNEL_MEMORY_HANDOFF.md
+
