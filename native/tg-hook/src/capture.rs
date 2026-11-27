@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use crate::lanes::{Lanes, class_of};
 use crate::out;
 use crate::sys::Group;
 
@@ -30,6 +31,7 @@ pub struct Outcome {
 #[derive(Debug)]
 pub enum Failure {
     NoCommand,
+    NoLane(String),
     Spawn(String),
     Timeout(Duration),
     Signal,
@@ -41,6 +43,7 @@ impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Failure::NoCommand => write!(f, "no command to run"),
+            Failure::NoLane(why) => write!(f, "no lane: {why}"),
             Failure::Spawn(e) => write!(f, "cannot start: {e}"),
             Failure::Timeout(d) => write!(f, "no answer within {} ms", d.as_millis()),
             Failure::Signal => write!(f, "ended by a signal"),
@@ -178,7 +181,9 @@ pub struct Trace {
     pub stderr_bytes: Option<usize>,
 }
 
-pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, harness: &str, event: &str) -> Result<Outcome, Failure> {
+pub fn exec(lanes: &Lanes, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, harness: &str, event: &str) -> Result<Outcome, Failure> {
+    // Held until the route is reaped, so the lane covers the node process for its whole life.
+    let _lane = lanes.acquire(class_of(event), Instant::now() + timeout).map_err(Failure::NoLane)?;
     exec_traced(argv, stdin, reason, timeout, harness, event, &mut Trace::default())
 }
 
@@ -343,6 +348,40 @@ mod tests {
             err.write_all(&block).expect("stderr was closed by the reader");
         }
         println!("{{}}");
+    }
+
+    /// Lanes in a directory of one test's own, so no other test's holders count against it.
+    fn lanes_for(name: &str) -> Lanes {
+        let dir = std::env::temp_dir().join(format!("tg-cap-lanes-{name}-{}", std::process::id()));
+        Lanes::under(Some(dir.display().to_string()))
+    }
+
+    #[test]
+    #[ignore = "only runs as the started child of the lane test below"]
+    fn marker_child() {
+        let Some(path) = std::env::args().find_map(|a| a.strip_prefix("marker=").map(String::from)) else { return };
+        std::fs::write(path, b"started").expect("write the marker");
+    }
+
+    /// HAND-DERIVED: with both ordinary lanes held, an ordinary route starts no process.
+    #[test]
+    fn an_ordinary_route_with_both_lanes_held_starts_no_process() {
+        let lanes = lanes_for("both-lanes-held");
+        let held: Vec<_> = (0..crate::lanes::ORDINARY_LANES).map(|_| lanes.acquire(crate::lanes::Class::Ordinary, Instant::now()).expect("an ordinary lane is free")).collect();
+        let marker = std::env::temp_dir().join(format!("tg-cap-lanes-marker-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let argv = vec![
+            std::env::current_exe().expect("the test binary path").into_os_string(),
+            OsString::from("--ignored"),
+            OsString::from("--exact"),
+            OsString::from("capture::tests::marker_child"),
+            OsString::from(format!("marker={}", marker.display())),
+        ];
+        let got = exec(&lanes, &argv, Stdin::Null, "test", Duration::ZERO, "claudecode", "PostToolUse").err();
+        assert!(matches!(got, Some(Failure::NoLane(_))), "an ordinary route with both lanes held returned {got:?}, not NoLane");
+        assert!(!marker.exists(), "an ordinary route with both lanes held started a process");
+        drop(held);
+        let _ = std::fs::remove_file(&marker);
     }
 
     fn run_traced(argv: &[OsString]) -> (Result<Outcome, Failure>, Trace) {
@@ -561,7 +600,7 @@ mod tests {
             let route = argv.clone();
             // owner: this test; exec ends the child at its limit, and the thread ends with exec
             std::thread::spawn(move || {
-                let _ = done.send(exec(&route, Stdin::Null, "t", Duration::from_millis(2500), "grok", "pre_tool_use"));
+                let _ = done.send(exec(&lanes_for("hung-route"), &route, Stdin::Null, "t", Duration::from_millis(2500), "grok", "pre_tool_use"));
             });
             let ended = ended.recv_timeout(BACKSTOP).expect("exec did not return");
             assert!(matches!(ended, Err(Failure::Timeout(_))), "the hung route must time out");
@@ -623,7 +662,7 @@ mod tests {
         let test = "capture::tests::exit_parent".into();
         let file = format!("childfile={}", pidfile.display()).into();
         let argv = vec![me, "--ignored".into(), "--exact".into(), test, file];
-        let ended = exec(&argv, Stdin::Null, "t", BACKSTOP, "claudecode", "pre_tool_use");
+        let ended = exec(&lanes_for("route-ends-in-time"), &argv, Stdin::Null, "t", BACKSTOP, "claudecode", "pre_tool_use");
         // The harness header makes the route's stdout "not JSON", a verdict reached only once the route exited by itself.
         match ended {
             Err(Failure::Output(what)) => assert_eq!(what, "not JSON", "the route did not end on its own exit"),
@@ -672,7 +711,7 @@ mod tests {
             // owner: this test; exec ends the route at its limit, and the thread ends with exec
             std::thread::spawn(move || {
                 let limit = Duration::from_millis(2500);
-                let _ = done.send(exec(&route, Stdin::Null, "t", limit, "grok", "pre_tool_use"));
+                let _ = done.send(exec(&lanes_for("timed-out-route"), &route, Stdin::Null, "t", limit, "grok", "pre_tool_use"));
             });
             let ended = ended.recv_timeout(BACKSTOP).expect("exec did not return");
             assert!(matches!(ended, Err(Failure::Timeout(_))), "the hung route must time out");

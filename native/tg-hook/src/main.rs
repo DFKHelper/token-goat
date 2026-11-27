@@ -9,6 +9,7 @@ mod client;
 mod conn;
 mod fallback;
 mod jsstr;
+mod lanes;
 mod nodepath;
 mod notice;
 mod out;

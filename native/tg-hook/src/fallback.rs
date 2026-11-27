@@ -169,7 +169,7 @@ impl Host for Live {
     }
 
     fn exec(&self, argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, opts: &Opts) -> Result<Outcome, capture::Failure> {
-        capture::exec(argv, stdin, reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or(""))
+        capture::exec(&crate::lanes::Lanes::under(self.data_dir()), argv, stdin, reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or(""))
     }
 
     fn record(&self, write: Box<dyn FnOnce() + Send>, deadline: Option<Instant>, wait: out::RecordWait, answer: Answer) -> bool {
