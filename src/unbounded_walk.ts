@@ -1,6 +1,6 @@
 /** Refuses a shell command that walks a whole filesystem root or the home directory with no depth bound, or that starts the Windows `find.exe` text search with nothing to read, because both outlive a timed-out shell and keep burning CPU. The scanner here is its own because the shared ones lose what this rule reads: `shlexSplit` consumes backslashes (so `C:\` and `C:\Windows\System32\find.exe` stop being paths) and `splitShellSegments` drops which operator joined two commands (a piped `find "x"` reads stdin, a chained one waits on it forever) and does not split a subshell. */
 import { refuse, scan, MAX_NESTING, type Segment, type Word, type WalkContext, type WalkRefusal } from './unbounded_walk_scan.js'
-import { anyRoot, cdLandsAtRoot, commandIndex, commandName, EXEC_END, EXEC_PRIMARY, isRelativeStart, isRoot, psAssignment, SKIPPED_KEYWORDS, texts, VALUED_PRIMARY } from './unbounded_walk_words.js'
+import { anyRoot, cdLandsAtRoot, commandIndex, commandName, commandWord, EXEC_END, EXEC_PRIMARY, isRelativeStart, isRoot, runWords, SKIPPED_KEYWORDS, texts, VALUED_PRIMARY } from './unbounded_walk_words.js'
 import {
   atNestingLimit, DIGITS, envOptions, EXTRA_WALKERS, fedText, inspectDu, inspectFd, inspectFindstr, inspectGrep,
   inspectListing, inspectRecursive, inspectRg, inspectTree, nestedScript, SHELLS, WALKER_WORD,
@@ -161,8 +161,11 @@ function inspectSegment(
   next?: Segment,
   prev?: Segment,
 ): WalkRefusal | null {
-  const at = commandIndex(seg.words, ctx)
-  const env = envOptions(seg.words, at)
+  // A PowerShell assignment is a statement whose value, or the command it runs, is the text after its operator.
+  const run = runWords(seg.words, ctx)
+  const words = run === 'obscured' ? seg.words : run
+  const at = commandIndex(words)
+  const env = envOptions(words, at)
   const root = fromRoot || (env.chdir !== undefined && isRoot(env.chdir))
   const sub = (script: string): WalkRefusal | null =>
     depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1, root) : atNestingLimit(script)
@@ -171,20 +174,11 @@ function inspectSegment(
     const hit = sub(script)
     if (hit !== null) return hit
   }
-  const head = seg.words[at]
+  if (run === 'obscured') return refuse('obscured')
+  const head = words[at]
   if (head === undefined) return null
-  // A PowerShell assignment is a statement whose value, or the command it runs, is the text after its operator.
-  const assigned = ctx.powershell ? psAssignment(seg.words, at) : null
-  if (assigned === 'obscured') return refuse('obscured')
-  if (assigned !== null) {
-    // Each `=` in a chain is one nesting level; past the limit the rest of the chain is not read.
-    if (depth >= MAX_NESTING) return refuse('obscured')
-    const after = seg.words.slice(assigned.word + 1)
-    const value = assigned.rest === '' ? after : [{ text: assigned.rest, quoted: false }, ...after]
-    return inspectSegment({ ...seg, words: value, subs: [] }, ctx, depth + 1, fromRoot, next, prev)
-  }
   const { name, dir } = commandName(head.text)
-  const args = seg.words.slice(at + 1)
+  const args = words.slice(at + 1)
   const script = nestedScript(name, args)
   // A shell reads a script from a heredoc, a `<<<` string or a pipe from `echo`, `printf` or `cat`.
   if (SHELLS.has(name) && script === null) {
@@ -198,7 +192,7 @@ function inspectSegment(
   const headVariable = name.includes('$') && name !== '$'
     && !(ctx.powershell && (seg.group !== 0 || /[.[(]/.test(name) || args.every((w) => w.text === '}')))
     && !(args.length === 0 && seg.endOp === '|'
-      && /^([%?]|[A-Z][A-Za-z]+-[A-Z][A-Za-z]+)$/.test(next?.words[commandIndex(next.words, ctx)]?.text ?? ''))
+      && /^([%?]|[A-Z][A-Za-z]+-[A-Z][A-Za-z]+)$/.test(next === undefined ? '' : commandWord(next.words, ctx)))
   if (headVariable && (args.length === 0 || anyRoot(args)
     || (root && args.some((w) => isRelativeStart(w.text))))) return refuse('obscured')
   if (script !== null) {

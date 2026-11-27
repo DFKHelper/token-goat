@@ -493,6 +493,11 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     ['$x.$y = 5'],
     ['[math]::Max(1,2)'],
     [`${DEEP_GROUPS}-x=1`],
+    [String.raw`[int][string]$x = 5`],
+    [String.raw`[string[]]$x = 'a'`],
+    [String.raw`[xml]$d = Get-Content a.xml`],
+    [String.raw`[int] [string]`],
+    [String.raw`[int]`],
   ])('lets %s through', (command) => {
     expect(form(command, POWERSHELL)).toBeNull()
   })
@@ -533,8 +538,31 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     [`${DEEP_GROUPS} = gci C:\\ -Recurse`, 'gci'],
     ['$h[ k = gci C:\\ -Recurse', 'obscured'],
     ['$a=$b=$c=$d=5', 'obscured'],
+    [String.raw`[int] $x = gci C:\ -Recurse`, 'gci'],
+    [String.raw`[int][string]$x = gci C:\ -Recurse`, 'gci'],
+    [String.raw`[int] [string] $x = gci C:\ -Recurse`, 'gci'],
+    [String.raw`[string[]]$x = gci C:\ -Recurse`, 'gci'],
+    [String.raw`[System.Collections.Generic.List[string]]$x = gci C:\ -Recurse`, 'gci'],
+    [String.raw`$script:x = gci C:\ -Recurse`, 'gci'],
+    [String.raw`$env:X = gci C:\ -Recurse`, 'gci'],
+    ['${x} = gci C:\\ -Recurse', 'gci'],
+    [String.raw`! $x = gci C:\ -Recurse`, 'gci'],
+    [String.raw`[int]] $x = gci C:\ -Recurse`, 'obscured'],
+    [String.raw`[int[ $x = gci C:\ -Recurse`, 'obscured'],
+    [String.raw`$a=$b=$c=$d=cd C:\; gci -Recurse`, 'obscured'],
   ])('still refuses %s', (command, expected) => {
     expect(form(command, POWERSHELL)).toBe(expected)
+  })
+
+  it.each([
+    [String.raw`$x=cd C:\; gci -Recurse`, String.raw`cd C:\; gci -Recurse`],
+    [String.raw`$x = cd C:\; gci -Recurse`, String.raw`cd C:\; gci -Recurse`],
+    [String.raw`[int] $x = cd C:\; gci -Recurse`, String.raw`cd C:\; gci -Recurse`],
+    [String.raw`$a=$b=cd C:\; gci -Recurse`, String.raw`cd C:\; gci -Recurse`],
+    [String.raw`$x=echo "find / -name a" | sh`, String.raw`echo "find / -name a" | sh`],
+    [String.raw`$x=cd C:\Projects; gci -Recurse`, String.raw`cd C:\Projects; gci -Recurse`],
+  ])('gives %s the verdict of its bare command', (command, bare) => {
+    expect(form(command, POWERSHELL)).toBe(form(bare, POWERSHELL))
   })
 
   it.each([

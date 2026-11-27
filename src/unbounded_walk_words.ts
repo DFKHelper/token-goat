@@ -1,5 +1,5 @@
 /** Root paths, command words and option tables for the unbounded-walk guard, split out of unbounded_walk.ts. */
-import { type Segment, type Word, type WalkContext } from './unbounded_walk_scan.js'
+import { MAX_NESTING, type Segment, type Word, type WalkContext } from './unbounded_walk_scan.js'
 
 /** True for a filesystem root or the home directory as a start path. A wildcard directly under a drive root (`C:\*.log`) counts when `glob` is set, because `dir /s` and `findstr /s` take it as a search spec. A lone `/x` is a Windows option, not an MSYS drive root, when `winOptions` is set. */
 export function isRoot(text: string, glob = false, winOptions = false): boolean {
@@ -92,26 +92,35 @@ function operatorLength(text: string, k: number): number {
   return text.startsWith('??=', k) ? 3 : 0
 }
 
-/** Whether a word starts a variable target: `$name`, or a bracketed type cast right before one (`[int]$x`). */
-function startsVariableTarget(text: string): boolean {
-  if (text.startsWith('$')) return true
-  if (!text.startsWith('[')) return false
+/** Whether the words from `start` open a variable target: `$name`, or bracketed casts before one (`[int][string]$x`, `[int] [string] $x`); `obscured` for an unmatched `]`. */
+function startsVariableTarget(words: readonly Word[], start: number): boolean | 'obscured' {
   let depth = 0
-  for (let k = 0; k < text.length; k++) {
-    if (text[k] === '[') depth++
-    else if (text[k] === ']' && --depth === 0) return text[k + 1] === '$'
+  let cast = false
+  for (let j = start; j < words.length; j++) {
+    const text = words[j]!.text
+    for (let k = 0; k < text.length; k++) {
+      const c = text[k]!
+      if (depth === 0 && c === '$') return true
+      if (depth === 0 && c !== '[') return c === ']' && cast ? 'obscured' : false
+      if (c === '[') {
+        depth++
+        cast = true
+      } else if (c === ']') depth--
+    }
   }
-  return false
+  return depth > 0 ? 'obscured' : false
 }
 
 /** The assignment whose target starts at word `start`: its operator is the first `=` outside brackets. */
 export function psAssignment(words: readonly Word[], start: number): PsAssignment | 'obscured' | null {
-  if (!startsVariableTarget(words[start]?.text ?? '')) return null
+  const target = startsVariableTarget(words, start)
+  if (target !== true) return target === 'obscured' ? 'obscured' : null
   let depth = 0
+  let named = false
   for (let j = start; j < words.length; j++) {
     const text = words[j]!.text
-    // Whitespace at depth zero may only sit before the operator, so the next word must begin with one.
-    let edge = j > start && depth === 0
+    // Whitespace at depth zero may only sit between casts and the target, or before the operator.
+    let edge = j > start && depth === 0 && (named || !(text.startsWith('[') || text.startsWith('$')))
     for (let k = 0; k < text.length; k++) {
       if (edge && operatorLength(text, k) === 0) return null
       edge = false
@@ -120,6 +129,7 @@ export function psAssignment(words: readonly Word[], start: number): PsAssignmen
       else if (c === ']') {
         if (--depth < 0) return 'obscured'
       } else if (depth === 0) {
+        if (c === '$') named = true
         const length = operatorLength(text, k)
         if (length < 0) return null
         if (length > 0) return { word: j, rest: text.slice(k + length) }
@@ -129,8 +139,30 @@ export function psAssignment(words: readonly Word[], start: number): PsAssignmen
   return depth > 0 ? 'obscured' : null
 }
 
+/** The words a segment runs once its PowerShell assignment prefix is gone (`$x = cd C:\` runs `cd C:\`); `obscured` past the nesting limit. */
+export function runWords(words: readonly Word[], ctx: { readonly powershell: boolean }): readonly Word[] | 'obscured' {
+  if (!ctx.powershell) return words
+  let run = words
+  for (let n = 0; ; n++) {
+    let at = 0
+    while (at < run.length && SKIPPED_KEYWORDS.has(commandName(run[at]!.text).name)) at++
+    const ps = psAssignment(run, at)
+    if (ps === 'obscured') return 'obscured'
+    if (ps === null) return run
+    if (n >= MAX_NESTING) return 'obscured'
+    const after = run.slice(ps.word + 1)
+    run = ps.rest === '' ? after : [{ text: ps.rest, quoted: false }, ...after]
+  }
+}
+
+/** The text of the command word a segment runs once its PowerShell assignment prefix is removed, or '' when it has none or is obscured. */
+export function commandWord(words: readonly Word[], ctx: { readonly powershell: boolean }): string {
+  const run = runWords(words, ctx)
+  return run === 'obscured' ? '' : run[commandIndex(run)]?.text ?? ''
+}
+
 /** The index of the command a segment runs, past the words that only prefix it: assignments, keywords, and wrappers such as `sudo`, `env`, `nice`, `timeout` and `wsl`. */
-export function commandIndex(words: readonly Word[], ctx: { readonly powershell: boolean }): number {
+export function commandIndex(words: readonly Word[]): number {
   let i = 0
   const skipOptions = (valued: readonly string[]): void => {
     while (i < words.length && words[i]!.text.startsWith('-')) i += valued.includes(words[i]!.text) ? 2 : 1
@@ -138,14 +170,9 @@ export function commandIndex(words: readonly Word[], ctx: { readonly powershell:
   while (i < words.length) {
     const text = words[i]!.text
     const { name } = commandName(text)
-    const ps = ctx.powershell ? psAssignment(words, i) : null
     if (/^[A-Za-z_]\w*=/.test(text) || SKIPPED_KEYWORDS.has(name)) {
       i++
       if (KEYWORD_OPTIONS.has(name)) skipOptions(KEYWORD_OPTIONS.get(name)!)
-    } else if (ps !== null && ps !== 'obscured') {
-      // A PowerShell assignment runs the command after its operator, in this word or the next one.
-      if (ps.rest !== '') return i
-      i = ps.word + 1
     } else if (name === 'sudo' || name === 'doas') {
       i++
       skipOptions(SUDO_VALUED)
@@ -199,12 +226,14 @@ const CD_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd', 'set-location', 'sl
 
 /** Whether a directory-changing command leaves the shell in a filesystem root or the home directory (`wasRoot` is where it started, which `cd ..` keeps), or null when the segment changes no directory. `cd -`, `popd` and anything else that lands somewhere unknown count as not a root, so only a visible root target is refused. */
 export function cdLandsAtRoot(seg: Segment, wasRoot: boolean, ctx: WalkContext): boolean | null {
-  const at = commandIndex(seg.words, ctx)
-  const head = seg.words[at]
+  const run = runWords(seg.words, ctx)
+  if (run === 'obscured') return null
+  const at = commandIndex(run)
+  const head = run[at]
   if (head === undefined) return null
   const { name } = commandName(head.text)
   if (!CD_COMMANDS.has(name)) return null
-  const target = positionals(seg.words.slice(at + 1), new Set<string>())[0]
+  const target = positionals(run.slice(at + 1), new Set<string>())[0]
   // A bare `cd` goes home in a POSIX shell, but PowerShell 5.1 only prints the location.
   if (target === undefined) return !ctx.powershell && name !== 'popd' && name !== 'pushd'
   if (isRoot(target.text)) return true

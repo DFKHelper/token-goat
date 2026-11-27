@@ -2,7 +2,7 @@
 import { refuse, type Segment, type Word, type WalkContext, type WalkRefusal } from './unbounded_walk_scan.js'
 import {
   anyRoot, clusterHas, commandIndex, commandName, DU_VALUED, FD_VALUED, GREP_VALUED, isRelativeStart, isRoot,
-  LS_VALUED, positionals, PS_LISTING_VALUED, RG_VALUED, texts, TREE_VALUED,
+  LS_VALUED, positionals, PS_LISTING_VALUED, RG_VALUED, runWords, texts, TREE_VALUED,
 } from './unbounded_walk_words.js'
 
 /** A path operand that starts a walk at a root or home, or none (or `.`) after a `cd` to a root. */
@@ -174,9 +174,11 @@ export function atNestingLimit(script: string): WalkRefusal | null {
 
 /** What a command writes to a pipe that a shell on the other end reads as a script. */
 export function fedText(prev: Segment, ctx: WalkContext): string[] {
-  const at = commandIndex(prev.words, ctx)
-  const rest = prev.words.slice(at + 1).map((w) => w.text)
-  switch (commandName(prev.words[at]?.text ?? '').name) {
+  const run = runWords(prev.words, ctx)
+  if (run === 'obscured') return []
+  const at = commandIndex(run)
+  const rest = run.slice(at + 1).map((w) => w.text)
+  switch (commandName(run[at]?.text ?? '').name) {
     case 'cat':
       return prev.stdin.map((s) => s.text)
     case 'echo':

@@ -1,6 +1,6 @@
 /** Lister and xargs rule tables for the unbounded-walk guard, split out of unbounded_walk.ts. */
 import type { Segment, Word, WalkContext } from './unbounded_walk_scan.js'
-import { commandIndex } from './unbounded_walk_words.js'
+import { commandIndex, runWords } from './unbounded_walk_words.js'
 import { DIGITS } from './unbounded_walk_tools.js'
 
 export const XARGS_VALUED = /^(-[A-Za-z0-9]*[aIdELnPs]|--(arg-file|delimiter|max-args|max-procs))$/
@@ -68,10 +68,12 @@ function listerWordsOk(args: readonly Word[], spec: ListerSpec): boolean {
 
 /** Rule 1: the whole left side of the pipe is one plain command from a short list, with nothing unreadable. */
 function isBoundedLister(left: Segment, ctx: WalkContext): boolean {
-  const head = left.words[0]
+  const run = runWords(left.words, ctx)
+  if (run === 'obscured') return false
+  const head = run[0]
   if (head === undefined || left.redirectedIn || left.pipedIn || left.endOp !== '|') return false
-  if (commandIndex(left.words, ctx) !== 0) return false
-  const args = left.words.slice(1)
+  if (commandIndex(run) !== 0) return false
+  const args = run.slice(1)
   // The one backslash allowed is the printf format `%s\n`, checked below as a whole word.
   const read = head.text === 'printf' ? args.slice(1) : args
   // A glob is read only as an unquoted `ls` word or a quoted `find -name` value, where it names no root.
