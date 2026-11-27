@@ -460,6 +460,52 @@ describe('detectUnboundedWalk -- nesting, obscured command words and indirection
   })
 })
 
+// HAND-DERIVED: PowerShell grammar (assignment statement, expression statement); the first command is the observed false refusal.
+describe('detectUnboundedWalk -- PowerShell assignments and expression statements are not command words', () => {
+  const OBSERVED = String.raw`$dst='C:\Users\zelys\USB-stick-backup-2026-11-25'; robocopy H:\ $dst /E /XD H:\boot H:\efi /XF bootmgr /R:1 /W:1 /NFL /NDL /NP | Select-Object -Last 12; "robocopy rc=$LASTEXITCODE"; $src=Get-ChildItem H:\ -Force -File | Where-Object Name -notin 'bootmgr','setup.exe'; $bk=Get-ChildItem $dst -Force -File; "root files: stick=$($src.Count) backup=$($bk.Count)"; Test-Path "$dst\Fix\fix-startup.cmd"`
+
+  it('accepts the observed backup command', () => {
+    expect(form(OBSERVED, POWERSHELL)).toBeNull()
+  })
+
+  it.each([
+    [String.raw`$dst='C:\Users\me\x'`],
+    ['$n=5'],
+    ['$s=$x'],
+    ['"rc=$LASTEXITCODE"'],
+    ['$x.Count'],
+    [String.raw`$bk=Get-ChildItem $dst -Force -File`],
+    [String.raw`$src=Get-ChildItem .\src -Recurse`],
+  ])('lets %s through', (command) => {
+    expect(form(command, POWERSHELL)).toBeNull()
+  })
+
+  it.each([
+    ['& $cmd C:\\', 'obscured'],
+    ['$x = Get-ChildItem C:\\ -Recurse', 'gci'],
+    ['$x=Get-ChildItem C:\\ -Recurse', 'gci'],
+    ["$x=(Get-ChildItem C:\\ -Recurse)", 'gci'],
+    ["$c='find'; & $c /", 'obscured'],
+    ['$a=$b=Get-ChildItem C:\\ -Recurse', 'gci'],
+    ['$x=$(Get-ChildItem C:\\ -Recurse)', 'gci'],
+  ])('still refuses %s', (command, expected) => {
+    expect(form(command, POWERSHELL)).toBe(expected)
+  })
+
+  it.each([
+    ['$cmd /', 'obscured'],
+    ['"$tool" / -name x', 'obscured'],
+    ['F=find; $F /', 'obscured'],
+  ])('keeps bash %s refused', (command, expected) => {
+    expect(form(command, POSIX)).toBe(expected)
+  })
+
+  it('lets a bash VAR=value prefix assignment through', () => {
+    expect(form('F=/tmp/x ls src', POSIX)).toBeNull()
+    expect(form('F=x find / -name x', POSIX)).toBe('find')
+  })
+})
+
 // HAND-DERIVED: written from what each left side prints; only a bounded lister may feed an xargs walker.
 describe('detectUnboundedWalk -- xargs fed by a bounded lister or by an unknown source', () => {
   it.each([

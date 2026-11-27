@@ -173,6 +173,14 @@ function inspectSegment(
   }
   const head = seg.words[at]
   if (head === undefined) return null
+  // A PowerShell `$x=value` or `$x=Cmd args` is an assignment: the word after `=` is the value or the command the statement runs.
+  const assigned = ctx.powershell ? /^\$\{?[\w:]+\}?[-+*/%]?=(.+)$/s.exec(head.text) : null
+  if (assigned !== null) {
+    const rest = assigned[1]!
+    const runs = /^[A-Za-z][\w.-]*$/.test(rest) || /^\$\{?[\w:]+\}?[-+*/%]?=./s.test(rest)
+    const words = runs ? [{ text: rest, quoted: false }, ...seg.words.slice(at + 1)] : seg.words.slice(at + 1)
+    return words.length === 0 ? null : inspectSegment({ ...seg, words, subs: [] }, ctx, depth, fromRoot, next, prev)
+  }
   const { name, dir } = commandName(head.text)
   const args = seg.words.slice(at + 1)
   const script = nestedScript(name, args)
