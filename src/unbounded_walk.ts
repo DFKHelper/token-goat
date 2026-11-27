@@ -1,6 +1,6 @@
 /** Refuses a shell command that walks a whole filesystem root or the home directory with no depth bound, or that starts the Windows `find.exe` text search with nothing to read, because both outlive a timed-out shell and keep burning CPU. The scanner here is its own because the shared ones lose what this rule reads: `shlexSplit` consumes backslashes (so `C:\` and `C:\Windows\System32\find.exe` stop being paths) and `splitShellSegments` drops which operator joined two commands (a piped `find "x"` reads stdin, a chained one waits on it forever) and does not split a subshell. */
 import { refuse, scan, MAX_NESTING, type Segment, type Word, type WalkContext, type WalkRefusal } from './unbounded_walk_scan.js'
-import { anyRoot, cdLandsAtRoot, commandIndex, commandName, EXEC_END, EXEC_PRIMARY, isRelativeStart, isRoot, SKIPPED_KEYWORDS, texts, VALUED_PRIMARY } from './unbounded_walk_words.js'
+import { anyRoot, cdLandsAtRoot, commandIndex, commandName, EXEC_END, EXEC_PRIMARY, isRelativeStart, isRoot, PS_ASSIGN_HEAD, SKIPPED_KEYWORDS, texts, VALUED_PRIMARY } from './unbounded_walk_words.js'
 import {
   atNestingLimit, DIGITS, envOptions, EXTRA_WALKERS, fedText, inspectDu, inspectFd, inspectFindstr, inspectGrep,
   inspectListing, inspectRecursive, inspectRg, inspectTree, nestedScript, SHELLS, WALKER_WORD,
@@ -174,12 +174,10 @@ function inspectSegment(
   const head = seg.words[at]
   if (head === undefined) return null
   // A PowerShell `$x=value` or `$x=Cmd args` is an assignment: the word after `=` is the value or the command the statement runs.
-  const assigned = ctx.powershell ? /^\$\{?[\w:]+\}?(?:\.\w+|\[[^\]=]*\])*[-+*/%]?=(.+)$/s.exec(head.text) : null
+  const assigned = ctx.powershell ? PS_ASSIGN_HEAD.exec(head.text) : null
   if (assigned !== null) {
     const rest = assigned[1]!
     const after = seg.words.slice(at + 1)
-    // A lone value runs nothing unless it is a bare command name, so only that one is read as a command.
-    if (after.length === 0 && !/^[A-Za-z][\w.-]*$/.test(rest)) return null
     // Each `=` in a chain is one nesting level; past the limit the rest of the chain is not read.
     if (depth >= MAX_NESTING) return refuse('obscured')
     return inspectSegment({ ...seg, words: [{ text: rest, quoted: false }, ...after], subs: [] }, ctx, depth + 1, fromRoot, next, prev)

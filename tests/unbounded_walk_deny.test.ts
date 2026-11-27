@@ -473,6 +473,10 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     ['$n=5'],
     ['$x=5'],
     ['$x=C:/tools/fd.exe . .'],
+    ['$o.Prop = 5'],
+    ["$h[k] = 'a'"],
+    ["$x='abc'"],
+    ['cd C:/; $x=5'],
     ['$s=$x'],
     ['"rc=$LASTEXITCODE"'],
     ['$x.Count'],
@@ -495,6 +499,15 @@ describe('detectUnboundedWalk -- PowerShell assignments and expression statement
     ['$x=$cmd C:\\', 'obscured'],
     ['$o.Prop=gci C:\\ -Recurse', 'gci'],
     ['$h[k]=gci C:\\ -Recurse', 'gci'],
+    ['$o.Prop= gci C:\\ -Recurse', 'gci'],
+    ['$o.Prop = gci C:\\ -Recurse', 'gci'],
+    ['$h[k]= gci C:\\ -Recurse', 'gci'],
+    ['$h[k] = gci C:\\ -Recurse', 'gci'],
+    ['cd C:/; $x=C:/tools/fd.exe', 'fd'],
+    ["cd C:/; $x='C:/tools/fd.exe'", 'fd'],
+    [String.raw`cd C:/; $x=.\fd.exe`, 'fd'],
+    ['$a=$b=$c=gci C:\\ -Recurse', 'gci'],
+    ['$a=$b=$c=$d=gci C:\\ -Recurse', 'obscured'],
   ])('still refuses %s', (command, expected) => {
     expect(form(command, POWERSHELL)).toBe(expected)
   })

@@ -79,6 +79,15 @@ const SUDO_VALUED = [
   '-u', '-g', '-C', '-h', '-p', '-U', '-D', '-R', '-T', '--user', '--group', '--host', '--prompt',
   '--chdir', '--chroot', '--role', '--type', '--other-user', '--close-from', '--command-timeout']
 
+/** PowerShell assignment target shapes: a variable with optional `.Member` or `[index]` links; the heads are `$x=v`, `$o.P=` and `$h[k]`. */
+const PS_TARGET = String.raw`\$\{?[\w:]+\}?(?:\.\w+|\[[^\]=]*\])*`
+
+export const PS_ASSIGN_HEAD = new RegExp(`^${PS_TARGET}[-+*/%]?=(.+)$`, 's')
+
+export const PS_ASSIGN_OP_WORD = new RegExp(`^${PS_TARGET}[-+*/%]?=$`)
+
+export const PS_TARGET_WORD = new RegExp(`^${PS_TARGET}$`)
+
 /** The index of the command a segment runs, past the words that only prefix it: assignments, keywords, and wrappers such as `sudo`, `env`, `nice`, `timeout` and `wsl`. */
 export function commandIndex(words: readonly Word[]): number {
   let i = 0
@@ -91,10 +100,10 @@ export function commandIndex(words: readonly Word[]): number {
     if (/^[A-Za-z_]\w*=/.test(text) || SKIPPED_KEYWORDS.has(name)) {
       i++
       if (KEYWORD_OPTIONS.has(name)) skipOptions(KEYWORD_OPTIONS.get(name)!)
-    } else if (/^\$\{?[\w:]+\}?[-+*/%]?=$/.test(text)) {
+    } else if (PS_ASSIGN_OP_WORD.test(text)) {
       // A PowerShell assignment, `$x= cmd`, runs the command that follows it.
       i++
-    } else if (/^\$\{?[\w:]+\}?$/.test(text) && /^[-+*/%]?=$/.test(words[i + 1]?.text ?? '')) {
+    } else if (PS_TARGET_WORD.test(text) && /^[-+*/%]?=$/.test(words[i + 1]?.text ?? '')) {
       // A PowerShell assignment, `$x = cmd`.
       i += 2
     } else if (name === 'sudo' || name === 'doas') {
