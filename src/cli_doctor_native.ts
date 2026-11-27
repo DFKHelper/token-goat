@@ -265,16 +265,30 @@ export function checkNativeEntryPaths(wiring: NativeWiring): DoctorResult | null
 }
 
 /** FAIL when the native client had to leave its first route (a missing node, shim or bundle entry, a crash) and answered from a fallback route or the safe no-op: the hooks still ran or failed open, but something an install should have kept in place is gone. `install` clears the notice. */
-export function checkHookBroken(home: string): DoctorResult | null {
+export function checkHookBroken(home: string): DoctorResult[] {
   const notice = readHookBroken(home)
-  if (notice === undefined) return null
-  const last = notice.events[notice.events.length - 1]
-  const what = last === undefined ? 'an unknown piece' : `${last.route}${last.path === '' ? '' : ` ${displaySafeText(last.path)}`}: ${displaySafeText(last.error)}`
-  return {
+  if (notice === undefined) return []
+  const busy = notice.events.filter((e) => e.route === 'deadline-busy')
+  const failures = notice.events.filter((e) => e.route !== 'deadline-busy')
+  const rows: DoctorResult[] = []
+  if (busy.length > 0) {
+    rows.push({
+      name: 'Hook busy answers',
+      status: 'ok',
+      message: `${String(busy.length)} hook call${busy.length === 1 ? ' was' : 's were'} answered busy: no lane freed before the deadline, so the host was told to run ${busy.length === 1 ? 'it' : 'them'} again; this is contention, not damage, and needs no reinstall (${HOOK_BROKEN_FILE})`,
+    })
+  }
+  const last = failures[failures.length - 1]
+  if (last === undefined) return rows
+  // notice.count counts every event, busy ones included, so the busy events kept here are taken out of it.
+  const routeFailures = notice.count - busy.length
+  const what = `${last.route}${last.path === '' ? '' : ` ${displaySafeText(last.path)}`}: ${displaySafeText(last.error)}`
+  rows.push({
     name: 'Hook fallback',
     status: 'fail',
-    message: `hook calls left their first route ${String(notice.count)} time${notice.count === 1 ? '' : 's'} between ${notice.first} and ${notice.last}; last: ${what} (${HOOK_BROKEN_FILE}); run ${fencedCommand('token-goat install')} to repair it`,
-  }
+    message: `hook calls left their first route ${String(routeFailures)} time${routeFailures === 1 ? '' : 's'} between ${notice.first} and ${notice.last}; last: ${what} (${HOOK_BROKEN_FILE}); run ${fencedCommand('token-goat install')} to repair it`,
+  })
+  return rows
 }
 
 /** The per-harness hook counts, or none when the stats database is missing or unreadable: a damaged global.db is the Database row's finding (`checkDbExists`), and must not stop doctor before it prints. */
@@ -295,5 +309,5 @@ export function checkNativeHooks(dbPath: string): DoctorResult[] {
   const wiringRows = nativeWirings()
     .flatMap((w) => [checkNativeHookWiring(w, avail, counts), checkNativeEntryPaths(w)])
     .filter((r): r is DoctorResult => r !== null)
-  return broken === null ? wiringRows : [broken, ...wiringRows]
+  return [...broken, ...wiringRows]
 }

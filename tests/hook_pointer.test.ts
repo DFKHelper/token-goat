@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { ADAPTER_HARNESSES, noopOutputs } from '../src/hook_adapters.js'
+import { checkHookBroken } from '../src/cli_doctor_native.js'
 import { clearHookBroken, hookBrokenPath, hookPointerPath, readHookBroken, readHookPointer, validateHookPointer, writeHookPointer } from '../src/hook_pointer.js'
 
 interface Case {
@@ -142,6 +143,34 @@ describe('the hook-broken notice', () => {
     const home = scratch()
     fs.writeFileSync(hookBrokenPath(home), '{"schema":9}')
     expect(readHookBroken(home)).toBeUndefined()
+  })
+})
+
+// HAND-DERIVED: the notice events are written as native deadline.rs / fallback.rs record them (route names as written there).
+describe('checkHookBroken splits busy answers from route failures', () => {
+  const busy = { time: 't', route: 'deadline-busy', path: '', error: 'no lane freed before the deadline; the host was told to run the call again' }
+  const failure = { time: 't', route: 'node-argv', path: '/x', error: 'cannot start' }
+  function writeNotice(home: string, events: readonly object[], count: number): void {
+    fs.writeFileSync(hookBrokenPath(home), JSON.stringify({ schema: 1, first: 'a', last: 'b', count, events }))
+  }
+
+  it('gives one non-fail busy row and no FAIL when every event is a busy answer', () => {
+    const home = scratch()
+    writeNotice(home, [busy, busy], 2)
+    expect(checkHookBroken(home)).toEqual([{ name: 'Hook busy answers', status: 'ok', message: expect.stringContaining('2 hook calls were answered busy') }])
+  })
+
+  it('gives a FAIL row counting only the route failure, beside the busy row', () => {
+    const home = scratch()
+    writeNotice(home, [busy, failure, busy], 3)
+    expect(checkHookBroken(home)).toEqual([
+      { name: 'Hook busy answers', status: 'ok', message: expect.stringContaining('2 hook calls were answered busy') },
+      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route 1 time ') },
+    ])
+  })
+
+  it('gives no row at all without a notice', () => {
+    expect(checkHookBroken(scratch())).toEqual([])
   })
 })
 

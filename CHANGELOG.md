@@ -7,6 +7,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### Fixed
 
 - **The opencode plugin loads on opencode v2 as well as v1.** opencode v2 refused the generated file with "Plugin must export a default definition with an id and an effect or setup function", so the token-goat hooks never ran there. The file now has a default export that carries `server()` for v1 and `setup()` for v2, and the v2 hooks relay the same events as v1. An older v1-only file is replaced on `install --opencode` or `doctor --fix`. Reported in #65.
+- **`doctor` no longer reports a FAIL for hook calls that were answered busy under lane contention.** Those calls get their own non-fail row, and the `Hook fallback` FAIL counts only route failures.
 
 ### Added
 

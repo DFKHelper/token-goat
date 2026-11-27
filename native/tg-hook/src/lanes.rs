@@ -174,6 +174,15 @@ mod tests {
         }
     }
 
+    /// Sets the stop flag on every exit from its scope, a panic included, so the thread that loops on it ends.
+    struct StopOnDrop<'a>(&'a std::sync::atomic::AtomicBool);
+
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
     fn hold_ordinary(lanes: &Lanes) -> Vec<Lane> {
         (0..ORDINARY_LANES).map(|_| lanes.acquire(Class::Ordinary, Instant::now()).expect("an ordinary lane is free")).collect()
     }
@@ -261,6 +270,7 @@ mod tests {
         let mut silent = Vec::new();
         let mut dead = Vec::new();
         std::thread::scope(|scope| {
+            let _stop_clearing = StopOnDrop(&stop);
             scope.spawn(|| {
                 while !stop.load(std::sync::atomic::Ordering::Acquire) {
                     {
@@ -283,16 +293,18 @@ mod tests {
                         match reported.recv_timeout(HOLDER_REPORT_CEILING) {
                             Ok(true) => {}
                             Ok(false) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => dead.push(n),
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => silent.push(n),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                silent.push(n);
+                                break;
+                            }
                         }
                     }
                     None => dead.push(n),
                 }
                 drop(holder);
             }
-            stop.store(true, std::sync::atomic::Ordering::Release);
         });
-        assert!(silent.is_empty(), "holder children wrote no report within {HOLDER_REPORT_CEILING:?}: {silent:?} of 60");
+        assert!(silent.is_empty(), "holder child wrote no report within {HOLDER_REPORT_CEILING:?}, the loop stopped there: {silent:?}");
         assert!(dead.is_empty(), "holder children started with dead stdio (exit 0, no report): {dead:?} of 60");
     }
 }
