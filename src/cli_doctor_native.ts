@@ -271,7 +271,10 @@ export function checkHookBroken(home: string): DoctorResult[] {
   // Busy answers and lane-folder notes written before their objects existed are still events; the native client now counts new ones in `busy` and `laneDir` only.
   const oldBusy = notice.events.filter((e) => e.route === 'deadline-busy')
   const oldLane = notice.events.filter((e) => e.route === 'lane-dir')
-  const failures = notice.events.filter((e) => e.route !== 'deadline-busy' && e.route !== 'lane-dir')
+  const routed = notice.events.filter((e) => e.route !== 'deadline-busy' && e.route !== 'lane-dir')
+  // A safe-answer note shares its call's stamp with that call's route failure, so it counts only when it is the call's one note.
+  const failures = routed.filter((e) => e.route !== 'safe-answer' || !routed.some((o) => o.route !== 'safe-answer' && o.time === e.time))
+  const calls = new Set(failures.map((e) => e.time)).size
   const busyCount = (notice.busy?.count ?? 0) + oldBusy.length
   const rows: DoctorResult[] = []
   if (busyCount > 0) {
@@ -292,15 +295,15 @@ export function checkHookBroken(home: string): DoctorResult[] {
   }
   const last = failures[failures.length - 1]
   if (last === undefined) return rows
-  // Old-format busy and lane-folder events stay in notice.count after the window drops them, so the count is exact only when none is in the window.
-  const oldInWindow = oldBusy.length + oldLane.length > 0
-  const routeFailures = oldInWindow ? failures.length : notice.count
-  const times = oldInWindow ? `at least ${String(routeFailures)}` : String(routeFailures)
-  const what =`${last.route}${last.path === '' ? '' : ` ${displaySafeText(last.path)}`}: ${displaySafeText(last.error)}`
+  // notice.count is exact only when the writer split out busy and lane-folder notes, or when it equals the calls still in the window; an old-format count can hold notes the window dropped.
+  const exact = notice.busy !== undefined || notice.laneDir !== undefined || notice.count === calls
+  const shown = exact ? notice.count : calls
+  const times = exact ? String(shown) : `at least ${String(shown)}`
+  const what = `${last.route}${last.path === '' ? '' : ` ${displaySafeText(last.path)}`}: ${displaySafeText(last.error)}`
   rows.push({
     name: 'Hook fallback',
     status: 'fail',
-    message: `hook calls left their first route ${times} time${routeFailures === 1 ? '' : 's'} between ${notice.first} and ${notice.last}; last: ${what} (${HOOK_BROKEN_FILE}); run ${fencedCommand('token-goat install')} to repair it`,
+    message: `hook calls left their first route ${times} time${shown === 1 ? '' : 's'} between ${notice.first} and ${notice.last}; last: ${what} (${HOOK_BROKEN_FILE}); run ${fencedCommand('token-goat install')} to repair it`,
   })
   return rows
 }

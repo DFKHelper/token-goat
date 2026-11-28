@@ -267,7 +267,7 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
     let harness = opts.harness.as_str();
     let event = opts.event.as_deref().unwrap_or("");
     if lane_busy || lane_unusable.is_some() {
-        // A call that waited for a lane writes only its own note, never the route failures gathered before the wait.
+        // A busy answer writes the route failures gathered before the lane wait with its own note; an unusable lane folder writes only its note.
         let busy = deadline::deadline_answer(harness, event, bytes.as_deref()) == deadline::Deadline::Busy;
         let answer = if busy { Answer::Busy } else { Answer::Safe };
         match lane_unusable {
@@ -276,7 +276,7 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
             }
             None if busy => {
                 let busy_note = (notice::BUSY_ROUTE, String::new(), "no lane freed before the deadline; the host was told to run the call again".to_string());
-                record_notes(vec![busy_note], data_dir.clone(), opts.deadline, host, answer);
+                record_notes(pending_notes(Some(busy_note)), data_dir.clone(), opts.deadline, host, answer);
             }
             None => {
                 host.record(Box::new(|| {}), opts.deadline, out::RecordWait::Grace, answer);
@@ -284,17 +284,24 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
         }
         return Ended::SafeAnswered;
     }
-    let safe_note = ("safe-answer", String::new(), "every route failed; the host was given its safe answer".to_string());
-    record_notes(pending_notes(Some(safe_note)), data_dir.clone(), opts.deadline, host, Answer::Safe);
+    record_notes(safe_answer_notes(pending_notes(None)), data_dir.clone(), opts.deadline, host, Answer::Safe);
     Ended::SafeAnswered
 }
 
 /// One failure a route left behind: the route, the path to blame and the error.
 type Note = (&'static str, String, String);
 
-/// What the exit waits for `pending`: a note recorded after a route failed is a broken-install signal and is waited for like the fail-open notice; with none pending only the grace.
+/// What the exit waits for `pending`: a note recorded after a route failed is a broken-install signal and is waited for like the fail-open notice; busy and lane-folder notes are contention, so only the grace.
 fn note_wait(pending: &[Note]) -> out::RecordWait {
-    if pending.is_empty() { out::RecordWait::Grace } else { out::RecordWait::Deadline }
+    if pending.iter().all(|note| note.0 == notice::BUSY_ROUTE || note.0 == notice::LANE_DIR_ROUTE) { out::RecordWait::Grace } else { out::RecordWait::Deadline }
+}
+
+/// The notes a call that gave the safe answer writes: its route failures, or its safe-answer note alone when it had none, so one call counts once.
+fn safe_answer_notes(mut pending: Vec<Note>) -> Vec<Note> {
+    if pending.is_empty() {
+        pending.push(("safe-answer", String::new(), "every route failed; the host was given its safe answer".to_string()));
+    }
+    pending
 }
 
 /// Writes `pending` into `data_dir` through `host`, which waits as [`note_wait`] says and gives the safe answer first when `answer` says so.
@@ -569,21 +576,58 @@ mod tests {
         assert_eq!(records, [("safe answer first", "deadline")], "the safe-answer note must go through the host's record, after the answer, waited for to the deadline");
     }
 
-    /// HAND-DERIVED: a call whose routes all failed for other reasons records each route failure and then the safe-answer note.
+    /// HAND-DERIVED: a call whose routes all failed for other reasons records each route failure and no safe-answer note beside them.
     #[test]
-    fn a_call_whose_routes_all_failed_records_its_route_notes_and_the_safe_answer() {
+    fn a_call_whose_routes_all_failed_records_its_route_failures_and_no_safe_answer_note() {
         let (_, _, noted, _) = drive_call("all-failed-notes", "codex", b"{}", vec![Err(capture::Failure::Exit(1)), Err(capture::Failure::Exit(1))]);
-        assert_eq!(noted, ["node-argv", "node-pointer", "safe-answer"], "a call whose routes failed for other reasons must record each route failure and the safe-answer note");
+        assert_eq!(noted, ["node-argv", "node-pointer"], "a call whose routes failed must record each route failure and no safe-answer note, which would count the call twice");
     }
 
-    /// HAND-DERIVED: a lane-busy write call answered busy counts one busy answer and writes no event, not the route failure before its lane wait.
+    /// HAND-DERIVED: a call that gave the safe answer with no route failure to show writes its safe-answer note as its one event.
     #[test]
-    fn a_lane_busy_write_call_counts_one_busy_answer_and_no_event() {
+    fn a_safe_answer_with_no_route_failure_keeps_its_safe_answer_note_as_its_one_note() {
+        let notes = safe_answer_notes(Vec::new());
+        assert_eq!(notes.iter().map(|note| note.0).collect::<Vec<_>>(), ["safe-answer"], "a call with no route failure must keep its safe-answer note, so a failed call is never invisible to doctor");
+    }
+
+    /// HAND-DERIVED: a safe answer beside a route failure writes only that failure, so one call counts once.
+    #[test]
+    fn a_safe_answer_beside_a_route_failure_writes_only_the_failure() {
+        let failure = ("node-argv", "/x".to_string(), "cannot start".to_string());
+        let notes = safe_answer_notes(vec![failure]);
+        assert_eq!(notes.iter().map(|note| note.0).collect::<Vec<_>>(), ["node-argv"], "a call with a route failure must not also write its safe-answer note");
+    }
+
+    /// HAND-DERIVED: a note wait is the grace when every pending note is a busy or lane-folder note, and the deadline otherwise.
+    #[test]
+    fn note_wait_grants_only_the_grace_when_every_pending_note_is_busy_or_lane_dir() {
+        let note = |route: &'static str| (route, String::new(), String::new());
+        assert!(matches!(note_wait(&[]), out::RecordWait::Grace), "no pending note must wait the grace only");
+        assert!(matches!(note_wait(&[note(notice::BUSY_ROUTE)]), out::RecordWait::Grace), "busy-only notes must not wait the whole deadline");
+        assert!(matches!(note_wait(&[note(notice::LANE_DIR_ROUTE)]), out::RecordWait::Grace), "lane-folder-only notes must not wait the whole deadline");
+        assert!(matches!(note_wait(&[note(notice::BUSY_ROUTE), note(notice::LANE_DIR_ROUTE)]), out::RecordWait::Grace), "busy and lane-folder notes together must wait the grace only");
+        assert!(matches!(note_wait(&[note("node-argv"), note(notice::BUSY_ROUTE)]), out::RecordWait::Deadline), "a route failure beside a busy note must wait to the deadline");
+        assert!(matches!(note_wait(&[note("safe-answer")]), out::RecordWait::Deadline), "a safe-answer note must wait to the deadline");
+    }
+
+    /// HAND-DERIVED: a write call whose lane was busy with no route failure before it waits only the grace for its busy note.
+    #[test]
+    fn a_busy_only_write_call_waits_only_the_grace_for_its_busy_note() {
+        let routes = vec![Err(capture::Failure::NoLane(crate::lanes::LaneError::Busy)), Err(capture::Failure::NoLane(crate::lanes::LaneError::Busy))];
+        let (records, _, noted, (busy, _)) = drive_call("busy-only-write", "claudecode", br#"{"tool_name":"Write","tool_input":{}}"#, routes);
+        assert_eq!(records, [("busy answer first", "grace")], "a busy-only write call must wait only the grace for its busy note");
+        assert!(noted.is_empty(), "a busy-only write call must write no event; it wrote {noted:?}");
+        assert_eq!(busy, 1, "a busy-only write call must count its one busy answer");
+    }
+
+    /// HAND-DERIVED: a lane-busy write call answered busy counts one busy answer and writes the route failure gathered before its lane wait.
+    #[test]
+    fn a_lane_busy_write_call_counts_one_busy_answer_and_keeps_its_route_failure() {
         let routes = vec![Err(capture::Failure::Exit(1)), Err(capture::Failure::NoLane(crate::lanes::LaneError::Busy))];
         let (records, ended, noted, (busy, _)) = drive_call("lane-busy-write", "claudecode", br#"{"tool_name":"Write","tool_input":{}}"#, routes);
         assert!(matches!(ended, Ended::SafeAnswered));
-        assert_eq!(records, [("busy answer first", "deadline")], "a lane-busy write call must be answered busy, its note waited for to the deadline");
-        assert!(noted.is_empty(), "a lane-busy write call must write no event, not the route failure gathered before its lane wait; it wrote {noted:?}");
+        assert_eq!(records, [("busy answer first", "deadline")], "a lane-busy write call with a route failure must be answered busy, its notes waited for to the deadline");
+        assert_eq!(noted, ["node-argv"], "a lane-busy write call must write the route failure gathered before its lane wait; it wrote {noted:?}");
         assert_eq!(busy, 1, "a lane-busy write call must count its one busy answer in the busy object");
     }
 
@@ -604,7 +648,7 @@ mod tests {
         let routes = vec![Err(capture::Failure::NoLane(crate::lanes::LaneError::Unusable(why.clone()))), Err(capture::Failure::NoLane(crate::lanes::LaneError::Unusable(why)))];
         let (records, ended, noted, (_, lane)) = drive_call("unusable-write", "claudecode", br#"{"tool_name":"Write","tool_input":{}}"#, routes);
         assert!(matches!(ended, Ended::SafeAnswered));
-        assert_eq!(records, [("busy answer first", "deadline")], "an unusable lane folder must answer a write call busy, its note waited for to the deadline");
+        assert_eq!(records, [("busy answer first", "grace")], "an unusable lane folder must answer a write call busy, its note waited for only the grace");
         assert!(noted.is_empty(), "an unusable lane folder must write no event, not a node route failure; it wrote {noted:?}");
         assert_eq!(lane, 1, "an unusable lane folder must count one note in the laneDir object");
     }
@@ -616,7 +660,7 @@ mod tests {
         let routes = vec![Err(capture::Failure::NoLane(crate::lanes::LaneError::Unusable(why.clone()))), Err(capture::Failure::NoLane(crate::lanes::LaneError::Unusable(why)))];
         let (records, ended, noted, (_, lane)) = drive_call("unusable-read", "claudecode", br#"{"tool_name":"Read","tool_input":{}}"#, routes);
         assert!(matches!(ended, Ended::SafeAnswered));
-        assert_eq!(records, [("safe answer first", "deadline")], "an unusable lane folder must give a read-only call the safe answer");
+        assert_eq!(records, [("safe answer first", "grace")], "an unusable lane folder must give a read-only call the safe answer, its note waited for only the grace");
         assert!(noted.is_empty(), "an unusable lane folder must write no event, not a node route failure; it wrote {noted:?}");
         assert_eq!(lane, 1, "an unusable lane folder must count one note in the laneDir object");
     }

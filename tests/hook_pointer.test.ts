@@ -209,6 +209,52 @@ describe('checkHookBroken splits busy answers from route failures', () => {
     ])
   })
 
+  it('counts a call once when its safe-answer note shares the stamp of its route failure', () => {
+    const home = scratch()
+    const route = { time: 't1', route: 'node-argv', path: '/x', error: 'cannot start' }
+    const safe = { time: 't1', route: 'safe-answer', path: '', error: 'every route failed; the host was given its safe answer' }
+    writeNotice(home, [route, safe], 2)
+    expect(checkHookBroken(home)).toEqual([
+      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route at least 1 time ') },
+    ])
+  })
+
+  it('still counts a call whose only note is its safe answer', () => {
+    const home = scratch()
+    const safe = { time: 't2', route: 'safe-answer', path: '', error: 'every route failed; the host was given its safe answer' }
+    writeNotice(home, [safe], 1)
+    expect(checkHookBroken(home)).toEqual([
+      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route 1 time ') },
+    ])
+  })
+
+  it('prints an old-format count that the window cannot confirm as at least the route failures in it', () => {
+    const home = scratch()
+    const failures = Array.from({ length: 8 }, (_, i) => ({ time: `t${String(i)}`, route: 'node-argv', path: '/x', error: 'cannot start' }))
+    writeNotice(home, failures, 28)
+    expect(checkHookBroken(home)).toEqual([
+      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route at least 8 times ') },
+    ])
+  })
+
+  it('prints the exact count when the notice holds a busy object', () => {
+    const home = scratch()
+    const failures = Array.from({ length: 3 }, (_, i) => ({ time: `t${String(i)}`, route: 'node-argv', path: '/x', error: 'cannot start' }))
+    fs.writeFileSync(hookBrokenPath(home), JSON.stringify({ schema: 1, first: 'a', last: 'b', count: 3, events: failures, busy: { count: 2, first: 'a', last: 'b' } }))
+    expect(checkHookBroken(home)).toEqual([
+      { name: 'Hook busy answers', status: 'ok', message: expect.stringContaining('2 hook calls were answered busy') },
+      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route 3 times ') },
+    ])
+  })
+
+  it('never prints undefined in a row for a busy-only or lane-folder-only notice', () => {
+    const home = scratch()
+    fs.writeFileSync(hookBrokenPath(home), JSON.stringify({ schema: 1, count: 0, events: [], busy: { count: 4, first: 'a', last: 'b' } }))
+    expect(JSON.stringify(checkHookBroken(home))).not.toContain('undefined')
+    fs.writeFileSync(hookBrokenPath(home), JSON.stringify({ schema: 1, count: 0, events: [], laneDir: { count: 4, first: 'a', last: 'b', why: 'lane directory C:/x/hook-lanes: denied' } }))
+    expect(JSON.stringify(checkHookBroken(home))).not.toContain('undefined')
+  })
+
   it('gives no row at all without a notice', () => {
     expect(checkHookBroken(scratch())).toEqual([])
   })
