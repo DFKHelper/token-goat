@@ -7,11 +7,7 @@ import * as path from 'node:path'
 
 import { foldPath } from './path_containment.js'
 
-/** Block the calling thread for `ms` milliseconds without spawning a process. Uses `Atomics.wait` on a throwaway SharedArrayBuffer: the wait never resolves (no other thread writes to it), so it always times out after `ms`. This is a true synchronous sleep, unlike a busy-loop, and burns no CPU. */
-export function sleepSync(ms: number): void {
-  if (ms <= 0) return
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-}
+export { sleepSync } from './process_gone.js'
 
 /** Check if running on Windows. */
 export function isWindows(): boolean {

@@ -1,13 +1,10 @@
-// A POSIX SIGKILL ends a process only when the kernel has let it go, so a kill reports done only after the pid is observed gone. Provenance: HAND-DERIVED from the rule (a SIGKILLed pid answers signal 0 until it is reaped), with the probe count injected through kill_spy.ts; the pause between checks is mocked, so no clock is read.
-import type * as ProcessUtilModule from '../src/process_util.js'
-
-import { afterEach, describe, expect, it, vi } from 'vitest'
+// A POSIX SIGKILL ends a process only when the kernel has let it go, so a kill reports done only after the pid is observed gone. Provenance: HAND-DERIVED from the rule (a SIGKILLed pid answers signal 0 until it is reaped), with the probe count injected through kill_spy.ts; Atomics.wait, the only sleep under the pause between checks, is stubbed, so no clock is read.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type KillSpy, spyProcessKill } from './helpers/kill_spy.js'
 
-vi.mock('../src/process_util.js', async (importOriginal) => {
-  const real = await importOriginal<typeof ProcessUtilModule>()
-  return { ...real, sleepSync: () => undefined }
+beforeEach(() => {
+  vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out')
 })
 
 const { terminateProcessTree } = await import('../src/resident_process.js')
