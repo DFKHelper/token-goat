@@ -6,7 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
-- A hook child is ended on every exit path, and hook lanes no longer fall back to the temp folder.
+- A hook child's whole process group is ended when its owner returns early, and hook lanes no longer fall back to the temp folder.
 - **The opencode plugin loads on opencode v2 as well as v1.** opencode v2 refused the generated file with "Plugin must export a default definition with an id and an effect or setup function", so the token-goat hooks never ran there. The file now has a default export that carries `server()` for v1 and `setup()` for v2, and the v2 hooks relay the same events as v1. An older v1-only file is replaced on `install --opencode` or `doctor --fix`. Reported in #65.
 - **`doctor` no longer reports a FAIL for hook calls that were answered busy under lane contention.** Those calls get their own non-fail row, and the `Hook fallback` FAIL counts each failed hook call once, by its route failure; a call that gave the safe answer with no route failure to show still counts. Busy answers are counted in a separate `busy` object in `hook-broken.json`, so a burst of them no longer pushes a real route failure out of the notice. An unusable hook lane folder is counted in its own `laneDir` object and a non-fail `Hook lane folder` row, never as a route failure. A notice with neither a `busy` nor a `laneDir` object, whose count does not match the calls in its window (an older format), reports its route failures as at least that many, never its raw count. A clean hook call no longer rewrites `hook-broken.json` when it has nothing to drop.
 

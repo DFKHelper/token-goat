@@ -267,19 +267,19 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
     let harness = opts.harness.as_str();
     let event = opts.event.as_deref().unwrap_or("");
     if lane_busy || lane_unusable.is_some() {
-        // A busy answer writes the route failures gathered before the lane wait with its own note; an unusable lane folder writes only its note.
+        // Every answer writes the route failures from before the lane wait, plus its own note.
         let busy = deadline::deadline_answer(harness, event, bytes.as_deref()) == deadline::Deadline::Busy;
         let answer = if busy { Answer::Busy } else { Answer::Safe };
         match lane_unusable {
             Some(why) => {
-                record_notes(vec![(notice::LANE_DIR_ROUTE, String::new(), why)], data_dir.clone(), opts.deadline, host, answer);
+                record_notes(pending_notes(Some((notice::LANE_DIR_ROUTE, String::new(), why))), data_dir.clone(), opts.deadline, host, answer);
             }
             None if busy => {
                 let busy_note = (notice::BUSY_ROUTE, String::new(), "no lane freed before the deadline; the host was told to run the call again".to_string());
                 record_notes(pending_notes(Some(busy_note)), data_dir.clone(), opts.deadline, host, answer);
             }
             None => {
-                host.record(Box::new(|| {}), opts.deadline, out::RecordWait::Grace, answer);
+                record_notes(pending_notes(None), data_dir.clone(), opts.deadline, host, answer);
             }
         }
         return Ended::SafeAnswered;
@@ -631,14 +631,38 @@ mod tests {
         assert_eq!(busy, 1, "a lane-busy write call must count its one busy answer in the busy object");
     }
 
-    /// HAND-DERIVED: a lane-busy read-only call records no note at all, neither its earlier route failure nor a safe-answer note.
+    /// HAND-DERIVED: a lane-busy read-only call writes the route failure from before its lane wait only.
     #[test]
-    fn a_lane_busy_read_only_call_records_nothing() {
+    fn a_lane_busy_read_only_call_records_its_route_failure() {
         let routes = vec![Err(capture::Failure::Exit(1)), Err(capture::Failure::NoLane(crate::lanes::LaneError::Busy))];
-        let (records, ended, noted, _) = drive_call("lane-busy-read", "claudecode", br#"{"tool_name":"Read","tool_input":{}}"#, routes);
+        let (records, ended, noted, (busy, _)) = drive_call("lane-busy-read", "claudecode", br#"{"tool_name":"Read","tool_input":{}}"#, routes);
         assert!(matches!(ended, Ended::SafeAnswered));
-        assert_eq!(records, [("safe answer first", "grace")], "a lane-busy read-only call must get the safe answer with no note to wait for");
-        assert!(noted.is_empty(), "a lane-busy read-only call must write no note; it wrote {noted:?}");
+        assert_eq!(records, [("safe answer first", "deadline")], "a lane-busy read-only call with a route failure must wait to the deadline for it");
+        assert_eq!(noted, ["node-argv"], "a lane-busy read-only call must write the route failure gathered before its lane wait; it wrote {noted:?}");
+        assert_eq!(busy, 0, "a lane-busy read-only call must write no busy note of its own");
+    }
+
+    /// HAND-DERIVED: a lane-busy read-only call with no earlier route failure writes nothing.
+    #[test]
+    fn a_lane_busy_read_only_call_with_no_failure_still_writes_nothing() {
+        let routes = vec![Err(capture::Failure::NoLane(crate::lanes::LaneError::Busy)), Err(capture::Failure::NoLane(crate::lanes::LaneError::Busy))];
+        let (records, ended, noted, counts) = drive_call("lane-busy-read-clean", "claudecode", br#"{"tool_name":"Read","tool_input":{}}"#, routes);
+        assert!(matches!(ended, Ended::SafeAnswered));
+        assert_eq!(records, [("safe answer first", "grace")], "a lane-busy read-only call with no failure must get the safe answer with no note to wait for");
+        assert!(noted.is_empty(), "a lane-busy read-only call with no failure must write no note; it wrote {noted:?}");
+        assert_eq!(counts, (0, 0), "a lane-busy read-only call with no failure must write no busy or lane-folder object");
+    }
+
+    /// HAND-DERIVED: a failed route, then an unusable lane folder, writes the failure and the laneDir object.
+    #[test]
+    fn a_lane_folder_unusable_after_a_failed_route_records_the_failure_and_the_lane_dir_object() {
+        let why = "lane directory C:/x/hook-lanes: denied".to_string();
+        let routes = vec![Err(capture::Failure::Exit(1)), Err(capture::Failure::NoLane(crate::lanes::LaneError::Unusable(why)))];
+        let (records, ended, noted, (_, lane)) = drive_call("unusable-after-failed", "claudecode", br#"{"tool_name":"Write","tool_input":{}}"#, routes);
+        assert!(matches!(ended, Ended::SafeAnswered));
+        assert_eq!(records, [("busy answer first", "deadline")], "an unusable lane folder after a route failure must wait to the deadline for that failure");
+        assert_eq!(noted, ["node-argv"], "an unusable lane folder must still write the route failure gathered before it; it wrote {noted:?}");
+        assert_eq!(lane, 1, "an unusable lane folder must count one note in the laneDir object");
     }
 
     /// HAND-DERIVED: an unusable lane folder answers a write call busy and records one lane-dir note, never a node route failure.

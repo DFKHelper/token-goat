@@ -193,10 +193,8 @@ impl RouteChild {
 impl Drop for RouteChild {
     fn drop(&mut self) {
         let Some(group) = self.group.take() else { return };
-        // A child already reaped has no live pid to signal, so only an unreaped one is ended and reaped.
-        if !matches!(self.child.try_wait(), Ok(Some(_))) {
-            reap_route(&mut self.child, &group);
-        }
+        // Ends the group before reaping the leader: reaping frees the pid that names the group.
+        reap_route(&mut self.child, &group);
         crate::sys::close_group(group);
     }
 }
@@ -874,6 +872,57 @@ mod tests {
         });
         drop(RouteChild::adopt(child));
         assert!(ended.recv_timeout(BACKSTOP).is_ok(), "dropping an unsettled route child left the child running");
+    }
+
+    /// Waits for a stdin line, starts a hanging group member (`childfile=<path>` gets its pid), then exits.
+    #[test]
+    #[ignore = "only runs as the route of the leader-exit test below"]
+    fn leader_starts_a_member_and_exits() {
+        let Some(childfile) = std::env::args().find_map(|a| a.strip_prefix("childfile=").map(String::from)) else { return };
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        // As Node does at startup, so the member does not hold the route's stdout pipe open past its exit.
+        let spawning = SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::sys::stop_handle_inheritance();
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--ignored", "--exact", "capture::tests::hang_child"]).arg(format!("pidfile={childfile}"));
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        drop(cmd.spawn());
+        drop(spawning);
+    }
+
+    /// HAND-DERIVED: dropping an unsettled route whose leader exited still ends the member it started.
+    #[test]
+    fn dropping_a_route_whose_leader_exited_ends_its_member() {
+        let pidfile = own_pidfile!();
+        let _ = std::fs::remove_file(&pidfile);
+        // Ends the recorded member however this test ends, so a red row leaves nothing running.
+        let _reap = ReapRecordedChild(pidfile.clone());
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--ignored", "--exact", "capture::tests::leader_starts_a_member_and_exits"]).arg(format!("childfile={}", pidfile.display()));
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        crate::sys::guard_child(&mut command);
+        let spawning = SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut child = command.spawn().expect("start the route");
+        drop(spawning);
+        let mut stdin = child.stdin.take().expect("the route's stdin");
+        let stdout = child.stdout.take().expect("the route's stdout");
+        let (exited, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut stdout = stdout;
+            let _ = exited.send(std::io::copy(&mut stdout, &mut std::io::sink()));
+        });
+        // The route is in its group before it is released to start its member.
+        let route = RouteChild::adopt(child);
+        stdin.write_all(b"go\n").expect("release the route");
+        drop(stdin);
+        assert!(ended.recv_timeout(BACKSTOP).is_ok(), "the route did not end on its own");
+        let read = || std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse::<u32>().ok());
+        let pid = poll_within(BACKSTOP, read).expect("the route's member never recorded its pid");
+        // The route's stdout closed as it exited, and nothing has reaped it yet.
+        drop(route);
+        let gone = poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some();
+        assert!(gone, "dropping a route whose leader had exited left its member {pid} running");
     }
 
     /// Hanging route that starts a hanging child of its own: `parentfile=<path>` gets its pid, `childfile=<path>` the child's.

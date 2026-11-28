@@ -1,5 +1,6 @@
 //! `<dataDir>/hook-broken.json`: what was missing or broken the last times a hook call had to leave its first route. Never printed to the host; `token-goat doctor` reads it. Bounded in size, written atomically, and every failure here is swallowed, since a notice must never be the reason a hook call fails.
 
+use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -53,13 +54,13 @@ fn clip(text: &str) -> String {
     format!("{head}...{tail}")
 }
 
-/// Folds one event into `previous` (the old file's content, if it parsed).
-fn merged(previous: Option<Value>, event: Value, now: &str) -> Value {
+/// Folds one call's events into `previous` (the old file's content, if it parsed); a call counts once.
+fn merged(previous: Option<Value>, batch: Vec<Value>, now: &str) -> Value {
     let old = previous.filter(|v| v.get("schema").and_then(Value::as_u64) == Some(1));
     let first = old.as_ref().and_then(|v| v.get("first")).and_then(Value::as_str).unwrap_or(now).to_string();
     let count = old.as_ref().and_then(|v| v.get("count")).and_then(Value::as_u64).unwrap_or(0).saturating_add(1);
     let mut events: Vec<Value> = old.as_ref().and_then(|v| v.get("events")).and_then(Value::as_array).cloned().unwrap_or_default();
-    events.push(event);
+    events.extend(batch);
     let drop = events.len().saturating_sub(KEEP);
     events.drain(..drop);
     let mut value = json!({ "schema": 1, "first": first, "last": now, "count": count, "events": events });
@@ -74,6 +75,24 @@ fn carry_side_counters(old: Option<&Value>, value: &mut Value) {
             value[key] = side.clone();
         }
     }
+}
+
+/// Whether `previous` already holds a busy or lane-folder object.
+fn has_side_counter(previous: Option<&Value>) -> bool {
+    previous.is_some_and(|v| SIDE_COUNTERS.iter().any(|key| v.get(*key).is_some()))
+}
+
+/// Calls among `events`: one per distinct stamp, skipping old-format busy and lane-folder events.
+fn calls_in(events: &[Value]) -> u64 {
+    let stamps: HashSet<&str> = events.iter().filter(|e| !matches!(e["route"].as_str(), Some(BUSY_ROUTE | LANE_DIR_ROUTE))).filter_map(|e| e["time"].as_str()).collect();
+    stamps.len() as u64
+}
+
+/// Sets the count of `previous` to the calls its events keep, for the first side object a file gains.
+fn recount_calls(previous: &mut Option<Value>) {
+    let Some(value) = previous.as_mut() else { return };
+    let calls = value["events"].as_array().map_or(0, |events| calls_in(events));
+    value["count"] = json!(calls);
 }
 
 /// Counts one note under the object `key`, which holds no event and is never trimmed with the events; `why`, the last reason, is kept beside the count when given.
@@ -223,8 +242,11 @@ fn try_record_many(data_dir: &str, entries: &[(&str, &str, &str)]) -> std::io::R
     let busy = entries.iter().filter(|(route, _, _)| *route == BUSY_ROUTE).count();
     let lane_reasons: Vec<String> = entries.iter().filter(|(route, _, _)| *route == LANE_DIR_ROUTE).map(|(_, _, error)| clip(error)).collect();
     update(data_dir, &mut || std::thread::sleep(LOCK_PAUSE), |mut previous| {
-        for event in events {
-            previous = Some(merged(previous, event, &now));
+        if (busy > 0 || !lane_reasons.is_empty()) && !has_side_counter(previous.as_ref()) {
+            recount_calls(&mut previous);
+        }
+        if !events.is_empty() {
+            previous = Some(merged(previous, events, &now));
         }
         for _ in 0..busy {
             previous = Some(with_counter(previous, "busy", &now, None));
@@ -264,7 +286,7 @@ fn unseen(previous: Option<Value>, began: &str) -> Option<Value> {
     if kept.len() == all.len() {
         return Some(old);
     }
-    let mut value = json!({ "schema": 1, "first": first, "last": old["last"], "count": kept.len(), "events": kept });
+    let mut value = json!({ "schema": 1, "first": first, "last": old["last"], "count": calls_in(&kept), "events": kept });
     carry_side_counters(Some(&old), &mut value);
     Some(value)
 }
@@ -412,6 +434,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// HAND-DERIVED: one call with two failing routes counts once, even beside a busy object.
+    #[test]
+    fn one_call_with_two_failing_routes_counts_once_beside_a_busy_object() {
+        let dir = scratch("two-routes-busy");
+        let d = dir.to_str().unwrap();
+        record(d, "deadline-busy", "", "no lane freed");
+        record_many(d, &[("node-argv", "/gone", "missing"), ("node-pointer", "/gone/2", "missing")]);
+        let value = read_value(&dir);
+        assert_eq!(value["events"].as_array().unwrap().len(), 2, "both route failures of the call must be events");
+        assert_eq!(value["count"], 1, "one call with two failing routes must raise count by one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// HAND-DERIVED: an old per-event count is recounted by calls when a file first gains a busy object.
+    #[test]
+    fn an_old_format_count_is_reset_to_its_kept_calls_when_a_busy_object_is_first_added() {
+        let dir = scratch("old-format-busy");
+        let d = dir.to_str().unwrap();
+        let events: Vec<Value> = (0..8).map(|i| json!({ "time": format!("2026-01-01T00:00:0{i}.000Z"), "route": "node-argv", "path": "/gone", "error": "missing" })).collect();
+        let old = json!({ "schema": 1, "first": "2026-01-01T00:00:00.000Z", "last": "2026-01-01T00:00:07.000Z", "count": 28, "events": events });
+        std::fs::write(dir.join(FILE_NAME), old.to_string()).unwrap();
+        record(d, "deadline-busy", "", "no lane freed");
+        let value = read_value(&dir);
+        assert_eq!(value["busy"]["count"], 1, "the busy answer must be counted in busy");
+        assert_eq!(value["count"], 8, "the first busy object must reset count to the route-failure calls kept in events");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_clear_keeps_the_lane_folder_object() {
         let dir = scratch("lane-clear");
@@ -466,7 +516,7 @@ mod tests {
     }
 
     fn add(d: &str, pause: &mut dyn FnMut(), time: &str, path: &str) -> std::io::Result<()> {
-        update(d, pause, |previous| Some(merged(previous, event_at(time, path), time)))
+        update(d, pause, |previous| Some(merged(previous, vec![event_at(time, path)], time)))
     }
 
     fn paths(d: &str) -> Vec<String> {
@@ -485,7 +535,7 @@ mod tests {
         let mut held = Some(held);
         let mut pauses = 0;
         let a_time = "2024-01-02T00:00:00.000Z";
-        let mut a_event = Some(merged(before, event_at(a_time, "/a"), a_time));
+        let mut a_event = Some(merged(before, vec![event_at(a_time, "/a")], a_time));
         let file = dir.join(FILE_NAME);
         add(
             d,
