@@ -57,6 +57,7 @@ impl Lanes {
     }
 
     /// Takes a lane for `class` before `deadline`; an `Err` says why none was taken.
+    #[cfg(any(windows, test))]
     pub fn acquire(&self, class: Class, deadline: Instant) -> Result<Lane, LaneError> {
         let sleep_only = |pause: Duration| -> Option<std::convert::Infallible> {
             std::thread::sleep(pause);
