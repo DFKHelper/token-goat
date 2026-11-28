@@ -12,8 +12,6 @@ pub const RESERVED_LANES: usize = 1;
 const RETRY: Duration = Duration::from_millis(2);
 /// The directory under the data dir that holds the lane files.
 const LANE_DIR: &str = "hook-lanes";
-/// The directory under the OS temp dir that holds the lane files when the data dir cannot.
-const TEMP_LANE_DIR: &str = "token-goat-hook-lanes";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
@@ -51,13 +49,11 @@ impl std::fmt::Display for LaneError {
 /// The lane files of one data directory; with no data directory known no lane can be taken.
 pub struct Lanes {
     dir: Option<PathBuf>,
-    /// Where the lane files go when the data directory cannot hold them; see [`usable_dir`].
-    temp: PathBuf,
 }
 
 impl Lanes {
     pub fn under(data_dir: Option<String>) -> Lanes {
-        Lanes { dir: data_dir.map(|dir| PathBuf::from(dir).join(LANE_DIR)), temp: std::env::temp_dir() }
+        Lanes { dir: data_dir.map(|dir| PathBuf::from(dir).join(LANE_DIR)) }
     }
 
     /// Takes a lane for `class` before `deadline`; an `Err` says why none was taken.
@@ -75,14 +71,14 @@ impl Lanes {
     /// Waits for a lane like `acquire`; each poll's pause goes to `between`, which spends it, and an answer it returns ends the wait.
     pub fn acquire_while<T>(&self, class: Class, deadline: Instant, between: &dyn Fn(Duration) -> Option<T>) -> Result<Waited<T>, LaneError> {
         let Some(data) = &self.dir else { return Err(LaneError::Unusable("no data directory to hold a lane in".into())) };
-        let dir = usable_dir(data, &self.temp).map_err(LaneError::Unusable)?;
+        ready(data).map_err(LaneError::Unusable)?;
         let indices: Vec<usize> = match class {
             Class::Ordinary => (0..ORDINARY_LANES).collect(),
             Class::Deny => (ORDINARY_LANES..ORDINARY_LANES + RESERVED_LANES).chain(0..ORDINARY_LANES).collect(),
         };
         loop {
             for index in &indices {
-                if let Some(lane) = try_take(&dir, *index).map_err(LaneError::Unusable)? {
+                if let Some(lane) = try_take(data, *index).map_err(LaneError::Unusable)? {
                     return Ok(Waited::Lane(lane));
                 }
             }
@@ -101,16 +97,6 @@ impl Lanes {
 pub enum Waited<T> {
     Lane(Lane),
     Answer(T),
-}
-
-/// The lane directory: the data dir's if its lane files open, else one fixed temp directory; both failing takes no lane.
-fn usable_dir(data: &Path, temp: &Path) -> Result<PathBuf, String> {
-    let first = match ready(data) {
-        Ok(()) => return Ok(data.to_path_buf()),
-        Err(why) => why,
-    };
-    let fallback = temp.join(TEMP_LANE_DIR);
-    ready(&fallback).map(|()| fallback).map_err(|second| format!("{first}; temp fallback: {second}"))
 }
 
 /// Creates `dir` and opens its first lane file, so a directory that cannot hold a lane fails here, not at a take.
@@ -235,18 +221,27 @@ mod tests {
         drop(parent_lane);
     }
 
-    /// HAND-DERIVED: a data dir whose lane path is a plain file cannot hold lanes, so the one temp fallback takes them and still caps at two.
+    /// HAND-DERIVED: a data dir whose lane path is a plain file is unusable: no lane is taken and no temp lane folder appears.
     #[test]
-    fn an_unopenable_data_dir_falls_to_the_temp_lanes_and_still_caps() {
-        let scratch = Scratch::new("unopenable");
+    fn an_unusable_data_dir_takes_no_lane_and_creates_no_temp_lanes() {
+        let scratch = Scratch::new("unusable");
         std::fs::create_dir_all(&scratch.0).expect("the scratch directory");
-        let blocked = scratch.0.join("hook-lanes");
-        std::fs::write(&blocked, b"a file where the lane directory must be").expect("the blocking file");
-        let temp = scratch.0.join("temp");
-        let lanes = Lanes { dir: Some(blocked), temp: temp.clone() };
-        let _held = hold_ordinary(&lanes);
-        assert!(temp.join(TEMP_LANE_DIR).join("lane-0.lock").is_file(), "the lanes were not taken in the temp fallback directory");
-        assert!(matches!(lanes.acquire(Class::Ordinary, Instant::now()), Err(LaneError::Busy)), "a third ordinary lane was granted through the temp fallback");
+        std::fs::write(scratch.0.join("hook-lanes"), b"a file where the lane directory must be").expect("the blocking file");
+        let temp_lanes = std::env::temp_dir().join("token-goat-hook-lanes");
+        let existed = temp_lanes.exists();
+        let lanes = Lanes::under(Some(scratch.0.display().to_string()));
+        assert!(matches!(lanes.acquire(Class::Ordinary, Instant::now()), Err(LaneError::Unusable(_))), "an unusable data dir took a lane");
+        assert_eq!(temp_lanes.exists(), existed, "an unusable data dir created a lane folder under the temp dir");
+    }
+
+    /// HAND-DERIVED: two ordinary acquires against one ready data dir hold both ordinary lanes, so a third with a passed end is busy.
+    #[test]
+    fn two_ordinary_lanes_in_one_ready_data_dir_leave_a_third_busy() {
+        let scratch = Scratch::new("two-ordinary");
+        let lanes = scratch.lanes();
+        let held = hold_ordinary(&lanes);
+        assert_eq!(held.len(), ORDINARY_LANES, "the two ordinary acquires did not both hold a lane");
+        assert!(matches!(lanes.acquire(Class::Ordinary, Instant::now()), Err(LaneError::Busy)), "a third ordinary lane was granted while both were held");
     }
 
     /// Starts a holder child under the spawn lock every spawn and inheritance clear shares.

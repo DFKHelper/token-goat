@@ -91,7 +91,7 @@ fn execute(args: &[OsString]) -> Result<String, String> {
     if deadline.saturating_duration_since(Instant::now()) <= Duration::from_millis(RESERVE_MS) {
         return Err("insufficient time for process-tree cleanup".into());
     }
-    // Held until this owner returns, so the lane covers the node process for its whole life.
+    // Held until this owner returns; the job closes then, ending any process still in it.
     let lanes = Lanes::under(crate::paths::data_dir());
     let (_lane, mut child) = start_held(&lanes, work_deadline, || Child::spawn(&job, &args[1..]).map_err(|e| format!("startup job association/process creation failed: {e}")))?;
     let output = reader(child.output.try_clone().map_err(|e| e.to_string())?, MAX_BYTES);

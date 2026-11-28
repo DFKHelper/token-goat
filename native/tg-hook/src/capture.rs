@@ -169,6 +169,38 @@ fn reap_by(child: &mut std::process::Child, how: impl FnOnce(&mut std::process::
     how(child, REAP_BOUND);
 }
 
+/// A route's child and its group, owned from spawn until settled: any exit before that ends and reaps it.
+struct RouteChild {
+    child: std::process::Child,
+    group: Option<Group>,
+}
+
+impl RouteChild {
+    fn adopt(child: std::process::Child) -> RouteChild {
+        let group = crate::sys::adopt_child(&child);
+        RouteChild { child, group: Some(group) }
+    }
+
+    /// The route ended on its own: its group is released and closed, so what it started keeps running.
+    fn settle(&mut self) {
+        if let Some(group) = self.group.take() {
+            let _ = crate::sys::release_group(&group);
+            crate::sys::close_group(group);
+        }
+    }
+}
+
+impl Drop for RouteChild {
+    fn drop(&mut self) {
+        let Some(group) = self.group.take() else { return };
+        // A child already reaped has no live pid to signal, so only an unreaped one is ended and reaped.
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            reap_route(&mut self.child, &group);
+        }
+        crate::sys::close_group(group);
+    }
+}
+
 /// Held from clearing inheritance flags until the child exists, so two runs never interleave those steps.
 pub(crate) static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -252,7 +284,7 @@ fn exec_within(
     event: &str,
     between: &dyn Fn(Duration, Instant) -> Option<i32>,
 ) -> Result<Routed, Failure> {
-    // Held until the route is reaped, so the lane covers the node process for its whole life.
+    // Held until exec_traced returns; its reap ends the node process or gives up after REAP_BOUND.
     let _lane = match lanes.acquire_while(class_of(event), budget.end, &|pause| between(pause, budget.end)).map_err(Failure::NoLane)? {
         Waited::Lane(lane) => lane,
         Waited::Answer(code) => return Ok(Routed::Answered(code)),
@@ -281,8 +313,9 @@ fn exec_traced(
     crate::sys::stop_handle_inheritance();
     let spawned = cmd.spawn().map_err(|e| Failure::Spawn(e.to_string()));
     drop(spawning);
-    let mut child = spawned?;
-    let group = crate::sys::adopt_child(&child);
+    // Any exit before settle() ends and reaps the route; a descendant that left its group is not chased.
+    let mut route = RouteChild::adopt(spawned?);
+    let child = &mut route.child;
     if let (Some(mut pipe), Stdin::Bytes(bytes)) = (child.stdin.take(), &stdin) {
         let payload = bytes.to_vec();
         // A child that exits without reading closes the pipe early; its exit code and answer still stand.
@@ -307,8 +340,6 @@ fn exec_traced(
         }
         None => drop(tx),
     }
-    // The route's whole group is ended, then its direct child reaped; a descendant that left the group or job on purpose (the detached hook server) is not chased.
-    let kill = |child: &mut std::process::Child| reap_route(child, &group);
     let left = |end: Instant| end.saturating_duration_since(Instant::now());
     let held = match rx.recv_timeout(left(end)) {
         Ok(Ok(bytes)) => {
@@ -316,14 +347,8 @@ fn exec_traced(
             trace.stdout_bytes = Some(bytes.len());
             bytes
         }
-        Ok(Err(what)) => {
-            kill(&mut child);
-            return Err(Failure::Output(what));
-        }
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            kill(&mut child);
-            return Err(Failure::Timeout(timeout));
-        }
+        Ok(Err(what)) => return Err(Failure::Output(what)),
+        Err(mpsc::RecvTimeoutError::Timeout) => return Err(Failure::Timeout(timeout)),
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             trace.stdout_ended_by = "the stdout reader was gone without an answer";
             Vec::new()
@@ -332,17 +357,13 @@ fn exec_traced(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if left(end).is_zero() => {
-                kill(&mut child);
-                return Err(Failure::Timeout(timeout));
-            }
+            Ok(None) if left(end).is_zero() => return Err(Failure::Timeout(timeout)),
             Ok(None) => std::thread::sleep(Duration::from_millis(2)),
             Err(e) => return Err(Failure::Spawn(format!("lost track of the child: {e}"))),
         }
     };
     // The route ended by itself, so what it started (the hook server) is left running; a failed release changes no answer.
-    let _ = crate::sys::release_group(&group);
-    crate::sys::close_group(group);
+    route.settle();
     let empty_ok = out::safe_answer(harness, event).is_empty();
     // Only a served route (exit 0 or a deliberate 2) passes stderr on; the wait ends with the pipe or the deadline.
     let held_err = if matches!(status.code(), Some(0 | 2)) {
@@ -829,6 +850,30 @@ mod tests {
         let pid = pid.expect("no run of the hung route recorded its pid before it was killed");
         // The kill was issued before exec returned; the wait here is on the process ending, not on the production reap bound.
         assert!(poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some(), "pid {pid} of the hung route was still alive after exec returned");
+    }
+
+    /// HAND-DERIVED: dropping a running route child ends it, so no exit that skips settling leaves it behind.
+    #[test]
+    fn dropping_an_unsettled_route_child_ends_it() {
+        let pidfile = own_pidfile!();
+        let _ = std::fs::remove_file(&pidfile);
+        // Ends the hung child by its recorded pid however this test ends, so a red row leaves nothing running.
+        let _reap = ReapRecordedChild(pidfile.clone());
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--ignored", "--exact", "capture::tests::hang_child"]).arg(format!("pidfile={}", pidfile.display()));
+        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let spawning = SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut child = command.spawn().expect("start the hanging child");
+        drop(spawning);
+        // The child's stdout reaches end of file only when the child exits, so that end is the event waited on.
+        let stdout = child.stdout.take().expect("the child's stdout");
+        let (exited, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut stdout = stdout;
+            let _ = exited.send(std::io::copy(&mut stdout, &mut std::io::sink()));
+        });
+        drop(RouteChild::adopt(child));
+        assert!(ended.recv_timeout(BACKSTOP).is_ok(), "dropping an unsettled route child left the child running");
     }
 
     /// Hanging route that starts a hanging child of its own: `parentfile=<path>` gets its pid, `childfile=<path>` the child's.
