@@ -136,7 +136,7 @@ mod tests {
         deadline_answer("claudecode", "PreToolUse", Some(payload.to_string().as_bytes()))
     }
 
-    /// HAND-DERIVED from the node prefilter (src/hooks_bash.ts PREFILTER_CHARS and PREFILTER_NAMES) and the rows in C:/tgwt/sm_out/kmem49_rows.txt; the commands are test inputs, never run.
+    /// HAND-DERIVED from the node prefilter (src/hooks_bash.ts PREFILTER_CHARS and PREFILTER_NAMES); the commands are test inputs, never run.
     #[test]
     fn the_eleven_rows_get_the_answer_the_row_file_names() {
         let rows: [(&str, Option<&str>, Deadline); 11] = [
