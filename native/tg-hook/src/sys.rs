@@ -121,8 +121,36 @@ pub fn process_identity(pid: u32) -> Option<String> {
     stat.rsplit_once(')')?.1.split_whitespace().nth(19).map(str::to_owned)
 }
 
+/// Identifies one process instance by its start time at microsecond resolution, so two processes started in the same second never share an identity; `None` when the process cannot be read.
+#[cfg(all(test, target_os = "macos"))]
+pub fn process_identity(pid: u32) -> Option<String> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: proc_pidinfo writes at most `size` bytes into `info`, and a return other than `size` means it wrote nothing usable.
+    let written = unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size) };
+    if written != size {
+        return None;
+    }
+    // SAFETY: a full-size return means the kernel initialised every field of `info`.
+    let info = unsafe { info.assume_init() };
+    Some(format!("{}.{:06}", info.pbi_start_tvsec, info.pbi_start_tvusec))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod identity_tests {
+    use super::process_identity;
+
+    /// HAND-DERIVED: on macOS a live process's identity carries its start time to the microsecond, so two processes started in one second never share it.
+    #[test]
+    fn a_live_identity_resolves_below_one_second() {
+        let identity = process_identity(std::process::id()).expect("the test process has an identity");
+        let (_, micros) = identity.rsplit_once('.').expect("the identity carries a fractional start time");
+        assert_eq!(micros.len(), 6, "the identity {identity:?} has no microsecond field");
+    }
+}
+
 /// Identifies one process instance by its start time, so a pid the OS reused for another process gives a different identity; `None` when the process cannot be read.
-#[cfg(all(test, unix, not(target_os = "linux")))]
+#[cfg(all(test, unix, not(any(target_os = "linux", target_os = "macos"))))]
 pub fn process_identity(pid: u32) -> Option<String> {
     let out = Command::new("ps").args(["-o", "lstart=", "-p", &pid.to_string()]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
     let text = String::from_utf8(out.stdout).ok()?.trim().to_owned();
