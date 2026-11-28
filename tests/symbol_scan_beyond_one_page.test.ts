@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
@@ -12,6 +12,8 @@ import { runLocate, runFind } from '../src/read_inspect.js'
 
 /** Above the retired 20,000-row cap, so a single-page scan cannot reach the target below. */
 const FILLER_ROWS = 20_001
+/** Filler rows share files: `find` and `locate` run one read-deny lookup per distinct file path. */
+const FILLER_ROWS_PER_FILE = 1_000
 
 function capture(fn: () => void): { stdout: string; stderr: string } {
   let stdout = ''
@@ -34,9 +36,8 @@ function capture(fn: () => void): { stdout: string; stderr: string } {
 let root: string
 let cwdSpy: ReturnType<typeof vi.spyOn>
 
-beforeEach(() => {
+beforeAll(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scan-page-'))
-  cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
 
   const normalized = normalizePath(root)
   const db = getDb(globalDbPath())
@@ -45,15 +46,23 @@ beforeEach(() => {
   )
   db.transaction(() => {
     for (let i = 0; i < FILLER_ROWS; i++) {
+      const file = Math.floor(i / FILLER_ROWS_PER_FILE)
       // `aaa` prefix and zero padding keep every filler ahead of the target in the query's own file_path ordering.
-      insert.run(`${normalized}/aaa_filler_${String(i).padStart(6, '0')}.ts`, `fillerSymbol${i}`, 'function', 1, 1, '', '')
+      insert.run(`${normalized}/aaa_filler_${String(file).padStart(3, '0')}.ts`, `fillerSymbol${i}`, 'function', 1, 1, '', '')
     }
     insert.run(`${normalized}/zzz_target.ts`, 'quokkaLandmark', 'function', 1, 1, '', '')
   })()
 })
 
+beforeEach(() => {
+  cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
+})
+
 afterEach(() => {
   cwdSpy.mockRestore()
+})
+
+afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
