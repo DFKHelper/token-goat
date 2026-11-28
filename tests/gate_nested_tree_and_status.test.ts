@@ -123,6 +123,8 @@ describe('an owner token is found whether the run is the outer owner or nested i
   })
 })
 
+const NO_WAIT = { isGone: (): boolean => true, pause: (): void => {} }
+
 describe('a pid that no longer proves to be ours receives no signal', () => {
   type Stub = { lookup: TokenCarrierLookup; sent: string[] }
   function lookup(carries: (pid: number) => boolean | undefined): Stub {
@@ -142,7 +144,7 @@ describe('a pid that no longer proves to be ours receives no signal', () => {
 
   it('signals pids that still carry the token, stop first and kill after', () => {
     const { lookup: l, sent } = lookup(() => true)
-    killTokenCarriers(TOKEN, l)
+    killTokenCarriers(TOKEN, l, NO_WAIT)
     expect(sent).toEqual(['101 SIGSTOP', '102 SIGSTOP', '101 SIGKILL', '102 SIGKILL'])
   })
 
@@ -153,7 +155,7 @@ describe('a pid that no longer proves to be ours receives no signal', () => {
       reads.set(pid, n)
       return pid === 102 ? n <= 1 : true
     })
-    killTokenCarriers(TOKEN, l)
+    killTokenCarriers(TOKEN, l, NO_WAIT)
     expect(sent, '102 carried the token for the stop and another at the kill').toEqual(
       ['101 SIGSTOP', '102 SIGSTOP', '101 SIGKILL'],
     )
@@ -161,7 +163,21 @@ describe('a pid that no longer proves to be ours receives no signal', () => {
 
   it('a pid whose environment cannot be read is not signalled', () => {
     const { lookup: l, sent } = lookup((pid) => (pid === 101 ? undefined : true))
-    killTokenCarriers(TOKEN, l)
+    killTokenCarriers(TOKEN, l, NO_WAIT)
     expect(sent).toEqual(['102 SIGSTOP', '102 SIGKILL'])
+  })
+
+  it('a member still running after SIGKILL is waited for, then the end is ok', () => {
+    let reads = 0
+    const { lookup: l } = lookup(() => true)
+    const result = killTokenCarriers(TOKEN, l, { isGone: (pid) => pid !== 101 || ++reads > 2, pause: () => {} })
+    expect(result, 'pid 101 was still running for two checks after its SIGKILL').toEqual({ ok: true })
+  })
+
+  it('a member that never goes is named by pid, not reported ended', () => {
+    const { lookup: l } = lookup(() => true)
+    const result = killTokenCarriers(TOKEN, l, { isGone: (pid) => pid !== 101, pause: () => {} })
+    expect(result.ok, 'pid 101 never went, so the end is not ok').toBe(false)
+    expect(result.note, 'the note names the survivor').toContain('pid 101 still running after SIGKILL')
   })
 })

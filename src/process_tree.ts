@@ -197,8 +197,8 @@ function pidsCarryingToken(token: string, already: ReadonlySet<number>): number[
 
 const procLookup: TokenCarrierLookup = { list: pidsCarryingToken, carries: procCarries, signal: signalPid }
 
-/** Ends every process carrying *token*: stop each new one so it cannot fork, repeat, then kill all; each signal follows a fresh identity read, so a pid that stopped carrying the token or cannot be read gets none. */
-export function killTokenCarriers(token: string, io: TokenCarrierLookup = procLookup): void {
+/** Ends every process carrying *token*: stop each new one so it cannot fork, repeat, then kill all and report ok only once each killed member is seen gone (a SIGKILLed process is still running until it has exited); each signal follows a fresh identity read, so a pid that stopped carrying the token or cannot be read gets none. */
+export function killTokenCarriers(token: string, io: TokenCarrierLookup = procLookup, seam: TreeEndSeam = {}): KillResult {
   const stopped = new Set<number>()
   for (let pass = 0; pass < MAX_FREEZE_PASSES; pass++) {
     const fresh = io.list(token, stopped)
@@ -209,7 +209,15 @@ export function killTokenCarriers(token: string, io: TokenCarrierLookup = procLo
       io.signal(pid, 'SIGSTOP')
     }
   }
-  for (const pid of stopped) if (io.carries(pid, token) === true) io.signal(pid, 'SIGKILL')
+  const killed: number[] = []
+  for (const pid of stopped) {
+    if (io.carries(pid, token) !== true) continue
+    io.signal(pid, 'SIGKILL')
+    killed.push(pid)
+  }
+  const survivors = stillRunning(killed, seam)
+  if (survivors.length === 0) return { ok: true }
+  return { ok: false, note: `${survivors.length === 1 ? 'pid' : 'pids'} ${survivors.join(', ')} still running after SIGKILL` }
 }
 
 /** Windows: ends exited-shell children by ppid and start. limit: grandchildren; revisit-when: job object. */
@@ -308,7 +316,7 @@ export function spawnOwned(file: string, args: string[], options: SpawnOptions):
   // The shell is gone but a descendant may hold its pipes: found by token (Linux) or dead shell pid (Windows).
   const endSurvivors = (pid: number): void => {
     let result: KillResult = { ok: true }
-    if (token !== undefined) killTokenCarriers(token)
+    if (token !== undefined) result = killTokenCarriers(token)
     else if (process.platform === 'win32') result = killChildrenOfExitedRoot(pid, spawnedAt, exitedAt)
     if (!result.ok)
       process.stderr.write(
