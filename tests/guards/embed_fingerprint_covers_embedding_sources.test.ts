@@ -84,6 +84,7 @@ const NOT_EMBEDDING: Record<string, string> = {
   'src/paths.ts': 'cross-platform path normalization and display-time content fencing; affects path identity/display, not chunk text or boundaries -- excluded per explicit design, same as PARSER_FINGERPRINT',
   'src/process_util.ts': 'process/shell-quoting utilities for installers, reached only via util.ts, unrelated to chunking',
   'src/process_tree.ts': 'starts a child process and ends its whole tree, re-exported by util.ts for git_async.ts runGitAsync, unrelated to chunking',
+  'src/process_gone.ts': 'probes whether a pid is still alive after a kill and returns the survivors; reads no chunk input and writes no chunk text or boundaries',
   'src/windows_powershell.ts': 'PowerShell launcher for the process listing, unrelated to chunking',
   'src/windows_system32.ts': 'locates a Windows system exe for that launcher, unrelated to chunking',
   'src/shell.ts': 'shell resolution and PowerShell quoting for that launcher, unrelated to chunking',

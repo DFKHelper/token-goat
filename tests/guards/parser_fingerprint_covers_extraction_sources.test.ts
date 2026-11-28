@@ -92,6 +92,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/pptx_extract.ts': 'PPTX text extraction feeding indexFileEmbeddings only, gated by files.embed_sha',
   'src/process_util.ts': 'process/shell-quoting utilities for installers, unrelated to parsing',
   'src/process_tree.ts': 'starts a child process and ends its whole tree, re-exported by util.ts for git_async.ts runGitAsync, unrelated to parsing',
+  'src/process_gone.ts': 'probes whether a pid is still alive after a kill and returns the survivors; reads no parse input and writes no extraction output',
   'src/windows_powershell.ts': 'PowerShell launcher for the process listing, unrelated to parsing',
   'src/windows_system32.ts': 'locates a Windows system exe for that launcher, unrelated to parsing',
   'src/shell.ts': 'shell resolution and PowerShell quoting for that launcher, unrelated to parsing',

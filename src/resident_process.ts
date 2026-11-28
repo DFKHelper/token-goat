@@ -3,6 +3,7 @@
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 
+import { stillRunning } from './process_gone.js'
 import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
 import { windowsSystem32Exe } from './windows_system32.js'
 
@@ -166,7 +167,7 @@ export function zombiePids(pids: readonly number[], cheapOnly: boolean): number[
   return res.error !== undefined || typeof res.stdout !== 'string' ? [] : zombiesInPsRows(res.stdout)
 }
 
-/** Ends process `pid` and its children. Windows: `taskkill /T /F`, which is always forceful. POSIX: the signal to the process group the detached daemon leads, else to the pid alone; SIGTERM unless `force`. True when the OS accepted the request, not when the process is already gone. */
+/** Ends process `pid` and its children. Windows: `taskkill /T /F`, which is always forceful. POSIX: the signal to the process group the detached daemon leads, else to the pid alone; SIGTERM unless `force`. A `force` kill on POSIX is true only once the pid is observed gone; otherwise true when the OS accepted the request, not when the process is already gone. */
 export function terminateProcessTree(pid: number, force: boolean): boolean {
   if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || pid === process.ppid) return false
   if (process.platform === 'win32') {
@@ -176,14 +177,22 @@ export function terminateProcessTree(pid: number, force: boolean): boolean {
   const signal = force ? 'SIGKILL' : 'SIGTERM'
   try {
     process.kill(-pid, signal)
-    return true
+    return force ? endedAfterKill(pid) : true
   } catch {
     // Not a group leader (or the group is gone): signal the pid itself.
   }
   try {
     process.kill(pid, signal)
-    return true
+    return force ? endedAfterKill(pid) : true
   } catch {
     return false
   }
+}
+
+/** After a SIGKILL, whether *pid* is observed gone; one still seen running past the bounded checks is named on stderr. */
+function endedAfterKill(pid: number): boolean {
+  const survivors = stillRunning([pid])
+  if (survivors.length === 0) return true
+  process.stderr.write(`[token-goat: pid ${pid} still running after SIGKILL]\n`)
+  return false
 }

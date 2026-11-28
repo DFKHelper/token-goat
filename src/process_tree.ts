@@ -5,17 +5,13 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { sleepSync } from './process_util.js'
+import { HELPER_TIMEOUT_MS, stillRunning, type TreeEndSeam } from './process_gone.js'
 import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
 
-// taskkill and ps are local utilities that answer in milliseconds; the bound only keeps a wedged one from holding the caller.
-const HELPER_TIMEOUT_MS = 10_000
+export type { TreeEndSeam } from './process_gone.js'
 
 // The most "list the descendants, stop the new ones" passes a tree gets before it is killed as found. Every stopped process is frozen (it cannot fork), so the set only grows through a process not yet stopped, and a pass that finds nothing new ends the loop: the cap is a count, not a clock, and a pass costs one `ps`.
 const MAX_FREEZE_PASSES = 64
-// Checks a killed member gets to be seen gone before the tree end names it as still running.
-const GONE_CHECKS = 20
-const GONE_PAUSE_MS = 25
 
 // The signals that end a CLI run from outside. SIGHUP is the terminal closing; on Windows Node emulates it for a console close, and SIGTERM is never delivered there.
 const OWNER_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
@@ -68,35 +64,6 @@ function signalPid(pid: number, signal: NodeJS.Signals): string | undefined {
     return code === 'ESRCH' ? undefined : (code ?? 'unknown error')
   }
   return undefined
-}
-
-/** Injected probes for the tree end: `isGone` reads one pid, `pause` waits between checks; both default to the real ones. */
-export interface TreeEndSeam {
-  isGone?: (pid: number) => boolean
-  pause?: () => void
-}
-
-/** Whether a signalled member has ended: signal 0 finds no process, or it is a zombie (killed, not yet reaped). */
-function memberGone(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ESRCH'
-  }
-  const listed = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', timeout: HELPER_TIMEOUT_MS, windowsHide: true })
-  return listed.status === 0 && typeof listed.stdout === 'string' && listed.stdout.trim().startsWith('Z')
-}
-
-/** The pids still running after the bounded checks; a pause follows each round that still sees one alive. */
-function stillRunning(pids: readonly number[], seam: TreeEndSeam): number[] {
-  const isGone = seam.isGone ?? memberGone
-  const pause = seam.pause ?? (() => sleepSync(GONE_PAUSE_MS))
-  let alive = pids.filter((pid) => !isGone(pid))
-  for (let check = 0; alive.length > 0 && check < GONE_CHECKS; check++) {
-    pause()
-    alive = alive.filter((pid) => !isGone(pid))
-  }
-  return alive
 }
 
 /** End *pid* and everything it started. The caller must know *pid* is a live child of its own: a pid that has already exited may belong to an unrelated process by now, and this never falls back to signalling a bare pid after the walk failed. POSIX: the root is stopped first, then every descendant the process table shows is stopped, pass after pass until a pass finds none new, and only then is the whole set killed. A stopped process cannot fork and its children are not reparented, so a tree that is forking while it is ended (make -j, a shell loop) cannot grow or lose members behind the walk; killing in the same pass instead would let the children of an already-killed process escape to init. When `ps` is unavailable only the root is killed and the result says the descendants were not reached. Windows: `taskkill /T /F`, which also ends the root; a non-zero status is reported, never retried with a bare pid kill. On POSIX a root that refuses a signal for any reason but being gone (EPERM) is reported as a failure too. */

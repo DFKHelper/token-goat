@@ -3,6 +3,8 @@ import type * as ChildProcessModule from 'node:child_process'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { type KillSpy, spyProcessKill } from './helpers/kill_spy.js'
+
 // The ps output for the n-th listing (1-based); each test installs its own script.
 const script = vi.hoisted(() => ({ table: (_pass: number): string => '', lists: 0 }))
 
@@ -27,25 +29,18 @@ afterEach(() => {
   script.table = () => ''
 })
 
-/** Every signal sent as `pid SIGNAL`, in order. Signal 0 probes are unlisted; they answer ESRCH once killed. */
-function recordSignals(): string[] {
-  const sent: string[] = []
-  const dead = new Set<number>()
-  vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
-    if (signal !== 0) sent.push(`${pid} ${String(signal)}`)
-    if (signal === 0 && dead.has(pid)) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
-    if (signal === 'SIGKILL') dead.add(pid)
-    return true
-  }) as typeof process.kill)
-  return sent
+/** Every signal sent as `pid SIGNAL`, in order. Signal 0 probes are unlisted; kill_spy answers them ESRCH once killed. */
+function sentSignals(spy: KillSpy): string[] {
+  return spy.calls.filter((call) => call.signal !== 0).map((call) => `${call.pid} ${String(call.signal)}`)
 }
 
 describe.skipIf(process.platform === 'win32')('the freeze walk repeats until the tree stops growing', () => {
   it('stops a member that only appears in a later pass, before anything is killed', () => {
     // The root has one child at first; that child gains a child of its own by the second listing; the third listing shows nothing new.
     script.table = (pass) => (pass === 1 ? `${ROOT} 1\n${FIRST_DESCENDANT} ${ROOT}\n` : `${ROOT} 1\n${FIRST_DESCENDANT} ${ROOT}\n${FIRST_DESCENDANT + 1} ${FIRST_DESCENDANT}\n`)
-    const sent = recordSignals()
+    const spy = spyProcessKill()
     const result = killProcessTree(ROOT)
+    const sent = sentSignals(spy)
     expect(result).toEqual({ ok: true })
     expect(script.lists, 'the walk stopped listing before a pass found nothing new').toBe(3)
     expect(sent.slice(0, 3)).toEqual([`${ROOT} SIGSTOP`, `${FIRST_DESCENDANT} SIGSTOP`, `${FIRST_DESCENDANT + 1} SIGSTOP`])
@@ -59,8 +54,9 @@ describe.skipIf(process.platform === 'win32')('the freeze walk repeats until the
       for (let n = 0; n < pass; n++) rows.push(`${FIRST_DESCENDANT + n} ${n === 0 ? ROOT : FIRST_DESCENDANT + n - 1}`)
       return rows.join('\n') + '\n'
     }
-    const sent = recordSignals()
+    const spy = spyProcessKill()
     const result = killProcessTree(ROOT)
+    const sent = sentSignals(spy)
     expect(script.lists, 'the pass cap moved').toBe(64)
     expect(result.ok).toBe(false)
     expect(result.note).toMatch(/still growing after 64 passes/)

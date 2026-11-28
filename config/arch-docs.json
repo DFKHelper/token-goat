@@ -369,6 +369,7 @@
     ["src/pptx_extract.ts","Specialized Subsystems"],
     ["src/pr_slice.ts","Specialized Subsystems"],
     ["src/probe_marker.ts","Specialized Subsystems"],
+    ["src/process_gone.ts","Specialized Subsystems"],
     ["src/process_priority.ts","Specialized Subsystems"],
     ["src/process_tree.ts","Specialized Subsystems"],
     ["src/process_util.ts","Specialized Subsystems"],

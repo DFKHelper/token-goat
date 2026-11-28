@@ -35,6 +35,7 @@ const ALLOWED: readonly Allowed[] = [
     reason: 'a spy forwarding the SIGKILL the product sends to a descendant it found itself; names no pid',
   },
   { file: 'resident_process.test.ts', text: 'terminateProcessTree(pid, true)', reason: 'the refusal cases: pids 0, 1, -1 and this process and its parent must be refused, so nothing is signalled' },
+  { file: 'process_kill_waits_for_death.test.ts', text: 'terminateProcessTree(TARGET', reason: 'TARGET is a made-up pid, and every row installs the kill_spy process.kill stand-in before the call, so no real signal is sent' },
 ]
 
 /** This file's own planted bad sites are text, not kills. */
