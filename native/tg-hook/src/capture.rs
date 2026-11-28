@@ -891,6 +891,19 @@ mod tests {
         drop(spawning);
     }
 
+    /// Blocks until the child `pid` has exited, leaving it unreaped so its pid still names its group.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn wait_for_leader_exit(pid: u32) {
+        // SAFETY: `info` is a zeroed siginfo_t that waitid fills in; WNOWAIT leaves the child unreaped, so the pid is still its own.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(rc, 0, "waitid could not wait for the route's leader {pid}");
+    }
+
+    /// Other platforms have no WNOWAIT wait here, so the row drops the route once its stdout has closed.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn wait_for_leader_exit(_pid: u32) {}
+
     /// HAND-DERIVED: dropping an unsettled route whose leader exited still ends the member it started.
     #[test]
     fn dropping_a_route_whose_leader_exited_ends_its_member() {
@@ -903,23 +916,24 @@ mod tests {
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         crate::sys::guard_child(&mut command);
         let spawning = SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut child = command.spawn().expect("start the route");
+        let child = command.spawn().expect("start the route");
         drop(spawning);
-        let mut stdin = child.stdin.take().expect("the route's stdin");
-        let stdout = child.stdout.take().expect("the route's stdout");
+        // The route is in its group before it is released to start its member.
+        let mut route = RouteChild::adopt(child);
+        let mut stdin = route.child.stdin.take().expect("the route's stdin");
+        let stdout = route.child.stdout.take().expect("the route's stdout");
         let (exited, ended) = mpsc::channel();
         std::thread::spawn(move || {
             let mut stdout = stdout;
             let _ = exited.send(std::io::copy(&mut stdout, &mut std::io::sink()));
         });
-        // The route is in its group before it is released to start its member.
-        let route = RouteChild::adopt(child);
         stdin.write_all(b"go\n").expect("release the route");
         drop(stdin);
         assert!(ended.recv_timeout(BACKSTOP).is_ok(), "the route did not end on its own");
         let read = || std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse::<u32>().ok());
         let pid = poll_within(BACKSTOP, read).expect("the route's member never recorded its pid");
         // The route's stdout closed as it exited, and nothing has reaped it yet.
+        wait_for_leader_exit(route.child.id());
         drop(route);
         let gone = poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some();
         assert!(gone, "dropping a route whose leader had exited left its member {pid} running");
