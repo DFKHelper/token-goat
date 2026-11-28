@@ -268,9 +268,10 @@ export function checkNativeEntryPaths(wiring: NativeWiring): DoctorResult | null
 export function checkHookBroken(home: string): DoctorResult[] {
   const notice = readHookBroken(home)
   if (notice === undefined) return []
-  // Busy answers written before the busy object existed are still events; the native client now counts new ones in `busy` only.
+  // Busy answers and lane-folder notes written before their objects existed are still events; the native client now counts new ones in `busy` and `laneDir` only.
   const oldBusy = notice.events.filter((e) => e.route === 'deadline-busy')
-  const failures = notice.events.filter((e) => e.route !== 'deadline-busy')
+  const oldLane = notice.events.filter((e) => e.route === 'lane-dir')
+  const failures = notice.events.filter((e) => e.route !== 'deadline-busy' && e.route !== 'lane-dir')
   const busyCount = (notice.busy?.count ?? 0) + oldBusy.length
   const rows: DoctorResult[] = []
   if (busyCount > 0) {
@@ -280,15 +281,26 @@ export function checkHookBroken(home: string): DoctorResult[] {
       message: `${String(busyCount)} hook call${busyCount === 1 ? ' was' : 's were'} answered busy: no lane freed before the deadline, so the host was told to run ${busyCount === 1 ? 'it' : 'them'} again; this is contention, not damage, and needs no reinstall (${HOOK_BROKEN_FILE})`,
     })
   }
+  const laneCount = (notice.laneDir?.count ?? 0) + oldLane.length
+  if (laneCount > 0) {
+    const laneWhy = notice.laneDir?.why ?? oldLane[oldLane.length - 1]?.error ?? ''
+    rows.push({
+      name: 'Hook lane folder',
+      status: 'warn',
+      message: `${String(laneCount)} hook call${laneCount === 1 ? ' was' : 's were'} answered busy or safe because the hook lane folder could not be used; last: ${displaySafeText(laneWhy)} (${HOOK_BROKEN_FILE}); fix that folder`,
+    })
+  }
   const last = failures[failures.length - 1]
   if (last === undefined) return rows
-  // notice.count counts the old-format busy events kept in events; new busy answers never enter it, so only those are taken out.
-  const routeFailures = notice.count - oldBusy.length
-  const what = `${last.route}${last.path === '' ? '' : ` ${displaySafeText(last.path)}`}: ${displaySafeText(last.error)}`
+  // Old-format busy and lane-folder events stay in notice.count after the window drops them, so the count is exact only when none is in the window.
+  const oldInWindow = oldBusy.length + oldLane.length > 0
+  const routeFailures = oldInWindow ? failures.length : notice.count
+  const times = oldInWindow ? `at least ${String(routeFailures)}` : String(routeFailures)
+  const what =`${last.route}${last.path === '' ? '' : ` ${displaySafeText(last.path)}`}: ${displaySafeText(last.error)}`
   rows.push({
     name: 'Hook fallback',
     status: 'fail',
-    message: `hook calls left their first route ${String(routeFailures)} time${routeFailures === 1 ? '' : 's'} between ${notice.first} and ${notice.last}; last: ${what} (${HOOK_BROKEN_FILE}); run ${fencedCommand('token-goat install')} to repair it`,
+    message: `hook calls left their first route ${times} time${routeFailures === 1 ? '' : 's'} between ${notice.first} and ${notice.last}; last: ${what} (${HOOK_BROKEN_FILE}); run ${fencedCommand('token-goat install')} to repair it`,
   })
   return rows
 }

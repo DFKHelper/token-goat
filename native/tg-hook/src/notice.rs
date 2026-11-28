@@ -9,6 +9,10 @@ use serde_json::{Value, json};
 pub const FILE_NAME: &str = "hook-broken.json";
 /// The route of a busy answer: counted in the `busy` object, never in `events` or `count`.
 pub const BUSY_ROUTE: &str = "deadline-busy";
+/// The route of an unusable lane folder: counted in the `laneDir` object, never in `events` or `count`.
+pub const LANE_DIR_ROUTE: &str = "lane-dir";
+/// The objects that count notes apart from `events` and `count`; a rebuilt history carries each one it had.
+const SIDE_COUNTERS: [&str; 2] = ["busy", "laneDir"];
 /// Entries kept; older ones fall off so the file stays well under [`MAX_BYTES`].
 const KEEP: usize = 8;
 const MAX_FIELD_CHARS: usize = 120;
@@ -59,19 +63,30 @@ fn merged(previous: Option<Value>, event: Value, now: &str) -> Value {
     let drop = events.len().saturating_sub(KEEP);
     events.drain(..drop);
     let mut value = json!({ "schema": 1, "first": first, "last": now, "count": count, "events": events });
-    if let Some(busy) = old.as_ref().and_then(|v| v.get("busy")) {
-        value["busy"] = busy.clone();
-    }
+    carry_side_counters(old.as_ref(), &mut value);
     value
 }
 
-/// Counts one busy answer in the `busy` object, which holds no event and is never trimmed with the events.
-fn with_busy(previous: Option<Value>, now: &str) -> Value {
+/// Copies the side counters of `old` into `value`, which is rebuilt from the events alone.
+fn carry_side_counters(old: Option<&Value>, value: &mut Value) {
+    for key in SIDE_COUNTERS {
+        if let Some(side) = old.and_then(|v| v.get(key)) {
+            value[key] = side.clone();
+        }
+    }
+}
+
+/// Counts one note under the object `key`, which holds no event and is never trimmed with the events; `why`, the last reason, is kept beside the count when given.
+fn with_counter(previous: Option<Value>, key: &str, now: &str, why: Option<&str>) -> Value {
     let mut value = previous.filter(|v| v.get("schema").and_then(Value::as_u64) == Some(1)).unwrap_or_else(|| json!({ "schema": 1, "count": 0, "events": [] }));
-    let prior = value.get("busy").cloned().unwrap_or_else(|| json!({ "count": 0, "first": now }));
+    let prior = value.get(key).cloned().unwrap_or_else(|| json!({ "count": 0, "first": now }));
     let count = prior.get("count").and_then(Value::as_u64).unwrap_or(0).saturating_add(1);
     let first = prior.get("first").cloned().unwrap_or_else(|| json!(now));
-    value["busy"] = json!({ "count": count, "first": first, "last": now });
+    let mut side = json!({ "count": count, "first": first, "last": now });
+    if let Some(why) = why {
+        side["why"] = json!(why);
+    }
+    value[key] = side;
     value
 }
 
@@ -98,12 +113,11 @@ fn is_probe(value: Option<&str>) -> bool {
     value == Some("1")
 }
 
-/// The history as a reader sees it: nothing when the file is absent, over [`MAX_BYTES`] or not JSON.
-fn read_history(file: &Path) -> Option<Value> {
+/// The text of the history file as it is on disk; nothing when the file is absent or over [`MAX_BYTES`].
+fn read_text(file: &Path) -> Option<String> {
     let within_cap = |m: &std::fs::Metadata| m.len() <= MAX_BYTES;
     let size_ok = std::fs::metadata(file).ok().filter(within_cap);
-    let text = size_ok.and_then(|_| std::fs::read_to_string(file).ok())?;
-    serde_json::from_str(&text).ok()
+    size_ok.and_then(|_| std::fs::read_to_string(file).ok())
 }
 
 /// The text to write for `value`: the oldest events dropped until it fits [`MAX_BYTES`], so a reader never refuses what a writer wrote.
@@ -177,13 +191,18 @@ where
     let file = dir.join(FILE_NAME);
     let busy = || std::io::Error::new(std::io::ErrorKind::WouldBlock, "history lock not taken");
     let _held = lock(dir, pause).ok_or_else(busy)?;
-    match change(read_history(&file)) {
+    let read = read_text(&file);
+    match change(read.as_deref().and_then(|text| serde_json::from_str(text).ok())) {
         None => match std::fs::remove_file(&file) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         },
         Some(value) => {
             let text = fitted(value).ok_or_else(|| std::io::Error::other("event larger than the cap"))?;
+            // What the file already holds is left alone: no temp file, no rename, and its mtime stays.
+            if read.as_deref() == Some(text.as_str()) {
+                return Ok(());
+            }
             let temp = dir.join(format!("{FILE_NAME}.{}.tmp", std::process::id()));
             let written = std::fs::write(&temp, text).and_then(|()| std::fs::rename(&temp, &file));
             if written.is_err() {
@@ -196,15 +215,22 @@ where
 
 fn try_record_many(data_dir: &str, entries: &[(&str, &str, &str)]) -> std::io::Result<()> {
     let now = iso_utc(SystemTime::now());
-    let events: Vec<Value> =
-        entries.iter().filter(|(route, _, _)| *route != BUSY_ROUTE).map(|(route, path, error)| json!({ "time": now, "route": clip(route), "path": clip(path), "error": clip(error) })).collect();
+    let events: Vec<Value> = entries
+        .iter()
+        .filter(|(route, _, _)| *route != BUSY_ROUTE && *route != LANE_DIR_ROUTE)
+        .map(|(route, path, error)| json!({ "time": now, "route": clip(route), "path": clip(path), "error": clip(error) }))
+        .collect();
     let busy = entries.iter().filter(|(route, _, _)| *route == BUSY_ROUTE).count();
+    let lane_reasons: Vec<String> = entries.iter().filter(|(route, _, _)| *route == LANE_DIR_ROUTE).map(|(_, _, error)| clip(error)).collect();
     update(data_dir, &mut || std::thread::sleep(LOCK_PAUSE), |mut previous| {
         for event in events {
             previous = Some(merged(previous, event, &now));
         }
         for _ in 0..busy {
-            previous = Some(with_busy(previous, &now));
+            previous = Some(with_counter(previous, "busy", &now, None));
+        }
+        for why in &lane_reasons {
+            previous = Some(with_counter(previous, "laneDir", &now, Some(why.as_str())));
         }
         previous
     })
@@ -230,23 +256,26 @@ fn unseen(previous: Option<Value>, began: &str) -> Option<Value> {
     let all = old["events"].as_array()?;
     let newer = |e: &&Value| e["time"].as_str().is_some_and(|t| t >= began);
     let kept: Vec<Value> = all.iter().filter(newer).cloned().collect();
-    let busy = old.get("busy").cloned();
     let Some(first) = kept.first().map(|e| e["time"].clone()) else {
-        return busy.map(|busy| json!({ "schema": 1, "count": 0, "events": [], "busy": busy }));
+        let mut value = json!({ "schema": 1, "count": 0, "events": [] });
+        carry_side_counters(Some(&old), &mut value);
+        return SIDE_COUNTERS.iter().any(|key| value.get(*key).is_some()).then_some(value);
     };
     if kept.len() == all.len() {
         return Some(old);
     }
     let mut value = json!({ "schema": 1, "first": first, "last": old["last"], "count": kept.len(), "events": kept });
-    if let Some(busy) = busy {
-        value["busy"] = busy;
-    }
+    carry_side_counters(Some(&old), &mut value);
     Some(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read_history(file: &Path) -> Option<Value> {
+        serde_json::from_str(&read_text(file)?).ok()
+    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("tg-notice-{}-{name}", std::process::id()));
@@ -364,6 +393,71 @@ mod tests {
         let size = std::fs::metadata(dir.join(FILE_NAME)).unwrap().len();
         assert!(size <= MAX_BYTES, "{size}");
         assert_eq!(read_value(&dir)["busy"]["count"], 20, "the cap must never trim the busy object");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lane_folder_notes_count_in_their_own_object_and_never_in_events() {
+        let dir = scratch("lane-dir");
+        let d = dir.to_str().unwrap();
+        record(d, "node-argv", "/gone", "missing");
+        for i in 0..20 {
+            record(d, "lane-dir", "", &format!("lane directory C:/x/hook-lanes: denied {i}"));
+        }
+        let value = read_value(&dir);
+        assert_eq!(value["events"].as_array().unwrap().len(), 1, "a lane-folder note must not enter events");
+        assert_eq!(value["count"], 1, "a lane-folder note must not enter count");
+        assert_eq!(value["laneDir"]["count"], 20);
+        assert_eq!(value["laneDir"]["why"], "lane directory C:/x/hook-lanes: denied 19", "the last reason is kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_clear_keeps_the_lane_folder_object() {
+        let dir = scratch("lane-clear");
+        let d = dir.to_str().unwrap();
+        record(d, "lane-dir", "", "lane directory C:/x/hook-lanes: denied");
+        clear(d, "9999-12-31T23:59:59.999Z");
+        assert!(dir.join(FILE_NAME).exists(), "a clear must keep the lane-folder note, or a clean run erases it");
+        assert_eq!(read_value(&dir)["laneDir"]["count"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_clean_call_with_nothing_to_drop_leaves_the_file_untouched() {
+        let dir = scratch("clean-noop");
+        let d = dir.to_str().unwrap();
+        for _ in 0..3 {
+            record(d, "deadline-busy", "", "no lane freed");
+        }
+        let file = dir.join(FILE_NAME);
+        let backdated = UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        std::fs::OpenOptions::new().write(true).open(&file).unwrap().set_modified(backdated).unwrap();
+        let before = std::fs::read(&file).unwrap();
+        let listing = || {
+            let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            names.sort();
+            names
+        };
+        let names_before = listing();
+        clear(d, "1970-01-01T00:00:00.000Z");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a clean call with nothing to drop must leave the bytes alone");
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), backdated, "a clean call with nothing to drop must not rewrite the file");
+        assert_eq!(listing(), names_before, "a clean call must leave no temp file behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_clean_call_rewrites_the_file_only_to_drop_the_events_older_than_it() {
+        let dir = scratch("clean-drop");
+        let d = dir.to_str().unwrap();
+        let old = "2000-01-01T00:00:00.000Z";
+        let text = json!({ "schema": 1, "first": old, "last": old, "count": 1, "events": [{ "time": old, "route": "node-argv", "path": "/gone", "error": "missing" }], "busy": { "count": 2, "first": old, "last": old } });
+        std::fs::write(dir.join(FILE_NAME), text.to_string()).unwrap();
+        clear(d, "2020-01-01T00:00:00.000Z");
+        let value = read_value(&dir);
+        assert_eq!(value["events"].as_array().unwrap().len(), 0, "the clean call must drop the route failure older than it");
+        assert_eq!(value["busy"]["count"], 2, "the clean call must keep the busy count");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

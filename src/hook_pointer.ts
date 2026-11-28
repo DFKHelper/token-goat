@@ -222,6 +222,13 @@ export interface HookBrokenBusy {
   readonly last: string
 }
 
+export interface HookBrokenLaneDir {
+  readonly count: number
+  readonly first: string
+  readonly last: string
+  readonly why: string
+}
+
 export interface HookBroken {
   readonly first: string
   readonly last: string
@@ -229,6 +236,8 @@ export interface HookBroken {
   readonly events: readonly HookBrokenEvent[]
   /** Busy answers, counted apart from `events` and `count`; absent in a notice written before they were split out. */
   readonly busy?: HookBrokenBusy | undefined
+  /** Unusable-lane-folder notes, counted apart from `events` and `count`; absent in a notice written before they were split out. */
+  readonly laneDir?: HookBrokenLaneDir | undefined
 }
 
 /** The notice the native client leaves, or undefined when there is none or it cannot be read as one. */
@@ -239,7 +248,8 @@ export function readHookBroken(home: string = dataDir()): HookBroken | undefined
     const v = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<HookBroken> & { schema?: number }
     if (v.schema !== 1 || typeof v.count !== 'number' || !Array.isArray(v.events)) return undefined
     const busy = typeof v.busy?.count === 'number' ? v.busy : undefined
-    return { first: String(v.first), last: String(v.last), count: v.count, events: v.events, busy }
+    const laneDir = typeof v.laneDir?.count === 'number' ? v.laneDir : undefined
+    return { first: String(v.first), last: String(v.last), count: v.count, events: v.events, busy, laneDir }
   } catch {
     return undefined
   }

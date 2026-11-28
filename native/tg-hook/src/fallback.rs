@@ -272,7 +272,7 @@ fn run_with(argv: &[OsString], input: Input, reason: &str, opts: &Opts, host: &d
         let answer = if busy { Answer::Busy } else { Answer::Safe };
         match lane_unusable {
             Some(why) => {
-                record_notes(vec![("lane-dir", String::new(), why)], data_dir.clone(), opts.deadline, host, answer);
+                record_notes(vec![(notice::LANE_DIR_ROUTE, String::new(), why)], data_dir.clone(), opts.deadline, host, answer);
             }
             None if busy => {
                 let busy_note = (notice::BUSY_ROUTE, String::new(), "no lane freed before the deadline; the host was told to run the call again".to_string());
@@ -525,24 +525,27 @@ mod tests {
         (records, ended)
     }
 
+    /// What `drive_call` returns: the host's records, how the call ended, the route of each event written, and the busy and lane-folder counts.
+    type CallOutcome = (Vec<(&'static str, &'static str)>, Ended, Vec<String>, (u64, u64));
+
     /// Like `drive`, for a call `harness` sends with `payload` as its stdin; also returns the route of each note written.
-    fn drive_call(name: &str, harness: &str, payload: &[u8], routes: Vec<Result<Outcome, capture::Failure>>) -> (Vec<(&'static str, &'static str)>, Ended, Vec<String>, u64) {
+    fn drive_call(name: &str, harness: &str, payload: &[u8], routes: Vec<Result<Outcome, capture::Failure>>) -> CallOutcome {
         let (root, dir) = pointer_dir(name, true);
         let host = Scripted { dir: dir.clone(), routes: std::cell::RefCell::new(routes.into()), records: Default::default() };
         let opts = Opts::for_call(harness, "PreToolUse", Instant::now(), None);
         let input = Input::Read { bytes: payload.to_vec(), more: false };
         let ended = run_with(&[OsString::from("tg-missing-bin")], input, "test", &opts, &host);
         let noted = noted_routes(&dir);
-        let busy = busy_count(&dir);
+        let counts = busy_and_lane_counts(&dir);
         let _ = std::fs::remove_dir_all(&root);
-        (host.records.take(), ended, noted, busy)
+        (host.records.take(), ended, noted, counts)
     }
 
-    /// The busy answers counted in the notice file under `dir`; zero when none was written.
-    fn busy_count(dir: &str) -> u64 {
+    /// The busy answers and the unusable-lane-folder notes counted in the notice file under `dir`; zero when none was written.
+    fn busy_and_lane_counts(dir: &str) -> (u64, u64) {
         let text = std::fs::read_to_string(std::path::Path::new(dir).join(notice::FILE_NAME)).unwrap_or_default();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-        value["busy"]["count"].as_u64().unwrap_or(0)
+        (value["busy"]["count"].as_u64().unwrap_or(0), value["laneDir"]["count"].as_u64().unwrap_or(0))
     }
 
     /// The route of each event in the notice file under `dir`, in order; empty when none was written.
@@ -577,7 +580,7 @@ mod tests {
     #[test]
     fn a_lane_busy_write_call_counts_one_busy_answer_and_no_event() {
         let routes = vec![Err(capture::Failure::Exit(1)), Err(capture::Failure::NoLane(crate::lanes::LaneError::Busy))];
-        let (records, ended, noted, busy) = drive_call("lane-busy-write", "claudecode", br#"{"tool_name":"Write","tool_input":{}}"#, routes);
+        let (records, ended, noted, (busy, _)) = drive_call("lane-busy-write", "claudecode", br#"{"tool_name":"Write","tool_input":{}}"#, routes);
         assert!(matches!(ended, Ended::SafeAnswered));
         assert_eq!(records, [("busy answer first", "deadline")], "a lane-busy write call must be answered busy, its note waited for to the deadline");
         assert!(noted.is_empty(), "a lane-busy write call must write no event, not the route failure gathered before its lane wait; it wrote {noted:?}");
@@ -599,10 +602,11 @@ mod tests {
     fn an_unusable_lane_folder_answers_a_write_call_busy_with_one_lane_dir_note() {
         let why = "lane directory C:/x/hook-lanes: denied".to_string();
         let routes = vec![Err(capture::Failure::NoLane(crate::lanes::LaneError::Unusable(why.clone()))), Err(capture::Failure::NoLane(crate::lanes::LaneError::Unusable(why)))];
-        let (records, ended, noted, _) = drive_call("unusable-write", "claudecode", br#"{"tool_name":"Write","tool_input":{}}"#, routes);
+        let (records, ended, noted, (_, lane)) = drive_call("unusable-write", "claudecode", br#"{"tool_name":"Write","tool_input":{}}"#, routes);
         assert!(matches!(ended, Ended::SafeAnswered));
         assert_eq!(records, [("busy answer first", "deadline")], "an unusable lane folder must answer a write call busy, its note waited for to the deadline");
-        assert_eq!(noted, ["lane-dir"], "an unusable lane folder must record one lane-dir note and no node route failure");
+        assert!(noted.is_empty(), "an unusable lane folder must write no event, not a node route failure; it wrote {noted:?}");
+        assert_eq!(lane, 1, "an unusable lane folder must count one note in the laneDir object");
     }
 
     /// HAND-DERIVED: an unusable lane folder gives a read-only call the safe answer, with the same one lane-dir note.
@@ -610,10 +614,11 @@ mod tests {
     fn an_unusable_lane_folder_gives_a_read_only_call_the_safe_answer() {
         let why = "lane directory C:/x/hook-lanes: denied".to_string();
         let routes = vec![Err(capture::Failure::NoLane(crate::lanes::LaneError::Unusable(why.clone()))), Err(capture::Failure::NoLane(crate::lanes::LaneError::Unusable(why)))];
-        let (records, ended, noted, _) = drive_call("unusable-read", "claudecode", br#"{"tool_name":"Read","tool_input":{}}"#, routes);
+        let (records, ended, noted, (_, lane)) = drive_call("unusable-read", "claudecode", br#"{"tool_name":"Read","tool_input":{}}"#, routes);
         assert!(matches!(ended, Ended::SafeAnswered));
         assert_eq!(records, [("safe answer first", "deadline")], "an unusable lane folder must give a read-only call the safe answer");
-        assert_eq!(noted, ["lane-dir"], "an unusable lane folder must record one lane-dir note and no node route failure");
+        assert!(noted.is_empty(), "an unusable lane folder must write no event, not a node route failure; it wrote {noted:?}");
+        assert_eq!(lane, 1, "an unusable lane folder must count one note in the laneDir object");
     }
 
     #[test]

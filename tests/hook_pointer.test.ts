@@ -160,12 +160,12 @@ describe('checkHookBroken splits busy answers from route failures', () => {
     expect(checkHookBroken(home)).toEqual([{ name: 'Hook busy answers', status: 'ok', message: expect.stringContaining('2 hook calls were answered busy') }])
   })
 
-  it('gives a FAIL row counting only the route failure, beside the busy row', () => {
+  it('gives a FAIL row counting only the route failure, as at least that many, beside the busy row', () => {
     const home = scratch()
     writeNotice(home, [busy, failure, busy], 3)
     expect(checkHookBroken(home)).toEqual([
       { name: 'Hook busy answers', status: 'ok', message: expect.stringContaining('2 hook calls were answered busy') },
-      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route 1 time ') },
+      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route at least 1 time ') },
     ])
   })
 
@@ -181,6 +181,31 @@ describe('checkHookBroken splits busy answers from route failures', () => {
     expect(checkHookBroken(home)).toEqual([
       { name: 'Hook busy answers', status: 'ok', message: expect.stringContaining('20 hook calls were answered busy') },
       { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route 1 time ') },
+    ])
+  })
+
+  it('counts old-format busy events in the window as at least the route failures, never by subtracting them from the count', () => {
+    const home = scratch()
+    writeNotice(home, [busy, busy, busy, busy, busy, busy, busy, failure], 22)
+    expect(checkHookBroken(home)).toEqual([
+      { name: 'Hook busy answers', status: 'ok', message: expect.stringContaining('7 hook calls were answered busy') },
+      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route at least 1 time ') },
+    ])
+  })
+
+  it('gives a non-fail lane-folder row and no FAIL when the notice holds only a laneDir object', () => {
+    const home = scratch()
+    fs.writeFileSync(hookBrokenPath(home), JSON.stringify({ schema: 1, count: 0, events: [], laneDir: { count: 20, first: 'a', last: 'b', why: 'lane directory C:/x/hook-lanes: denied' } }))
+    expect(checkHookBroken(home)).toEqual([{ name: 'Hook lane folder', status: 'warn', message: expect.stringContaining('20 hook calls were answered busy or safe') }])
+  })
+
+  it('counts an old-format lane-folder event in the lane row, never in the FAIL row', () => {
+    const home = scratch()
+    const lane = { time: 't', route: 'lane-dir', path: '', error: 'lane directory C:/x/hook-lanes: denied' }
+    writeNotice(home, [lane, failure], 2)
+    expect(checkHookBroken(home)).toEqual([
+      { name: 'Hook lane folder', status: 'warn', message: expect.stringContaining('1 hook call was answered busy or safe') },
+      { name: 'Hook fallback', status: 'fail', message: expect.stringContaining('left their first route at least 1 time ') },
     ])
   })
 
