@@ -27,11 +27,14 @@ afterEach(() => {
   script.table = () => ''
 })
 
-/** Every signal sent, as `pid SIGNAL`, in order. */
+/** Every signal sent as `pid SIGNAL`, in order. Signal 0 probes are unlisted; they answer ESRCH once killed. */
 function recordSignals(): string[] {
   const sent: string[] = []
+  const dead = new Set<number>()
   vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
-    sent.push(`${pid} ${String(signal)}`)
+    if (signal !== 0) sent.push(`${pid} ${String(signal)}`)
+    if (signal === 0 && dead.has(pid)) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+    if (signal === 'SIGKILL') dead.add(pid)
     return true
   }) as typeof process.kill)
   return sent
