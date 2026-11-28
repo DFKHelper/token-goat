@@ -27,7 +27,7 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'helpers/kill_if_command_line.ts', text: 'terminateProcessTree(pid', reason: 'the implementation: the tree kill follows the same command-line read' },
   { file: 'setup/build-bundle.ts', text: 'terminateProcessTree(pid, true)', reason: 'killDaemonsUnder reads the command line of the heartbeat pid and checks isResidentOfInstall on the lines just above, then kills' },
   { file: 'process_tree_freeze_passes.test.ts', text: 'killProcessTree(ROOT)', reason: 'ROOT is a made-up number and spawnSync is mocked, so no real process is signalled' },
-  { file: 'process_tree_root_signal_fails.test.ts', text: 'killProcessTree(ROOT_PID)', reason: 'ROOT_PID is a made-up number, process.kill is a stand-in that only records and throws, and ps is scripted, so no real process is signalled' },
+  { file: 'process_tree_root_signal_fails.test.ts', text: 'killProcessTree(ROOT_PID, seam)', reason: 'ROOT_PID is a made-up number, process.kill is a stand-in that only records and throws, and ps is scripted, so no real process is signalled' },
   { file: 'worker.test.ts', text: 'process.kill.bind(process)', reason: 'a spy that forwards to the real kill only what claimWorkerPidFile sends it, which is the signal-0 liveness probe of src/worker_lifecycle.ts:111, for pid 999999999' },
   {
     file: 'gate_ends_orphaned_descendant.test.ts',

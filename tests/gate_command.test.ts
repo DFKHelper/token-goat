@@ -91,7 +91,7 @@ describe('token-goat gate verdicts', () => {
       const recorded = JSON.parse(fs.readFileSync(pidFile, 'utf8')) as { parent: number; grandchild: number }
       pids.push(recorded.parent, recorded.grandchild)
       const survivors = pids.filter((pid) => processAlive(pid))
-      expect(survivors, 'every process the timed-out command started must be ended with its tree').toEqual([])
+      expect(survivors, `every process the timed-out command started must be ended with its tree; stderr: ${stderr.join('')}`).toEqual([])
     } finally {
       const ours = (line: string): boolean => line.includes('hang.js') || line.includes('setInterval')
       for (const pid of pids) killIfCommandLine(pid, ours, { tree: true })
